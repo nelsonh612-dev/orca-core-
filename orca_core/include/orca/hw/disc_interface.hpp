@@ -44,7 +44,10 @@ class DiscInterface final : public mem::MmioDevice {
 public:
     DiscInterface(mem::Bus& bus, core::Scheduler& scheduler, ProcessorInterface& pi);
 
-    void insert(std::unique_ptr<disc::DiscReader> disc) { disc_ = std::move(disc); }
+    void insert(std::unique_ptr<disc::DiscReader> disc) { read_view_ = nullptr; disc_ = std::move(disc); }
+    // Optional logical view (e.g. decrypted Wii partition) used by DI DMA reads.
+    // The owner must keep it alive until cleared or the disc is replaced.
+    void set_read_view(disc::DiscReader* view) noexcept { read_view_ = view; }
     disc::DiscReader* disc() noexcept { return disc_.get(); }
     void set_latency_cycles(u64 cycles) noexcept { latency_ = cycles; }
 
@@ -66,6 +69,7 @@ private:
     core::Scheduler& scheduler_;
     ProcessorInterface& pi_;
     std::unique_ptr<disc::DiscReader> disc_;
+    disc::DiscReader* read_view_{nullptr};
     u64 latency_{0};
     u32 disr_{0}, dicvr_{0}, cmd_[3]{}, dimar_{0}, dilength_{0}, dicr_{0}, diimmbuf_{0};
     std::string last_error_;
