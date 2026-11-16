@@ -163,6 +163,17 @@ TEST_CASE(wii_partition_table_rejects_corrupt_ranges) {
           error.find("extends past") != std::string::npos);
 }
 
+
+TEST_CASE(wii_boot_requires_external_common_key_provider) {
+    std::vector<u8> raw(0x50000,0);
+    put32(raw,0x18,disc::kWiiMagic);
+    system::System sys({system::Console::Wii});
+    sys.insert_disc(std::make_unique<disc::MemoryDisc>(std::move(raw)));
+    std::string error;
+    CHECK(!sys.boot_disc(error));
+    CHECK(error.find("user-supplied common-key provider")!=std::string::npos);
+}
+
 TEST_CASE(disc_rejections) {
     std::string err;
     std::vector<u8> app(64, 0), dol(0x100, 0);
