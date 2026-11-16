@@ -70,6 +70,28 @@ bool translate_one(u32 ins, u32 guest_pc, std::vector<u32>& out, bool& terminate
         terminates=true;
         return true;
     }
+
+    if(op==19U) {
+        const unsigned xo10=(ins>>1U)&0x3FFU;
+        const unsigned bo=(ins>>21U)&31U;
+        const unsigned bi=(ins>>16U)&31U;
+        // Common function-return / indirect-call forms. More complex BO/BI
+        // combinations remain on the reference interpreter.
+        if((xo10==16U || xo10==528U) && bo==20U && bi==0U) {
+            const unsigned target_offset=static_cast<unsigned>(
+                xo10==16U ? offsetof(CpuState,lr) : offsetof(CpuState,ctr));
+            out.push_back(ldr_w(9,0,target_offset));
+            load_imm(out,10,0xFFFFFFFCU);
+            out.push_back(and_w(11,9,10));
+            if((ins&1U)!=0U) {
+                load_imm(out,9,guest_pc+4U);
+                out.push_back(str_w(9,0,static_cast<unsigned>(offsetof(CpuState,lr))));
+            }
+            out.push_back(str_w(11,0,static_cast<unsigned>(offsetof(CpuState,pc))));
+            terminates=true;
+            return true;
+        }
+    }
     if(op==16U) { // bc: CTR/CR conditional branch
         const unsigned bo=(ins>>21U)&31U;
         const unsigned bi=(ins>>16U)&31U;
