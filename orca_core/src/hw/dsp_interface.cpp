@@ -38,6 +38,11 @@ bool DspInterface::dsp_aram_write16(u32 a, u16 v) {
 }
 
 void DspInterface::dsp_reset(bool boot_from_ram) {
+    // A reset invalidates any previously scheduled DSP slice. Without a
+    // generation check, a stale event can execute the freshly reset DSP early
+    // and then collide with the new slice, effectively doubling its rate.
+    ++dsp_generation_;
+    slice_pending_ = false;
     core_.clear_mailboxes();
     if (boot_from_ram) {
         // DSP manual "Initialization": 1024 bytes from main memory 0x01000000 to IMEM 0.
@@ -54,7 +59,12 @@ void DspInterface::dsp_reset(bool boot_from_ram) {
 void DspInterface::kick_dsp() {
     if (slice_pending_ || core_.halted() || core_.failed()) return;
     slice_pending_ = true;
-    scheduler_.schedule_in(kSliceInstructions * kCpuCyclesPerDspCycle, "DSP slice", [this](u64, u64) { run_slice(); });
+    const u64 generation = dsp_generation_;
+    scheduler_.schedule_in(kSliceInstructions * kCpuCyclesPerDspCycle, "DSP slice",
+        [this, generation](u64, u64) {
+            if (generation != dsp_generation_) return;
+            run_slice();
+        });
 }
 
 void DspInterface::run_slice() {
