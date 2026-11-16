@@ -674,6 +674,9 @@ Block compile_arm64(std::span<const u32> words, u32 start_pc) {
         if(instruction_terminates) { terminated=true; break; }
     }
     if (b.guest_instructions != 0U) {
+        // Entry ABI: x0 initially points to ExecutionContext; load its first
+        // member so the existing generated instruction stream sees CpuState*.
+        b.host_words.insert(b.host_words.begin(), 0xF9400000U); // ldr x0, [x0]
         if(!terminated) {
             // Load immediate end_pc into w9 then store PC.
             load_imm(b.host_words, 9, b.end_pc);
@@ -730,14 +733,15 @@ ExecutableBlock& ExecutableBlock::operator=(ExecutableBlock&& other) noexcept {
     return *this;
 }
 
-bool ExecutableBlock::execute(CpuState& state) const noexcept {
+bool ExecutableBlock::execute(CpuState& state, Cpu* cpu) const noexcept {
 #if defined(__aarch64__)
     if (memory_ == nullptr) return false;
-    using Fn = void (*)(CpuState*);
+    using Fn = void (*)(ExecutionContext*);
     static_assert(sizeof(Fn) == sizeof(memory_));
     Fn fn = nullptr;
     std::memcpy(&fn, &memory_, sizeof(fn));
-    fn(&state);
+    ExecutionContext context{&state, cpu};
+    fn(&context);
     return true;
 #else
     (void)state;
@@ -745,9 +749,9 @@ bool ExecutableBlock::execute(CpuState& state) const noexcept {
 #endif
 }
 
-bool execute_arm64(const Block& block, CpuState& state) noexcept {
+bool execute_arm64(const Block& block, CpuState& state, Cpu* cpu) noexcept {
     ExecutableBlock executable(block);
-    return executable.execute(state);
+    return executable.execute(state, cpu);
 }
 
 } // namespace orca::ppc::jit
