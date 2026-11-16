@@ -3,6 +3,7 @@
 #include "ppc_asm.hpp"
 #include "test_framework.hpp"
 #include <array>
+#include <cstdio>
 #include <vector>
 using namespace orca;
 using namespace orca::ppc;
