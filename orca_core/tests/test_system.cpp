@@ -266,6 +266,22 @@ TEST_CASE(timebase_follows_cpu_cycles) {
     CHECK(wii.bus().is_ram(mem::kMem2Base, mem::kMem2Size));
 }
 
+TEST_CASE(wii_hle_boot_maps_cached_mem2_for_code_and_data) {
+    system::System wii({system::Console::Wii, 0, 1});
+    // MEM2 physical data and code are reached through the cached 0x90000000
+    // alias installed by HLE boot. This exercises both IBAT and DBAT setup.
+    CHECK(wii.bus().write32(mem::kMem2Base, 0x12345678U) == mem::BusStatus::Ok);
+    code(wii, mem::kMem2Base + 0x1000U,
+         {A::addi(3, 0, 42), A::addis(4, 0, 0x9000), 0x80A40000U}); // lwz r5,0(r4)
+    wii.hle_boot(0x90001000U);
+    const auto result = wii.run(3U);
+    CHECK(result.stop == StepResult::Executed);
+    CHECK_EQ(result.instructions, 3U);
+    CHECK_EQ(wii.cpu().state().gpr[3], 42U);
+    CHECK_EQ(wii.cpu().state().gpr[4], 0x90000000U);
+    CHECK_EQ(wii.cpu().state().gpr[5], 0x12345678U);
+}
+
 TEST_CASE(decrementer_interrupt_through_system_loop) {
     system::System sys({});
     auto& s = sys.cpu().state();
