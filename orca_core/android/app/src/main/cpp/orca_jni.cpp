@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <bit>
 #include <cstdint>
 #include <memory>
 #include <span>
@@ -60,7 +61,7 @@ void enqueue_audio_pcm16be(std::span<const orca::u8> bytes) noexcept {
         }
         const std::uint16_t raw = static_cast<std::uint16_t>(
             (static_cast<std::uint16_t>(bytes[i]) << 8U) | bytes[i + 1U]);
-        g_audio_ring[head & kAudioRingMask] = static_cast<std::int16_t>(raw);
+        g_audio_ring[head & kAudioRingMask] = std::bit_cast<std::int16_t>(raw);
         ++head;
     }
     g_audio_head.store(head, std::memory_order_release);

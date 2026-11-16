@@ -116,7 +116,12 @@ class MainActivity : Activity() {
                         track.pause()
                         track.flush()
                         track.release()
+                        if (!audioRunning) break
                         val replacement = createAudioTrack(requestedRate) ?: break
+                        if (!audioRunning) {
+                            replacement.release()
+                            break
+                        }
                         track = replacement
                         activeRate = requestedRate
                         audioTrack = replacement
@@ -131,7 +136,7 @@ class MainActivity : Activity() {
                     }
                 }
             } catch (t: Throwable) {
-                runOnUiThread { status.text = "Audio Android detenido: ${t.message}" }
+                if (audioRunning) runOnUiThread { status.text = "Audio Android detenido: ${t.message}" }
             } finally {
                 try { track.stop() } catch (_: Throwable) { }
                 try { track.release() } catch (_: Throwable) { }
