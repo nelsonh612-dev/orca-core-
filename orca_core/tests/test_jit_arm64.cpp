@@ -165,6 +165,17 @@ TEST_CASE(jit_arm64_cpu_run_jit_respects_bat_instruction_translation) {
     CHECK(candidate.s() == reference.s());
 }
 
+TEST_CASE(jit_arm64_run_honors_stop_pc_after_interpreted_branch) {
+    Machine m;
+    m.code(0x1000U, {A::b(8), A::addi(3, 0, 77)});
+    const u32 stop_pc = 0x1008U;
+    u64 completed = 0;
+    CHECK(m.cpu->run_jit(4U, &completed, &stop_pc) == StepResult::Executed);
+    CHECK_EQ(completed, 1U);
+    CHECK_EQ(m.s().pc, stop_pc);
+    CHECK_EQ(m.s().gpr[3], 0U);
+}
+
 TEST_CASE(jit_arm64_branch_uses_interpreter_fallback_at_block_boundary) {
     Machine m;
     m.code(0x1000U, {A::addi(3, 0, 5), A::b(8), A::addi(4, 0, 99), A::addi(5, 0, 7)});

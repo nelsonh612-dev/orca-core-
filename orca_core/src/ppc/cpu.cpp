@@ -184,11 +184,15 @@ void Cpu::invalidate_jit_cache() noexcept {
     jit_blocks_.clear();
 }
 
-StepResult Cpu::run_jit(u64 budget, u64* completed) {
+StepResult Cpu::run_jit(u64 budget, u64* completed, const u32* stop_pc) {
     if (completed != nullptr) *completed = 0;
 #if !defined(__aarch64__)
     // Host builds keep reference semantics and report completed instructions.
     for (u64 done = 0; done < budget; ++done) {
+        if (stop_pc != nullptr && state_.pc == *stop_pc) {
+            if (completed != nullptr) *completed = done;
+            return StepResult::Executed;
+        }
         const StepResult r = step();
         if (r != StepResult::Executed && r != StepResult::ExceptionTaken) {
             if (completed != nullptr) *completed = done;
@@ -199,6 +203,10 @@ StepResult Cpu::run_jit(u64 budget, u64* completed) {
     return StepResult::Executed;
 #else
     for (u64 done = 0; done < budget;) {
+        if (stop_pc != nullptr && state_.pc == *stop_pc) {
+            if (completed != nullptr) *completed = done;
+            return StepResult::Executed;
+        }
         // Keep all architectural boundary checks in Cpu::step(). In particular,
         // do not bypass asynchronous interrupts, trace/LE modes, or POW idle.
         if (state_.halted || (state_.msr & (MSR_SE | MSR_BE | MSR_LE | MSR_POW)) != 0U ||

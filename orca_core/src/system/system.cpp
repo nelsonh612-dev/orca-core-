@@ -199,7 +199,7 @@ RunResult System::run(u64 max_cycles) {
             const u64 distance = static_cast<u64>(*stop_pc_) - cpu_->state().pc;
             if ((distance & 3U) == 0U) budget = std::min(budget, distance / 4U);
         }
-        s = cpu_->run_jit(budget, &completed);
+        s = cpu_->run_jit(budget, &completed, stop_pc_ ? &*stop_pc_ : nullptr);
 #else
         s = cpu_->step();
         if (s == ppc::StepResult::Executed || s == ppc::StepResult::ExceptionTaken) completed = 1U;
