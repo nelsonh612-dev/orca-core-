@@ -21,6 +21,8 @@
 namespace {
 constexpr const char* kTag = "OrcaCore";
 std::unique_ptr<orca::gpu::gles::Backend> g_backend;
+// Lives longer than g_system because System stores a non-owning provider pointer.
+orca::disc::WiiCommonKeyFileProvider g_wii_key_provider;
 std::unique_ptr<orca::system::System> g_system;
 std::vector<orca::u8> g_rgba;
 std::vector<orca::u8> g_yuv_scratch;
@@ -273,14 +275,34 @@ Java_org_orcacore_android_MainActivity_nativeInit(JNIEnv* env, jobject) {
 }
 
 extern "C" JNIEXPORT jstring JNICALL
-Java_org_orcacore_android_MainActivity_nativeLoadDisc(JNIEnv* env, jobject, jstring path) {
+Java_org_orcacore_android_MainActivity_nativeLoadDisc(JNIEnv* env, jobject, jstring path,
+                                                               jint console_kind, jstring key_text) {
+    if (path == nullptr || key_text == nullptr || (console_kind != 0 && console_kind != 1))
+        return java_string(env, "Parámetros de carga de disco no válidos.");
     const char* chars = env->GetStringUTFChars(path, nullptr);
     if (chars == nullptr) return java_string(env, "No se pudo leer la ruta del archivo.");
     std::string error;
     auto disc = orca::disc::FileDisc::open(chars, error);
     env->ReleaseStringUTFChars(path, chars);
     if (!disc) return java_string(env, error);
-    auto candidate = std::make_unique<orca::system::System>(orca::system::SystemConfig{orca::system::Console::GameCube});
+
+    const char* key_chars = env->GetStringUTFChars(key_text, nullptr);
+    if (key_chars == nullptr) return java_string(env, "No se pudo leer el archivo de claves.");
+    const std::string supplied_keys(key_chars);
+    env->ReleaseStringUTFChars(key_text, key_chars);
+
+    const auto console = console_kind == 1 ? orca::system::Console::Wii
+                                           : orca::system::Console::GameCube;
+    if (console == orca::system::Console::Wii) {
+        if (!g_wii_key_provider.load_text(supplied_keys, error))
+            return java_string(env, "Archivo de claves Wii no válido: " + error);
+    } else {
+        g_wii_key_provider.clear();
+    }
+
+    auto candidate = std::make_unique<orca::system::System>(orca::system::SystemConfig{console});
+    if (console == orca::system::Console::Wii)
+        candidate->set_wii_common_key_provider(&g_wii_key_provider);
     candidate->insert_disc(std::move(disc));
     if (!candidate->boot_disc(error)) return java_string(env, "No se pudo iniciar el disco: " + error);
     candidate->set_field_listener([](bool bottom) { capture_xfb(bottom); });
@@ -292,8 +314,10 @@ Java_org_orcacore_android_MainActivity_nativeLoadDisc(JNIEnv* env, jobject, jstr
     g_frame_width = g_frame_height = 0;
     g_frame_dirty = false;
     g_backend_attached = false;
-    g_last_run_status = "Disco iniciado; CPU PowerPC con JIT ARM64 parcial y fallback al intérprete.";
-    return java_string(env, "Disco GameCube cargado. " + g_last_run_status);
+    g_last_run_status = console == orca::system::Console::Wii
+        ? "Disco Wii iniciado; CPU PowerPC con JIT ARM64 parcial y fallback al intérprete."
+        : "Disco GameCube iniciado; CPU PowerPC con JIT ARM64 parcial y fallback al intérprete.";
+    return java_string(env, g_last_run_status);
 }
 
 extern "C" JNIEXPORT void JNICALL
