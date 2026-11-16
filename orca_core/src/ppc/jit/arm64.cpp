@@ -152,6 +152,10 @@ bool translate_one(u32 ins, u32 guest_pc, std::vector<u32>& out, bool& terminate
             else if(xo10==449U) out.push_back(orr_w(12,10,11));
             else if(xo10==417U) { out.push_back(mvn_w(11,11)); out.push_back(orr_w(12,10,11)); }
             else out.push_back(eor_w(12,10,11)); // crxor
+            // Inverted boolean operations produce all-ones words. CR
+            // destinations are single bits, so discard every bit but bit 0
+            // before shifting or unrelated CR fields would be overwritten.
+            out.push_back(ubfx_w(12,12,0U,1U));
             if(position!=0U) out.push_back(lsl_w(12,12,position));
             load_imm(out,13,~(u32{1}<<position));
             out.push_back(and_w(9,9,13));
