@@ -23,6 +23,10 @@
 
 ## Validación
 
+**Ejecución AArch64 bajo QEMU:** aprobada en el job `Execute generated ARM64 JIT code under QEMU`. El binario cruzado ejecutó las instrucciones AArch64 generadas (no solo el traductor): 16 tests, 102 checks, 0 failures. Esta prueba detectó y permitió corregir un error de operandos en `subfc`; la operación ahora coincide con el intérprete de referencia en la prueba diferencial.
+
+**Límite:** QEMU valida la ejecución de código máquina en una CPU AArch64 emulada. No demuestra rendimiento, temporización física ni estabilidad en el dispositivo Android real.
+
 El workflow `Orca Core M026 CI` ejecuta:
 - Configuración, compilación y CTest con GCC y Clang, `ORCA_WERROR=ON`.
 - Compilación cruzada del test JIT AArch64 y ejecución del código máquina generado bajo QEMU user-mode.
