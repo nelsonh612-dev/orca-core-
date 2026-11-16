@@ -94,6 +94,7 @@ bool WiiCommonKeyFileProvider::load_text(std::string_view text, std::string& err
         begin = end + 1U;
     }
     keys_ = parsed;
+    for (auto& entry : parsed) if (entry) wipe_key(*entry);
     error.clear();
     return true;
 }
@@ -114,7 +115,8 @@ bool derive_wii_title_key(DiscReader& raw,const WiiPartitionInfo& partition,
     const u8 index=ticket[kCommonKeyIndexOffset];
     crypto::Aes128Key common_key{};
     if(!provider.get_common_key(index,common_key)) {
-        wipe_key(common_key);\n        error="Wii ticket: no user-provided common key for slot "+std::to_string(index);
+        wipe_key(common_key);
+        error="Wii ticket: no user-provided common key for slot "+std::to_string(index);
         return false;
     }
     crypto::Aes128Iv iv{};
@@ -122,7 +124,8 @@ bool derive_wii_title_key(DiscReader& raw,const WiiPartitionInfo& partition,
     std::array<u8,16> encrypted{};
     std::copy_n(ticket.begin()+static_cast<std::ptrdiff_t>(kEncryptedTitleKeyOffset),16,encrypted.begin());
     if(!crypto::aes128_cbc_decrypt(common_key,iv,encrypted)) {
-        wipe_key(common_key);\n        error="Wii ticket: encrypted title key has invalid AES block length";
+        wipe_key(common_key);
+        error="Wii ticket: encrypted title key has invalid AES block length";
         return false;
     }
     title_key=encrypted;
