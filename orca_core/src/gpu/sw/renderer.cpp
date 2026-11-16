@@ -82,6 +82,7 @@ bool Renderer::draw(Primitive prim, std::span<const OutputVertex> v, const BpMem
                     const TevState& tev, const TexSource& tex, std::string& error) {
     bp_ = &bp; xf_ = &xf; tev_ = &tev; tex_ = &tex;
     err_.clear();
+    decoded_textures_.clear();
     const u32 fmt = bits(bp.reg(bp::ZCOMPARE), 0, 3);
     if (fmt > 3U) {
         char b[64];
@@ -914,20 +915,45 @@ bool Renderer::sample_mip(s32 s, s32 t, s32 mip, bool linear, u32 texmap, u8 out
     const TlutFormat tf = static_cast<TlutFormat>(bits(tl, 10, 2));
     if (tex_format_paletted(f) && bits(tl, 10, 2) > 2U) { err_ = "invalid TLUT format 3"; return false; }
     const u32 ws = bits(m0, 0, 2), wt = bits(m0, 2, 2);
-    std::string e;
-    const std::size_t ar_base = static_cast<std::size_t>(bits(i1, 0, 15)) * 32U;
-    const std::size_t gb_base = static_cast<std::size_t>(bits(tex_reg(bp, texmap, 4), 0, 15)) * 32U;
-    auto fetch = [&](u32 x, u32 y, u8 o[4]) {
+    // Decode each texture mip once per draw. The old per-fragment path
+    // repeated tiled-format address calculations and palette/CMPR decoding
+    // for every sampled texel. BP/TMEM/source state is stable during a draw,
+    // so this cache is safely scoped to draw() and needs no global invalidation.
+    auto cached = std::find_if(decoded_textures_.begin(), decoded_textures_.end(),
+        [&](const DecodedTexture& entry) { return entry.map == texmap && entry.mip == mip; });
+    if (cached == decoded_textures_.end()) {
+        DecodedTexture entry;
+        entry.map = texmap;
+        entry.mip = mip;
+        entry.width = width;
+        entry.height = height;
+        entry.rgba.resize(static_cast<std::size_t>(width) * height * 4U);
         if (tmem_rgba8) {
+            const std::size_t ar_base = static_cast<std::size_t>(bits(i1, 0, 15)) * 32U;
+            const std::size_t gb_base = static_cast<std::size_t>(bits(tex_reg(bp, texmap, 4), 0, 15)) * 32U;
             const std::size_t blocks_w = (static_cast<std::size_t>(wm1) >> 2) + 1U;
-            const std::size_t blk = (static_cast<std::size_t>(y >> 2) * blocks_w + (x >> 2)) << 4;
-            const std::size_t off = (blk + ((y & 3U) << 2) + (x & 3U)) << 1;
             auto rd = [&](std::size_t a) { return a < tex_->tmem.size() ? tex_->tmem[a] : u8{0}; };
-            o[3] = rd(ar_base + off); o[0] = rd(ar_base + off + 1U);
-            o[1] = rd(gb_base + off); o[2] = rd(gb_base + off + 1U);
-            return true;
+            for (u32 y = 0; y < height; ++y) for (u32 x = 0; x < width; ++x) {
+                const std::size_t blk = (static_cast<std::size_t>(y >> 2U) * blocks_w + (x >> 2U)) << 4U;
+                const std::size_t off = (blk + ((y & 3U) << 2U) + (x & 3U)) << 1U;
+                const std::size_t dst = (static_cast<std::size_t>(y) * width + x) * 4U;
+                entry.rgba[dst + 3U] = rd(ar_base + off);
+                entry.rgba[dst + 0U] = rd(ar_base + off + 1U);
+                entry.rgba[dst + 1U] = rd(gb_base + off);
+                entry.rgba[dst + 2U] = rd(gb_base + off + 1U);
+            }
+        } else if (!decode_texture(f, src, width, height, tlut, tf, entry.rgba, e)) {
+            err_ = "texture: " + e;
+            return false;
         }
-        return decode_texel(f, src, x, y, width, tlut, tf, o, e);
+        decoded_textures_.push_back(std::move(entry));
+        cached = std::prev(decoded_textures_.end());
+    }
+    auto fetch = [&](u32 x, u32 y, u8 o[4]) {
+        if (x >= cached->width || y >= cached->height) return false;
+        const std::size_t off = (static_cast<std::size_t>(y) * cached->width + x) * 4U;
+        std::memcpy(o, cached->rgba.data() + off, 4U);
+        return true;
     };
     if (linear) {
         s -= 64; t -= 64;
