@@ -131,8 +131,24 @@ bool translate_one(u32 ins, u32 guest_pc, std::vector<u32>& out, bool& terminate
         return true;
     }
 
+
     if(op==19U) {
         const unsigned xo10=(ins>>1U)&0x3FFU;
+        if(xo10==0U) { // mcrf BF,BFA
+            const unsigned bf=(ins>>23U)&7U;
+            const unsigned bfa=(ins>>18U)&7U;
+            const unsigned source_shift=28U-bfa*4U;
+            const unsigned dest_shift=28U-bf*4U;
+            out.push_back(ldr_w(9,0,static_cast<unsigned>(offsetof(CpuState,cr))));
+            out.push_back(ubfx_w(11,9,source_shift,4U));
+            if(dest_shift==0U) out.push_back(orr_w(12,11,11));
+            else out.push_back(lsl_w(12,11,dest_shift));
+            load_imm(out,13,~(0xFU<<dest_shift));
+            out.push_back(and_w(9,9,13));
+            out.push_back(orr_w(9,9,12));
+            out.push_back(str_w(9,0,static_cast<unsigned>(offsetof(CpuState,cr))));
+            return true;
+        }
         const unsigned bo=(ins>>21U)&31U;
         const unsigned bi=(ins>>16U)&31U;
         // Common function-return / indirect-call forms. More complex BO/BI
