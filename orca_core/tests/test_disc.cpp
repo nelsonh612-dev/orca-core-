@@ -307,6 +307,21 @@ TEST_CASE(di_dma_read_completes_asynchronously) {
     CHECK_EQ(t.r(0x00), 0U);
 }
 
+
+TEST_CASE(di_dma_reads_from_decrypted_partition_view) {
+    DiRig t;
+    std::vector<u8> logical(0x200000,0);
+    put32(logical,0x100000,0x57494921U);
+    disc::MemoryDisc view(std::move(logical));
+    t.di.set_read_view(&view);
+    t.read_cmd(0x4000,0x20,0x100000);
+    t.w(0x1C,3);
+    t.sched.advance_to(1);
+    u32 value=0;
+    CHECK(t.bus.read32(0x4000,value));
+    CHECK_EQ(value,0x57494921U);
+}
+
 TEST_CASE(di_interrupt_and_latency) {
     DiRig t;
     t.di.set_latency_cycles(500);
