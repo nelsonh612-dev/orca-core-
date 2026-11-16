@@ -67,7 +67,7 @@ std::optional<std::vector<FstEntry>> parse_fst_bytes(std::span<const u8> fst, u6
 }
 
 std::optional<std::vector<FstEntry>> parse_fst(DiscReader& disc, const DiscHeader& header, std::string& error) {
-    if (!header.gamecube) { error = "FST: only GameCube discs are supported"; return std::nullopt; }
+    if (!header.gamecube && !header.wii) { error = "FST: header is neither GameCube nor decrypted Wii partition"; return std::nullopt; }
     std::vector<u8> data(header.fst_size);
     if (header.fst_size == 0U || !disc.read(header.fst_offset, data)) {
         error = "FST: table is empty or outside the disc";
