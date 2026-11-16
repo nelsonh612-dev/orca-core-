@@ -101,6 +101,10 @@ endif()
 
 if(ORCA_BUILD_TESTS)
     enable_testing()
+    add_executable(orca_test_sha1 tests/test_sha1.cpp)
+    target_link_libraries(orca_test_sha1 PRIVATE orca_core)
+    add_test(NAME sha1 COMMAND orca_test_sha1)
+
     add_executable(orca_test_aes128 tests/test_aes128.cpp)
     target_link_libraries(orca_test_aes128 PRIVATE orca_core)
     add_test(NAME aes128 COMMAND orca_test_aes128)
@@ -236,7 +240,7 @@ if(ORCA_BUILD_TESTS)
     endif()
 
     # A hang (e.g. an emulated deadlock) must fail, not block the test run.
-    set_tests_properties(aes128 jit_arm64 memory cpu_integer cpu_system mmu reference fpu_engine cpu_fpu system programs disc av exi dsp_mi dsp_core gpu gpu_sw efb_copy PROPERTIES TIMEOUT 300)
+    set_tests_properties(sha1 aes128 jit_arm64 memory cpu_integer cpu_system mmu reference fpu_engine cpu_fpu system programs disc av exi dsp_mi dsp_core gpu gpu_sw efb_copy PROPERTIES TIMEOUT 300)
 
     find_program(ORCA_LLVM_MC NAMES llvm-mc llvm-mc-18 llvm-mc-17 llvm-mc-16)
     add_executable(orca_encoding_check tests/encoding_check.cpp)
