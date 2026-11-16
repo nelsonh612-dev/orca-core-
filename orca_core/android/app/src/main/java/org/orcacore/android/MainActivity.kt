@@ -2,9 +2,13 @@ package org.orcacore.android
 
 import android.app.Activity
 import android.content.Intent
+import android.media.AudioAttributes
+import android.media.AudioFormat
+import android.media.AudioTrack
 import android.net.Uri
 import android.opengl.GLSurfaceView
 import android.os.Bundle
+import android.os.Process
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.MotionEvent
@@ -30,11 +34,16 @@ class MainActivity : Activity() {
     private var cStickY = 128
     private var triggerL = 0
     private var triggerR = 0
+    @Volatile private var audioRunning = false
+    @Volatile private var audioTrack: AudioTrack? = null
+    private var audioThread: Thread? = null
 
     private external fun nativeInit(): String
     private external fun nativeLoadDisc(path: String): String
     private external fun nativeSetPadState(buttons: Int, sx: Int, sy: Int, csx: Int, csy: Int, tl: Int, tr: Int)
     private external fun nativeStatus(): String
+    private external fun nativeAudioRate(): Int
+    private external fun nativeReadAudio(buffer: ShortArray): Int
     private external fun nativeDrawFrame()
     private external fun nativeShutdown()
 
@@ -53,6 +62,105 @@ class MainActivity : Activity() {
         private const val PAD_RIGHT = 0x0002
         private const val PAD_DOWN = 0x0004
         private const val PAD_UP = 0x0008
+    }
+
+    private fun createAudioTrack(rate: Int): AudioTrack? {
+        val minBytes = AudioTrack.getMinBufferSize(
+            rate, AudioFormat.CHANNEL_OUT_STEREO, AudioFormat.ENCODING_PCM_16BIT
+        )
+        if (minBytes <= 0) return null
+        val track = AudioTrack.Builder()
+            .setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_GAME)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                    .build()
+            )
+            .setAudioFormat(
+                AudioFormat.Builder()
+                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                    .setSampleRate(rate)
+                    .setChannelMask(AudioFormat.CHANNEL_OUT_STEREO)
+                    .build()
+            )
+            .setBufferSizeInBytes(maxOf(minBytes, rate / 5 * 4))
+            .setTransferMode(AudioTrack.MODE_STREAM)
+            .build()
+        if (track.state != AudioTrack.STATE_INITIALIZED) {
+            track.release()
+            return null
+        }
+        return track
+    }
+
+    private fun startAudio() {
+        stopAudio()
+        val initialRate = nativeAudioRate()
+        val initialTrack = createAudioTrack(initialRate)
+        if (initialTrack == null) {
+            status.text = "Audio Android: no se pudo crear AudioTrack a $initialRate Hz."
+            return
+        }
+        audioTrack = initialTrack
+        audioRunning = true
+        audioThread = Thread({
+            Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
+            var track: AudioTrack = initialTrack!!
+            var activeRate = initialRate
+            val samples = ShortArray(1024)
+            try {
+                if (audioRunning) track.play()
+                while (audioRunning) {
+                    val requestedRate = nativeAudioRate()
+                    if (requestedRate != activeRate) {
+                        track.pause()
+                        track.flush()
+                        track.release()
+                        if (!audioRunning) break
+                        val replacement = createAudioTrack(requestedRate) ?: break
+                        if (!audioRunning) {
+                            replacement.release()
+                            break
+                        }
+                        track = replacement
+                        activeRate = requestedRate
+                        audioTrack = replacement
+                        track.play()
+                    }
+                    val count = nativeReadAudio(samples)
+                    var offset = 0
+                    while (offset < count && audioRunning) {
+                        val written = track.write(samples, offset, count - offset, AudioTrack.WRITE_BLOCKING)
+                        if (written <= 0) {
+                            audioRunning = false
+                            break
+                        }
+                        offset += written
+                    }
+                }
+            } catch (t: Throwable) {
+                if (audioRunning) runOnUiThread { status.text = "Audio Android detenido: ${t.message}" }
+            } finally {
+                try { track.stop() } catch (_: Throwable) { }
+                try { track.release() } catch (_: Throwable) { }
+                if (audioTrack === track) audioTrack = null
+            }
+        }, "OrcaCore-Audio").apply {
+            isDaemon = true
+            start()
+        }
+    }
+
+    private fun stopAudio() {
+        audioRunning = false
+        try { audioTrack?.stop() } catch (_: Throwable) { }
+        try { audioThread?.join(1000) } catch (_: InterruptedException) { Thread.currentThread().interrupt() }
+        if (audioThread?.isAlive == true) {
+            try { audioTrack?.release() } catch (_: Throwable) { }
+            try { audioThread?.join(250) } catch (_: InterruptedException) { Thread.currentThread().interrupt() }
+        }
+        audioThread = null
+        audioTrack = null
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -96,7 +204,10 @@ class MainActivity : Activity() {
             setRenderer(object : GLSurfaceView.Renderer {
                 override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
                     val result = try { nativeInit() } catch (t: Throwable) { "Error GLES: ${t.message}" }
-                    runOnUiThread { status.text = result }
+                    runOnUiThread {
+                        status.text = result
+                        if (result.startsWith("Disco GameCube cargado.")) startAudio()
+                    }
                 }
                 override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) {
                     android.opengl.GLES20.glViewport(0, 0, width, height)
@@ -219,6 +330,7 @@ class MainActivity : Activity() {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode != OPEN_DISC_REQUEST || resultCode != RESULT_OK) return
         val uri: Uri = data?.data ?: return
+        stopAudio()
         status.text = "Copiando imagen al almacenamiento privado…"
         Thread {
             try {
@@ -240,6 +352,7 @@ class MainActivity : Activity() {
 
     override fun onResume() { super.onResume(); glView.onResume() }
     override fun onPause() {
+        stopAudio()
         glView.queueEvent { nativeShutdown() }
         glView.onPause()
         super.onPause()
