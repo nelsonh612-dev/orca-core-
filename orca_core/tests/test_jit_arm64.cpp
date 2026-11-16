@@ -667,3 +667,34 @@ TEST_CASE(jit_arm64_dispatcher_matches_interpreter_for_dform_byte_halfword_and_u
     CHECK_EQ(candidate.r16(0x2008U),0x1234U);
     CHECK_EQ(candidate.r32(0x2008U),0x1234FE78U);
 }
+
+
+TEST_CASE(jit_dispatcher_preserves_interpreter_semantics_for_invalid_update_load_forms) {
+    // lwzu rejects RA=0 and RA=RT. The native prefix may execute, but the
+    // unsupported memory instruction must stop at its own PC without
+    // modifying GPRs or being counted as retired.
+    for (const u32 invalid_load : {A::lwzu(4U, 4, 0U), A::lwzu(4U, 4, 4U)}) {
+        Machine reference;
+        Machine candidate;
+        const std::array<u32, 2> code{
+            A::addi(4U, 0U, 0x2000),
+            invalid_load
+        };
+        reference.code(0x1000U, {code[0], code[1]});
+        candidate.code(0x1000U, {code[0], code[1]});
+        reference.s().gpr[4] = 0xAABBCCDDU;
+        candidate.s().gpr[4] = 0xAABBCCDDU;
+
+        const StepResult expected = reference.cpu->run(2U);
+        u64 completed = 0;
+        const StepResult actual = candidate.cpu->run_jit(2U, &completed);
+
+        CHECK(expected == StepResult::InvalidForm);
+        CHECK(actual == expected);
+        CHECK_EQ(completed, 1U);
+        CHECK(candidate.s() == reference.s());
+        CHECK_EQ(candidate.cpu->instructions_retired(),
+                 reference.cpu->instructions_retired());
+        CHECK_EQ(candidate.s().pc, 0x1004U);
+    }
+}
