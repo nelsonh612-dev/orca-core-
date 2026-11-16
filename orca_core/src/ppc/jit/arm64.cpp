@@ -406,8 +406,8 @@ bool translate_one(u32 ins, u32 guest_pc, std::vector<u32>& out, bool& terminate
 
 Block compile_arm64(std::span<const u32> words, u32 start_pc) {
     Block b; b.start_pc = start_pc; b.end_pc = start_pc;
-    // Bound blocks to a single 4 KiB guest code page; no control flow or
-    // memory operations are crossed in this initial translator.
+    // Bound blocks to a single 4 KiB guest code page and terminate at every
+    // translated control-flow instruction; unsupported memory ops fall back.
     if ((start_pc & 3U) != 0U) return b;
     bool terminated=false;
     for (u32 ins : words) {
