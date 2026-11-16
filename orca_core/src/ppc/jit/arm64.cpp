@@ -25,6 +25,8 @@ constexpr u32 mul_w(unsigned rd, unsigned rn, unsigned rm) { return 0x1B007C00U 
 constexpr u32 adds_w(unsigned rd, unsigned rn, unsigned rm) { return 0x2B000000U | (rm << 16U) | (rn << 5U) | rd; }
 constexpr u32 sub_w(unsigned rd,unsigned rn,unsigned rm) { return 0x4B000000U | (rm << 16U) | (rn << 5U) | rd; }
 constexpr u32 rorv_w(unsigned rd,unsigned rn,unsigned rm) { return 0x1AC02C00U | (rm << 16U) | (rn << 5U) | rd; }
+constexpr u32 lslv_w(unsigned rd,unsigned rn,unsigned rm) { return 0x1AC02000U | (rm << 16U) | (rn << 5U) | rd; }
+constexpr u32 lsrv_w(unsigned rd,unsigned rn,unsigned rm) { return 0x1AC02400U | (rm << 16U) | (rn << 5U) | rd; }
 constexpr u32 mvn_w(unsigned rd, unsigned rm) { return 0x2A2003E0U | (rm << 16U) | rd; }
 constexpr u32 subs_w(unsigned rd, unsigned rn, unsigned rm) { return 0x6B000000U | (rm << 16U) | (rn << 5U) | rd; }
 constexpr u32 mrs_nzcv_x(unsigned rt) { return 0xD53B4200U | rt; }
@@ -390,6 +392,19 @@ bool translate_one(u32 ins, u32 guest_pc, std::vector<u32>& out, bool& terminate
         const unsigned xo10=(ins>>1U)&0x3FFU;
         const bool rc=(ins&1U)!=0U;
 
+
+        if(xo10==24U || xo10==536U) { // slw / srw
+            out.push_back(ldr_w(9,0,static_cast<unsigned>(offsetof(CpuState,gpr)+rt*4U)));
+            out.push_back(ldr_w(10,0,static_cast<unsigned>(offsetof(CpuState,gpr)+rb*4U)));
+            out.push_back(xo10==24U ? lslv_w(11,9,10) : lsrv_w(11,9,10));
+            out.push_back(ubfx_w(12,10,5U,1U)); // PPC treats shifts >=32 as zero
+            out.push_back(cmp_zero_w(12));
+            load_imm(out,13,0U);
+            out.push_back(csel_w(11,11,13,0U)); // EQ: variable shift, NE: zero
+            out.push_back(str_w(11,0,static_cast<unsigned>(offsetof(CpuState,gpr)+ra*4U)));
+            if(rc) emit_cr0(out,11);
+            return true;
+        }
         if(xo10==824U) { // srawi: arithmetic shift with XER[CA] update
             const unsigned shift=rb&31U;
             out.push_back(ldr_w(9,0,static_cast<unsigned>(offsetof(CpuState,gpr)+rt*4U)));
