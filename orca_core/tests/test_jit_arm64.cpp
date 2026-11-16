@@ -206,6 +206,12 @@ TEST_CASE(jit_arm64_differential_integer_state_matches_reference_interpreter) {
     const Block block = compile_arm64(code, 0x1000);
     CHECK_EQ(block.guest_instructions, code.size());
     CHECK(execute_arm64(block, actual));
+    for (unsigned i = 0; i < actual.gpr.size(); ++i) CHECK_EQ(actual.gpr[i], expected.gpr[i]);
+    CHECK_EQ(actual.pc, expected.pc);
+    CHECK_EQ(actual.cr, expected.cr);
+    CHECK_EQ(actual.xer, expected.xer);
+    CHECK_EQ(actual.lr, expected.lr);
+    CHECK_EQ(actual.ctr, expected.ctr);
     CHECK(actual == expected);
 }
 #endif
