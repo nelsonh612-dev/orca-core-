@@ -134,6 +134,31 @@ bool translate_one(u32 ins, u32 guest_pc, std::vector<u32>& out, bool& terminate
 
     if(op==19U) {
         const unsigned xo10=(ins>>1U)&0x3FFU;
+
+        if(xo10==257U || xo10==129U || xo10==289U || xo10==225U ||
+           xo10==33U || xo10==449U || xo10==417U || xo10==193U) {
+            const unsigned bt=(ins>>21U)&31U;
+            const unsigned ba=(ins>>16U)&31U;
+            const unsigned bb=(ins>>11U)&31U;
+            const unsigned position=31U-bt;
+            out.push_back(ldr_w(9,0,static_cast<unsigned>(offsetof(CpuState,cr))));
+            out.push_back(ubfx_w(10,9,31U-ba,1U));
+            out.push_back(ubfx_w(11,9,31U-bb,1U));
+            if(xo10==257U) out.push_back(and_w(12,10,11)); // crand
+            else if(xo10==129U) { out.push_back(mvn_w(11,11)); out.push_back(and_w(12,10,11)); }
+            else if(xo10==289U) { out.push_back(eor_w(12,10,11)); out.push_back(mvn_w(12,12)); }
+            else if(xo10==225U) { out.push_back(and_w(12,10,11)); out.push_back(mvn_w(12,12)); }
+            else if(xo10==33U) { out.push_back(orr_w(12,10,11)); out.push_back(mvn_w(12,12)); }
+            else if(xo10==449U) out.push_back(orr_w(12,10,11));
+            else if(xo10==417U) { out.push_back(mvn_w(11,11)); out.push_back(orr_w(12,10,11)); }
+            else out.push_back(eor_w(12,10,11)); // crxor
+            if(position!=0U) out.push_back(lsl_w(12,12,position));
+            load_imm(out,13,~(u32{1}<<position));
+            out.push_back(and_w(9,9,13));
+            out.push_back(orr_w(9,9,12));
+            out.push_back(str_w(9,0,static_cast<unsigned>(offsetof(CpuState,cr))));
+            return true;
+        }
         if(xo10==0U) { // mcrf BF,BFA: copy one CR nibble without disturbing others
             const unsigned bf=(ins>>23U)&7U;
             const unsigned bfa=(ins>>18U)&7U;
