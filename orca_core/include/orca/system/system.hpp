@@ -10,6 +10,8 @@
 #pragma once
 #include "orca/core/scheduler.hpp"
 #include "orca/disc/disc_image.hpp"
+#include "orca/disc/wii_partition_reader.hpp"
+#include "orca/disc/wii_ticket.hpp"
 #include "orca/hw/audio_interface.hpp"
 #include "orca/hw/disc_interface.hpp"
 #include "orca/hw/serial_interface.hpp"
@@ -95,7 +97,9 @@ public:
     hw::MemoryCard* memory_card(unsigned slot) noexcept { return slot < 2U ? cards_[slot].get() : nullptr; }
     // Called at every VI field start (top = false / bottom = true), after the SI hook.
     void set_field_listener(std::function<void(bool)> f) { field_listener_ = std::move(f); }
-    void insert_disc(std::unique_ptr<disc::DiscReader> d) { di_->insert(std::move(d)); }
+    void insert_disc(std::unique_ptr<disc::DiscReader> d) { wii_partition_.reset(); di_->insert(std::move(d)); }
+    // Non-owning provider for keys supplied by the user; required to boot encrypted Wii discs.
+    void set_wii_common_key_provider(disc::WiiCommonKeyProvider* provider) noexcept { wii_key_provider_ = provider; }
     const SystemConfig& config() const noexcept { return config_; }
     const Clocks& clocks() const noexcept { return clocks_; }
 
@@ -157,6 +161,8 @@ private:
     std::unique_ptr<hw::CommandProcessor> cp_;
     std::unique_ptr<hw::MmioSplitter> page_0c006_;
     std::unique_ptr<hw::DiscInterface> di_;
+    std::unique_ptr<disc::WiiPartitionReader> wii_partition_;
+    disc::WiiCommonKeyProvider* wii_key_provider_{nullptr};
     std::unique_ptr<hw::VideoInterface> vi_;
     std::unique_ptr<hw::SerialInterface> si_;
     std::shared_ptr<hw::StandardController> controller_;
