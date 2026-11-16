@@ -3,7 +3,6 @@
 #include "ppc_asm.hpp"
 #include "test_framework.hpp"
 #include <array>
-#include <cstdio>
 #include <vector>
 using namespace orca;
 using namespace orca::ppc;
@@ -345,7 +344,6 @@ TEST_CASE(jit_arm64_executes_sraw_variable_shift_and_xer_carry) {
     reference.s().gpr[14]=0U; candidate.s().gpr[14]=0U;
     CHECK(reference.cpu->run(4U)==StepResult::Executed);
     CHECK(candidate.cpu->run_jit(4U)==StepResult::Executed);
-    std::printf("SRAW ref r3=%08X r6=%08X r9=%08X r12=%08X xer=%08X cr=%08X; jit r3=%08X r6=%08X r9=%08X r12=%08X xer=%08X cr=%08X\\n", reference.s().gpr[3],reference.s().gpr[6],reference.s().gpr[9],reference.s().gpr[12],reference.s().xer,reference.s().cr,candidate.s().gpr[3],candidate.s().gpr[6],candidate.s().gpr[9],candidate.s().gpr[12],candidate.s().xer,candidate.s().cr);
     CHECK(candidate.s()==reference.s());
     CHECK_EQ(candidate.s().gpr[3],0xFFFFFFFEU);
     CHECK_EQ(candidate.s().gpr[6],1U);
