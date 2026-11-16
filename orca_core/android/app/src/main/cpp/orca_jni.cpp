@@ -44,6 +44,7 @@ std::array<std::int16_t, kAudioRingSamples> g_audio_ring{};
 std::atomic<std::uint32_t> g_audio_head{0};
 std::atomic<std::uint32_t> g_audio_tail{0};
 std::atomic<std::uint64_t> g_audio_dropped{0};
+std::atomic<jint> g_audio_rate{48000};
 
 void reset_audio_ring() noexcept {
     g_audio_head.store(0, std::memory_order_relaxed);
@@ -201,6 +202,7 @@ void draw_frame() {
             budget = g_system->vi().cycles_per_line() * half_lines / 2U;
         }
         const auto result = g_system->run(budget);
+        g_audio_rate.store(g_system->ai().dma_rate_32khz() ? 32000 : 48000, std::memory_order_release);
         if (result.device_stop) g_last_run_status = "Dispositivo detenido: " + result.device_error;
         else if (result.stop != orca::ppc::StepResult::Executed && result.stop != orca::ppc::StepResult::Idle)
             g_last_run_status = std::string("CPU detenido en ") + orca::ppc::to_string(result.stop) +
@@ -285,6 +287,7 @@ Java_org_orcacore_android_MainActivity_nativeLoadDisc(JNIEnv* env, jobject, jstr
     reset_audio_ring();
     candidate->dsp().set_audio_sink([](std::span<const orca::u8> block) { enqueue_audio_pcm16be(block); });
     g_system = std::move(candidate);
+    g_audio_rate.store(g_system->ai().dma_rate_32khz() ? 32000 : 48000, std::memory_order_release);
     g_rgba.clear();
     g_frame_width = g_frame_height = 0;
     g_frame_dirty = false;
@@ -309,8 +312,7 @@ Java_org_orcacore_android_MainActivity_nativeSetPadState(JNIEnv*, jobject, jint 
 
 extern "C" JNIEXPORT jint JNICALL
 Java_org_orcacore_android_MainActivity_nativeAudioRate(JNIEnv*, jobject) {
-    if (!g_system) return 48000;
-    return g_system->ai().dma_rate_32khz() ? 32000 : 48000;
+    return g_audio_rate.load(std::memory_order_acquire);
 }
 
 extern "C" JNIEXPORT jint JNICALL
@@ -349,6 +351,7 @@ extern "C" JNIEXPORT void JNICALL
 Java_org_orcacore_android_MainActivity_nativeShutdown(JNIEnv*, jobject) {
     g_system.reset();
     reset_audio_ring();
+    g_audio_rate.store(48000, std::memory_order_release);
     g_backend.reset();
     g_rgba.clear();
     g_frame_dirty = false;
