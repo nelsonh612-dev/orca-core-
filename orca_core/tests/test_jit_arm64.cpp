@@ -698,3 +698,28 @@ TEST_CASE(jit_dispatcher_preserves_interpreter_semantics_for_invalid_update_load
         CHECK_EQ(candidate.s().pc, 0x1004U);
     }
 }
+
+
+TEST_CASE(jit_dispatcher_fallback_preserves_unmapped_load_fault_and_retirement) {
+    Machine reference;
+    Machine candidate;
+    const std::array<u32, 2> code{
+        A::addis(4U, 0U, 0x0C00),
+        A::lwz(3U, 0, 4U)
+    };
+    reference.code(0x1000U, {code[0], code[1]});
+    candidate.code(0x1000U, {code[0], code[1]});
+
+    const StepResult expected = reference.cpu->run(code.size());
+    u64 completed = 0;
+    const StepResult actual = candidate.cpu->run_jit(code.size(), &completed);
+
+    CHECK(expected == StepResult::MemoryFault);
+    CHECK(actual == expected);
+    CHECK_EQ(completed, 1U);
+    CHECK(candidate.s() == reference.s());
+    CHECK_EQ(candidate.s().pc, 0x1004U);
+    CHECK_EQ(candidate.cpu->instructions_retired(),
+             reference.cpu->instructions_retired());
+    CHECK_EQ(candidate.cpu->last_stop().address, 0x0C000000U);
+}
