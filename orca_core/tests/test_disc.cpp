@@ -1,6 +1,7 @@
 // Disc images, MMIO page splitter, Disc Interface, and HLE disc boot through a
 // real apploader (compiled with clang) on synthetic GameCube discs.
 #include "orca/disc/disc_image.hpp"
+#include "orca/disc/fst.hpp"
 #include "orca/disc/wii_partition.hpp"
 #include "orca/hw/disc_interface.hpp"
 #include "orca/hw/mmio_splitter.hpp"
