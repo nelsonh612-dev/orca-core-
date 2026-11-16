@@ -311,6 +311,22 @@ TEST_CASE(jit_arm64_executes_slw_srw_and_zeroes_shift_counts_at_least_32) {
 
 
 
+
+TEST_CASE(jit_arm64_executes_mcrxr_and_clears_xer_status_nibble) {
+    Machine reference;
+    Machine candidate;
+    const std::array<u32,1> code{A::mcrxr(5U)};
+    reference.code(0x1000U,{code[0]});
+    candidate.code(0x1000U,{code[0]});
+    reference.s().cr=0xABCDEF01U; candidate.s().cr=0xABCDEF01U;
+    reference.s().xer=0xE1234567U; candidate.s().xer=0xE1234567U;
+    CHECK(reference.cpu->run(1U)==StepResult::Executed);
+    CHECK(candidate.cpu->run_jit(1U)==StepResult::Executed);
+    CHECK(candidate.s()==reference.s());
+    CHECK_EQ(candidate.s().cr,0xABCDEE01U);
+    CHECK_EQ(candidate.s().xer,0x01234567U);
+}
+
 TEST_CASE(jit_arm64_executes_mfcr_and_masked_mtcrf) {
     Machine reference;
     Machine candidate;
