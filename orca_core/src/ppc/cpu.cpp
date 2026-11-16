@@ -202,7 +202,8 @@ StepResult Cpu::run_jit(u64 budget, u64* completed, const u32* stop_pc) {
     }
     return StepResult::Executed;
 #else
-    for (u64 done = 0; done < budget;) {
+    u64 done = 0;
+    for (; done < budget;) {
         if (stop_pc != nullptr && state_.pc == *stop_pc) {
             if (completed != nullptr) *completed = done;
             return StepResult::Executed;
