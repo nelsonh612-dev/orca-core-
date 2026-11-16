@@ -313,6 +313,24 @@ TEST_CASE(jit_arm64_executes_slw_srw_and_zeroes_shift_counts_at_least_32) {
 
 
 
+
+TEST_CASE(jit_arm64_executes_all_cr_logical_boolean_operations) {
+    Machine reference;
+    Machine candidate;
+    const std::array<u32,8> code{
+        A::crand(0U,1U,2U), A::crandc(3U,4U,5U),
+        A::creqv(6U,7U,8U), A::crnand(9U,10U,11U),
+        A::crnor(12U,13U,14U), A::cror(15U,16U,17U),
+        A::crorc(18U,19U,20U), A::crxor(21U,22U,23U)
+    };
+    reference.code(0x1000U,{code[0],code[1],code[2],code[3],code[4],code[5],code[6],code[7]});
+    candidate.code(0x1000U,{code[0],code[1],code[2],code[3],code[4],code[5],code[6],code[7]});
+    reference.s().cr=0xA5C3F00FU; candidate.s().cr=0xA5C3F00FU;
+    CHECK(reference.cpu->run(8U)==StepResult::Executed);
+    CHECK(candidate.cpu->run_jit(8U)==StepResult::Executed);
+    CHECK(candidate.s()==reference.s());
+}
+
 TEST_CASE(jit_arm64_executes_mcrf_copy_between_cr_fields) {
     Machine reference;
     Machine candidate;
