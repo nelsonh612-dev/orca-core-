@@ -38,4 +38,8 @@ struct WiiPartitionTable {
 // to the start of the containing partition.
 std::optional<WiiPartitionTable> parse_wii_partition_table(DiscReader& disc, std::string& error);
 
+// Parses the ordinary disc header embedded at offset 0 of a decrypted Wii
+// partition. Wii DOL/FST offsets in this header are stored in 4-byte words.
+std::optional<DiscHeader> parse_wii_partition_header(DiscReader& partition, std::string& error);
+
 } // namespace orca::disc
