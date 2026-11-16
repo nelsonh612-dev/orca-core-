@@ -345,7 +345,7 @@ class MainActivity : Activity() {
                 pendingDiscUri = uri
                 val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
                     addCategory(Intent.CATEGORY_OPENABLE)
-                    type = "text/*"
+                    type = "*/*"
                 }
                 status.text = "Selecciona tu archivo de claves Wii (claves propias)."
                 startActivityForResult(intent, OPEN_KEYS_REQUEST)
