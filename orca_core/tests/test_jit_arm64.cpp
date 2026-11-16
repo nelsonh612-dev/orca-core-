@@ -214,6 +214,34 @@ TEST_CASE(jit_arm64_executes_conditional_branch_on_cr_bit) {
     CHECK_EQ(not_taken.pc,0x1004U);
 }
 
+
+TEST_CASE(jit_arm64_executes_common_bclr_and_bcctr_forms) {
+    const std::array<u32,1> bclr_code{A::bclr(20U,0U)};
+    const Block bclr_block=compile_arm64(bclr_code,0x1000U);
+    CpuState link_state{};
+    link_state.pc=0x1000U;
+    link_state.lr=0x2003U;
+    CHECK(execute_arm64(bclr_block,link_state));
+    CHECK_EQ(link_state.pc,0x2000U);
+
+    const std::array<u32,1> bcctr_code{A::bcctr(20U,0U)};
+    const Block bcctr_block=compile_arm64(bcctr_code,0x1000U);
+    CpuState ctr_state{};
+    ctr_state.pc=0x1000U;
+    ctr_state.ctr=0x3003U;
+    CHECK(execute_arm64(bcctr_block,ctr_state));
+    CHECK_EQ(ctr_state.pc,0x3000U);
+
+    const std::array<u32,1> link_code{A::bclr(20U,0U,true)};
+    const Block link_block=compile_arm64(link_code,0x1000U);
+    CpuState link_and_return{};
+    link_and_return.pc=0x1000U;
+    link_and_return.lr=0x4000U;
+    CHECK(execute_arm64(link_block,link_and_return));
+    CHECK_EQ(link_and_return.pc,0x4000U);
+    CHECK_EQ(link_and_return.lr,0x1004U);
+}
+
 TEST_CASE(jit_arm64_executes_conditional_branch_with_ctr_decrement) {
     const std::array<u32,1> code{A::bc(16U,0U,8)};
     const Block block=compile_arm64(code,0x1000U);
