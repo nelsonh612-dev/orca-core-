@@ -39,6 +39,9 @@ constexpr u32 bic_w(unsigned rd, unsigned rn, unsigned rm) {
     return 0x0A200000U | (rm << 16U) | (rn << 5U) | rd;
 }
 constexpr u32 cmp_zero_w(unsigned rn) { return 0x7100001FU | (rn << 5U); }
+constexpr u32 sxtb_w(unsigned rd,unsigned rn) { return 0x13001C00U | (rn << 5U) | rd; }
+constexpr u32 sxth_w(unsigned rd,unsigned rn) { return 0x13003C00U | (rn << 5U) | rd; }
+constexpr u32 clz_w(unsigned rd,unsigned rn) { return 0x5AC01000U | (rn << 5U) | rd; }
 constexpr u32 csel_w(unsigned rd,unsigned rn,unsigned rm,unsigned condition) {
     return 0x1A800000U | (rm << 16U) | (condition << 12U) | (rn << 5U) | rd;
 }
@@ -323,6 +326,35 @@ bool translate_one(u32 ins, u32 guest_pc, std::vector<u32>& out, bool& terminate
                 out.push_back(orr_w(9, 9, 12));
                 out.push_back(str_w(9, 0, static_cast<unsigned>(offsetof(CpuState, cr))));
             }
+            return true;
+        }
+    }
+
+    if(op==31U) {
+        const unsigned xo10=(ins>>1U)&0x3FFU;
+        const bool rc=(ins&1U)!=0U;
+        if(xo10==954U || xo10==922U || xo10==26U) { // extsb/extsh/cntlzw
+            out.push_back(ldr_w(9,0,static_cast<unsigned>(offsetof(CpuState,gpr)+rt*4U)));
+            if(xo10==954U) out.push_back(sxtb_w(11,9));
+            else if(xo10==922U) out.push_back(sxth_w(11,9));
+            else out.push_back(clz_w(11,9));
+            out.push_back(str_w(11,0,static_cast<unsigned>(offsetof(CpuState,gpr)+ra*4U)));
+            if(rc) emit_cr0(out,11);
+            return true;
+        }
+        if(xo10==28U || xo10==444U || xo10==316U || xo10==60U ||
+           xo10==476U || xo10==124U || xo10==284U) {
+            out.push_back(ldr_w(9,0,static_cast<unsigned>(offsetof(CpuState,gpr)+rt*4U)));
+            out.push_back(ldr_w(10,0,static_cast<unsigned>(offsetof(CpuState,gpr)+rb*4U)));
+            if(xo10==28U) out.push_back(and_w(11,9,10));
+            else if(xo10==444U) out.push_back(orr_w(11,9,10));
+            else if(xo10==316U) out.push_back(eor_w(11,9,10));
+            else if(xo10==60U) { out.push_back(mvn_w(10,10)); out.push_back(and_w(11,9,10)); }
+            else if(xo10==476U) { out.push_back(and_w(11,9,10)); out.push_back(mvn_w(11,11)); }
+            else if(xo10==124U) { out.push_back(orr_w(11,9,10)); out.push_back(mvn_w(11,11)); }
+            else { out.push_back(eor_w(11,9,10)); out.push_back(mvn_w(11,11)); }
+            out.push_back(str_w(11,0,static_cast<unsigned>(offsetof(CpuState,gpr)+ra*4U)));
+            if(rc) emit_cr0(out,11);
             return true;
         }
     }
