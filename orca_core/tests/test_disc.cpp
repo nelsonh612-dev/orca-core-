@@ -3,6 +3,7 @@
 #include "orca/disc/disc_image.hpp"
 #include "orca/disc/fst.hpp"
 #include "orca/disc/wii_partition.hpp"
+#include "orca/disc/wii_ticket.hpp"
 #include "orca/hw/disc_interface.hpp"
 #include "orca/hw/mmio_splitter.hpp"
 #include "orca/system/system.hpp"
@@ -148,6 +149,37 @@ TEST_CASE(wii_decrypted_partition_header_and_fst) {
         CHECK((*fst)[0].directory);
         CHECK((*fst)[0].path=="/");
     }
+}
+
+
+TEST_CASE(wii_ticket_derives_title_key_with_external_common_key) {
+    class TestKeys final : public disc::WiiCommonKeyProvider {
+    public:
+        bool get_common_key(u8 index,crypto::Aes128Key& key) override {
+            if(index!=0U) return false;
+            key={0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x07,
+                 0x08,0x09,0x0A,0x0B,0x0C,0x0D,0x0E,0x0F};
+            return true;
+        }
+    } provider;
+    std::vector<u8> image(0x1000,0);
+    const std::array<u8,16> encrypted={
+        0x69,0xC4,0xE0,0xD8,0x6A,0x7B,0x04,0x30,
+        0xD8,0xCD,0xB7,0x80,0x70,0xB4,0xC5,0x5A
+    };
+    std::copy(encrypted.begin(),encrypted.end(),image.begin()+0x100+0x1BF);
+    image[0x100+0x1F1]=0;
+    disc::MemoryDisc raw(std::move(image));
+    disc::WiiPartitionInfo part;
+    part.offset=0x100;
+    crypto::Aes128Key title{};
+    std::string error;
+    CHECK(disc::derive_wii_title_key(raw,part,provider,title,error));
+    const crypto::Aes128Key expected={
+        0x00,0x11,0x22,0x33,0x44,0x55,0x66,0x77,
+        0x88,0x99,0xAA,0xBB,0xCC,0xDD,0xEE,0xFF
+    };
+    CHECK(title==expected);
 }
 
 TEST_CASE(wii_partition_table_rejects_corrupt_ranges) {
