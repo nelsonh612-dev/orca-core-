@@ -97,7 +97,7 @@ public:
     hw::MemoryCard* memory_card(unsigned slot) noexcept { return slot < 2U ? cards_[slot].get() : nullptr; }
     // Called at every VI field start (top = false / bottom = true), after the SI hook.
     void set_field_listener(std::function<void(bool)> f) { field_listener_ = std::move(f); }
-    void insert_disc(std::unique_ptr<disc::DiscReader> d) { wii_partition_.reset(); di_->insert(std::move(d)); }
+    void insert_disc(std::unique_ptr<disc::DiscReader> d) { di_->set_read_view(nullptr); wii_partition_.reset(); di_->insert(std::move(d)); }
     // Non-owning provider for keys supplied by the user; required to boot encrypted Wii discs.
     void set_wii_common_key_provider(disc::WiiCommonKeyProvider* provider) noexcept { wii_key_provider_ = provider; }
     const SystemConfig& config() const noexcept { return config_; }
