@@ -28,6 +28,8 @@ std::uint32_t g_blit_alloc_height = 0;
 GLuint g_blit_program = 0;
 GLuint g_blit_texture = 0;
 GLuint g_blit_vbo = 0;
+GLuint g_blit_vao = 0;
+GLint g_blit_u_frame = -1;
 constexpr GLfloat kBlitVertices[] = {
     -1.f,-1.f, 0.f,1.f,  1.f,-1.f, 1.f,1.f,
     -1.f, 1.f, 0.f,0.f,  1.f, 1.f, 1.f,0.f
@@ -120,9 +122,18 @@ void main(){ outColor=texture(uFrame,vUv); }
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    g_blit_u_frame = glGetUniformLocation(g_blit_program, "uFrame");
+    if (g_blit_u_frame < 0) { error = "uFrame uniform not found"; return false; }
+    glGenVertexArrays(1, &g_blit_vao);
+    glBindVertexArray(g_blit_vao);
     glGenBuffers(1, &g_blit_vbo);
     glBindBuffer(GL_ARRAY_BUFFER, g_blit_vbo);
     glBufferData(GL_ARRAY_BUFFER, sizeof(kBlitVertices), kBlitVertices, GL_STATIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(GLfloat), nullptr);
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(GLfloat), reinterpret_cast<void*>(2 * sizeof(GLfloat)));
+    glBindVertexArray(0);
     return glGetError() == GL_NO_ERROR;
 }
 
@@ -166,7 +177,6 @@ void draw_frame() {
     glUseProgram(g_blit_program);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, g_blit_texture);
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
     if (g_frame_dirty) {
         // Allocate texture storage only when the VI changes XFB dimensions;
         // ordinary frames update the existing allocation in place.
@@ -180,13 +190,9 @@ void draw_frame() {
                         static_cast<GLsizei>(g_frame_height), GL_RGBA, GL_UNSIGNED_BYTE, g_rgba.data());
         g_frame_dirty = false;
     }
-    glUniform1i(glGetUniformLocation(g_blit_program, "uFrame"), 0);
-    // Static triangle-strip data is uploaded once in init_blitter().
-    glBindBuffer(GL_ARRAY_BUFFER, g_blit_vbo);
-    glEnableVertexAttribArray(0);
-    glEnableVertexAttribArray(1);
-    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(GLfloat), nullptr);
-    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(GLfloat), reinterpret_cast<void*>(2 * sizeof(GLfloat)));
+    glUniform1i(g_blit_u_frame, 0);
+    // Dedicated VAO isolates the blitter from the EFB backend's vertex state.
+    glBindVertexArray(g_blit_vao);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 }
 } // namespace
@@ -285,8 +291,10 @@ Java_org_orcacore_android_MainActivity_nativeShutdown(JNIEnv*, jobject) {
     g_backend_attached = false;
     if (g_blit_texture) glDeleteTextures(1, &g_blit_texture);
     if (g_blit_vbo) glDeleteBuffers(1, &g_blit_vbo);
+    if (g_blit_vao) glDeleteVertexArrays(1, &g_blit_vao);
     if (g_blit_program) glDeleteProgram(g_blit_program);
-    g_blit_texture = g_blit_vbo = g_blit_program = 0;
+    g_blit_texture = g_blit_vbo = g_blit_vao = g_blit_program = 0;
+    g_blit_u_frame = -1;
     g_blit_alloc_width = g_blit_alloc_height = 0;
     std::vector<orca::u8>().swap(g_yuv_scratch);
     std::vector<orca::u8>().swap(g_rgba_scratch);

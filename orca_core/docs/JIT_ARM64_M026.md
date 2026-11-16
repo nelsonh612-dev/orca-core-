@@ -2,7 +2,7 @@
 
 ## Cambios
 
-- El presentador XFB reutiliza los buffers YUV/RGBA entre campos, conserva la asignación de la textura de salida cuando la resolución no cambia y carga el VBO de pantalla una sola vez. Esto elimina asignaciones y transferencias de almacenamiento innecesarias por fotograma.
+- El presentador XFB reutiliza los buffers YUV/RGBA entre campos, conserva la asignación de la textura de salida cuando la resolución no cambia, carga el VBO una sola vez y usa un VAO dedicado con la ubicación del uniform cacheada. Así evita asignaciones, realocaciones de textura, consultas de uniform y configuración de atributos repetidas por fotograma.
 - El diagnóstico Android distingue el caso de `GL_ARM_shader_framebuffer_fetch` sin `GL_EXT_shader_framebuffer_fetch`: el backend EFB actual no es compatible con esa variante ARM porque depende de dos salidas enteras con fetch EXT.
 
 - `System::run()` usa `Cpu::run_jit()` en compilaciones AArch64; las compilaciones de escritorio no AArch64 conservan el bucle de referencia paso a paso.
