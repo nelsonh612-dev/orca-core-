@@ -161,12 +161,33 @@ bool Renderer::triangle(const Vtx& a, const Vtx& b, const Vtx& c) {
         }
         return true;
     }
-    std::vector<Vtx> V = {a, back ? c : b, back ? b : c};
-    std::vector<int> idx = {0, 1, 2};
+    // Triangle clipping is on the hot path: retain per-thread scratch
+    // capacity instead of allocating four small vectors for every primitive.
+    // The renderer is re-entrant only across threads; each thread owns its
+    // scratch buffers, and every draw starts by clearing them.
+    thread_local std::vector<Vtx> V;
+    thread_local std::vector<int> idx;
+    thread_local std::vector<int> clip_in;
+    thread_local std::vector<int> clip_out;
+    V.clear();
+    idx.clear();
+    clip_in.clear();
+    clip_out.clear();
+    V.reserve(12U);
+    idx.reserve(24U);
+    clip_in.reserve(12U);
+    clip_out.reserve(12U);
+    V.push_back(a);
+    V.push_back(back ? c : b);
+    V.push_back(back ? b : c);
+    idx = {0, 1, 2};
     const bool skip_clip = (xf.word(xf::CLIP_DISABLE) & 1U) != 0U && V[0].clip[3] >= 0 && V[1].clip[3] >= 0 && V[2].clip[3] >= 0;
     const int m = mask(V[0]) | mask(V[1]) | mask(V[2]);
     if (!skip_clip && m != 0) {
-        std::vector<int> in = {0, 1, 2}, out;
+        clip_in = {0, 1, 2};
+        clip_out.clear();
+        auto& in = clip_in;
+        auto& out = clip_out;
         auto lerp = [&](float t, int o, int i) {
             const Vtx& A = V[static_cast<std::size_t>(o)];
             const Vtx& B = V[static_cast<std::size_t>(i)];
