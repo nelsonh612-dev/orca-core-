@@ -68,7 +68,7 @@ bool WiiCommonKeyFileProvider::load_text(std::string_view text, std::string& err
             key_text = trim(key_text);
             unsigned index = 0;
             for (char ch : index_text) {
-                if (ch < '0' || ch > '9' || index > 25U) {
+                if (ch < '0' || ch > '9' || index > (255U - static_cast<unsigned>(ch - '0')) / 10U) {
                     return fail("Wii keys: invalid decimal key index at line " + std::to_string(line_number));
                 }
                 index = index * 10U + static_cast<unsigned>(ch - '0');
@@ -129,8 +129,8 @@ bool derive_wii_title_key(DiscReader& raw,const WiiPartitionInfo& partition,
         return false;
     }
     title_key=encrypted;
-    volatile u8* wipe=common_key.data();
-    for(std::size_t i=0;i<common_key.size();++i) wipe[i]=0;
+    wipe_key(common_key);
+    wipe_key(encrypted);
     return true;
 }
 } // namespace orca::disc
