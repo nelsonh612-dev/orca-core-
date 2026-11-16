@@ -12,4 +12,6 @@ using Aes128Iv = std::array<u8, 16>;
 // Decrypts complete AES-CBC blocks in place. Input length must be a multiple
 // of 16. The IV is updated to the final ciphertext block.
 bool aes128_cbc_decrypt(const Aes128Key& key, Aes128Iv& iv, std::span<u8> data) noexcept;
+// Encrypts complete AES-CBC blocks in place; primarily useful for round-trip and format tests.
+bool aes128_cbc_encrypt(const Aes128Key& key, Aes128Iv& iv, std::span<u8> data) noexcept;
 } // namespace orca::crypto
