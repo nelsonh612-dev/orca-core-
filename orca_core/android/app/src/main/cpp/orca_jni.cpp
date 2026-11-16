@@ -374,6 +374,7 @@ Java_org_orcacore_android_MainActivity_nativeDrawFrame(JNIEnv*, jobject) {
 extern "C" JNIEXPORT void JNICALL
 Java_org_orcacore_android_MainActivity_nativeShutdown(JNIEnv*, jobject) {
     g_system.reset();
+    g_wii_key_provider.clear();
     reset_audio_ring();
     g_audio_rate.store(48000, std::memory_order_release);
     g_backend.reset();
