@@ -203,6 +203,24 @@ TEST_CASE(wii_ticket_derives_title_key_with_external_common_key) {
 
 
 
+TEST_CASE(wii_partition_reader_rejects_data_larger_than_h3_capacity) {
+    // H3 has 0x18000 bytes: 4915 SHA-1 entries, each authenticating
+    // 64 encrypted clusters. This oversized metadata must be rejected
+    // before attempting to allocate or read the claimed partition.
+    constexpr u64 h3_entries=0x18000U/20U;
+    constexpr u64 clusters=(h3_entries*64U)+1U;
+    disc::MemoryDisc raw(std::vector<u8>(0x1000U,0));
+    disc::WiiPartitionInfo part;
+    part.offset=0x100U;
+    part.h3_offset=0x400U;
+    part.data_offset=0x800U;
+    part.data_size=clusters*disc::kWiiClusterRawSize;
+    const crypto::Aes128Key key{};
+    disc::WiiPartitionReader reader(raw,part,key);
+    CHECK(!reader.valid());
+    CHECK(reader.error().find("H3 table's hash-group capacity")!=std::string::npos);
+}
+
 TEST_CASE(wii_partition_reader_decrypts_cluster_and_validates_h0_h1_h2_h3) {
     constexpr u64 kTmdOffset=0x1000U;
     constexpr u64 kH3Offset=0x4000U;
