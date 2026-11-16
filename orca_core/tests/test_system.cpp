@@ -286,7 +286,7 @@ TEST_CASE(wii_hle_boot_maps_uncached_mem2_data_alias) {
     system::System wii({system::Console::Wii, 0, 1});
     CHECK(wii.bus().write32(mem::kMem2Base + 0x20U, 0x89ABCDEFU) == mem::BusStatus::Ok);
     // Execute from MEM1, then access physical MEM2 through Wii's 0xD0000000
-    // uncached alias installed by DBAT1 during HLE boot.
+    // uncached alias installed by the dedicated DBAT3 mapping during HLE boot.
     code(wii, 0x3000U, {A::addis(4U, 0U, 0xD000), 0x80A40020U}); // lwz r5,0x20(r4)
     wii.hle_boot(0x80003000U);
     const auto result = wii.run(2U);
