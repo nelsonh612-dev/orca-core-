@@ -119,6 +119,36 @@ TEST_CASE(wii_partition_table_metadata_parsing) {
     CHECK_EQ(part.common_key_index, 1U);
 }
 
+
+TEST_CASE(wii_decrypted_partition_header_and_fst) {
+    std::vector<u8> image(0x1000,0);
+    put32(image,0x18,disc::kWiiMagic);
+    const char id[]="ORCAW1";
+    for(std::size_t i=0;i<6;++i) image[i]=static_cast<u8>(id[i]);
+    put32(image,0x420,0x300U/4U); // main DOL pointer is stored in words
+    put32(image,0x424,0x200U/4U); // FST pointer is stored in words
+    put32(image,0x428,12U);
+    put32(image,0x42C,12U);
+    // One-entry root directory FST.
+    image[0x200]=1U;
+    put32(image,0x208,1U);
+    disc::MemoryDisc partition(std::move(image));
+    std::string error;
+    const auto header=disc::parse_wii_partition_header(partition,error);
+    CHECK(header.has_value());
+    if(!header) return;
+    CHECK(header->wii && !header->gamecube);
+    CHECK_EQ(header->dol_offset,0x300U);
+    CHECK_EQ(header->fst_offset,0x200U);
+    const auto fst=disc::parse_fst(partition,*header,error);
+    CHECK(fst.has_value());
+    if(fst) {
+        CHECK_EQ(fst->size(),1U);
+        CHECK((*fst)[0].directory);
+        CHECK((*fst)[0].path=="/");
+    }
+}
+
 TEST_CASE(wii_partition_table_rejects_corrupt_ranges) {
     std::vector<u8> image(0x90000, 0);
     put32(image, 0x18, disc::kWiiMagic);
