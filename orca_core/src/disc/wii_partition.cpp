@@ -109,4 +109,43 @@ std::optional<WiiPartitionTable> parse_wii_partition_table(DiscReader& disc, std
     return table;
 }
 
+
+std::optional<DiscHeader> parse_wii_partition_header(DiscReader& partition, std::string& error) {
+    std::array<u8,0x440> h{};
+    if(!partition.read(0,h)) {
+        error="Wii partition: decrypted header is truncated";
+        return std::nullopt;
+    }
+    if(be32(&h[0x18])!=kWiiMagic) {
+        error="Wii partition: decrypted header does not contain Wii magic";
+        return std::nullopt;
+    }
+    DiscHeader d;
+    d.game_id.assign(reinterpret_cast<const char*>(h.data()),6);
+    d.disc_number=h[6];
+    d.version=h[7];
+    d.wii=true;
+    const char* name=reinterpret_cast<const char*>(&h[0x20]);
+    d.name.assign(name,strnlen(name,0x3E0));
+    const u32 dol_words=be32(&h[0x420]);
+    const u32 fst_words=be32(&h[0x424]);
+    if(dol_words>0x3FFFFFFFU || fst_words>0x3FFFFFFFU) {
+        error="Wii partition: DOL/FST word offset overflows a 32-bit byte offset";
+        return std::nullopt;
+    }
+    d.dol_offset=dol_words*4U;
+    d.fst_offset=fst_words*4U;
+    d.fst_size=be32(&h[0x428]);
+    d.fst_max_size=be32(&h[0x42C]);
+    if(d.dol_offset==0U || d.dol_offset>=partition.size()) {
+        error="Wii partition: main DOL offset is outside decrypted partition";
+        return std::nullopt;
+    }
+    if(d.fst_size!=0U && (d.fst_offset>partition.size() || d.fst_size>partition.size()-d.fst_offset)) {
+        error="Wii partition: FST range is outside decrypted partition";
+        return std::nullopt;
+    }
+    return d;
+}
+
 } // namespace orca::disc
