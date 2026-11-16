@@ -27,6 +27,7 @@ WiiPartitionReader::WiiPartitionReader(DiscReader& raw,const WiiPartitionInfo& p
         return;
     }
     logical_size_=cluster_count_*kWiiClusterDataSize;
+    verified_groups_.assign(static_cast<std::size_t>((cluster_count_ + 63U) / 64U), 0U);
     if(data_offset_>raw_.size() || p.data_size>raw_.size()-data_offset_) {
         error_="Wii partition: encrypted data range exceeds the raw disc";
         logical_size_=0;
@@ -45,8 +46,10 @@ WiiPartitionReader::WiiPartitionReader(DiscReader& raw,const WiiPartitionInfo& p
     valid_=true;
 }
 WiiPartitionReader::~WiiPartitionReader() {
-    volatile u8* p=title_key_.data();
-    for(std::size_t i=0;i<title_key_.size();++i) p[i]=0;
+    volatile u8* key=title_key_.data();
+    for(std::size_t i=0;i<title_key_.size();++i) key[i]=0;
+    volatile u8* cached=cached_cluster_.data();
+    for(std::size_t i=0;i<cached_cluster_.size();++i) cached[i]=0;
 }
 
 bool WiiPartitionReader::verify_tmd_h3_hash(u64 tmd_offset,u32 tmd_size) {
@@ -105,7 +108,11 @@ bool WiiPartitionReader::read_hash_header(u64 index,std::array<u8,kWiiClusterHas
 }
 bool WiiPartitionReader::verify_hash_group(u64 index) {
     const u64 group=index/64U;
-    if(verified_group_==group) return true;
+    if(group>=verified_groups_.size()) {
+        error_="Wii partition: hash group index is outside the verification cache";
+        return false;
+    }
+    if(verified_groups_[static_cast<std::size_t>(group)]!=0U) return true;
     const u64 first=group*64U;
     const u64 end=std::min(first+64U,cluster_count_);
     std::array<std::array<u8,kWiiClusterHashSize>,64> headers{};
@@ -173,11 +180,15 @@ bool WiiPartitionReader::verify_hash_group(u64 index) {
         error_="Wii partition: H3 SHA-1 mismatch in 64-cluster group "+std::to_string(group);
         return false;
     }
-    verified_group_=group;
+    verified_groups_[static_cast<std::size_t>(group)]=1U;
     return true;
 }
 bool WiiPartitionReader::read_cluster(u64 index,std::array<u8,kWiiClusterDataSize>& out) {
     if(!valid_ || index>=cluster_count_) return false;
+    if(cached_cluster_index_==index) {
+        std::copy(cached_cluster_.begin(),cached_cluster_.end(),out.begin());
+        return true;
+    }
     if(!verify_hash_group(index)) return false;
     std::array<u8,kWiiClusterRawSize> raw{};
     const u64 offset=data_offset_+index*kWiiClusterRawSize;
@@ -211,6 +222,8 @@ bool WiiPartitionReader::read_cluster(u64 index,std::array<u8,kWiiClusterDataSiz
         }
     }
     std::copy(encrypted_data.begin(),encrypted_data.end(),out.begin());
+    std::copy(out.begin(),out.end(),cached_cluster_.begin());
+    cached_cluster_index_=index;
     return true;
 }
 bool WiiPartitionReader::read(u64 offset,std::span<u8> out) {
