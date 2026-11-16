@@ -18,13 +18,14 @@
 
 - La traducción nativa sigue siendo un subconjunto de operaciones enteras lineales. Ramas, cargas/almacenamientos, FPU, paired-single, excepciones y operaciones con efectos laterales usan el intérprete.
 - No se ha medido rendimiento ni se ha ejecutado el código generado en un teléfono ARM64.
-- Un APK compilado correctamente no demuestra compatibilidad con juegos reales.
+- La ejecución bajo QEMU verifica las instrucciones generadas en un entorno AArch64 emulado, pero no sustituye la validación en un teléfono físico. Un APK compilado correctamente tampoco demuestra compatibilidad con juegos reales.
 - La salida de audio Android y la optimización adicional del backend GPU siguen pendientes.
 
 ## Validación
 
 El workflow `Orca Core M026 CI` ejecuta:
 - Configuración, compilación y CTest con GCC y Clang, `ORCA_WERROR=ON`.
+- Compilación cruzada del test JIT AArch64 y ejecución del código máquina generado bajo QEMU user-mode.
 - Compilación de APK Debug limitada a `arm64-v8a` y publicación del APK como artefacto.
 
 Los resultados finales de cada job deben consultarse en la pestaña Actions; no se deben inferir del hecho de que el workflow haya arrancado.
