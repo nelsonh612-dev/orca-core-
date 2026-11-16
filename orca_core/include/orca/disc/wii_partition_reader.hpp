@@ -6,6 +6,7 @@
 #include "orca/disc/wii_partition.hpp"
 #include <array>
 #include <string>
+#include <vector>
 
 namespace orca::disc {
 inline constexpr u32 kWiiClusterRawSize = 0x8000U;
@@ -33,7 +34,9 @@ private:
     DiscReader& raw_;
     u64 data_offset_{0};
     u64 h3_offset_{0};
-    u64 verified_group_{~u64{0}};
+    std::vector<u8> verified_groups_;
+    std::array<u8, kWiiClusterDataSize> cached_cluster_{};
+    u64 cached_cluster_index_{~u64{0}};
     u64 cluster_count_{0};
     u64 logical_size_{0};
     crypto::Aes128Key title_key_{};
