@@ -261,6 +261,22 @@ TEST_CASE(jit_arm64_executes_conditional_branch_with_ctr_decrement) {
 #endif
 
 #if defined(__aarch64__)
+
+TEST_CASE(jit_arm64_executes_andi_and_andis_with_cr0_updates) {
+    Machine reference;
+    Machine candidate;
+    const std::array<u32,2> code{A::andi_(3U,4U,0xF0F0U),A::andis_(5U,4U,0xF0F0U)};
+    reference.code(0x1000U,{code[0],code[1]});
+    candidate.code(0x1000U,{code[0],code[1]});
+    reference.s().gpr[4]=0xFFFF00FFU;
+    candidate.s().gpr[4]=0xFFFF00FFU;
+    CHECK(reference.cpu->run(2U)==StepResult::Executed);
+    CHECK(candidate.cpu->run_jit(2U)==StepResult::Executed);
+    CHECK(candidate.s()==reference.s());
+    CHECK_EQ(candidate.s().gpr[3],0x000000F0U);
+    CHECK_EQ(candidate.s().gpr[5],0xF0F00000U);
+}
+
 TEST_CASE(jit_arm64_differential_integer_state_matches_reference_interpreter) {
     Machine reference;
     const std::array<u32, 17> code{A::addi(3, 0, -7), A::addis(4, 3, 2), A::ori(4, 4, 0x1234), A::xori(5, 4, 0x55AA), A::and_(6, 4, 5), A::xor_(7, 6, 3), A::mulli(0, 7, -17), A::mulli(9, 0, 13), A::addic(10, 9, 1), A::subfic(11, 10, -5), A::addic_(12, 11, -1), A::add(13, 12, 9, false, true), A::addc(14, 13, 10, false, true), A::subf(15, 14, 11, false, true), A::subfc(16, 15, 12, false, true), A::adde(17, 16, 13, false, true), A::subfe(18, 17, 14, false, true)};
