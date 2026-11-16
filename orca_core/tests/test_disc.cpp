@@ -187,6 +187,107 @@ TEST_CASE(wii_ticket_derives_title_key_with_external_common_key) {
 }
 
 
+
+TEST_CASE(wii_partition_reader_decrypts_cluster_and_validates_h0_h1_h2_h3) {
+    constexpr u64 kTmdOffset=0x1000U;
+    constexpr u64 kH3Offset=0x4000U;
+    constexpr u64 kDataOffset=0x20000U;
+    constexpr u64 kClusters=64U;
+    constexpr u64 kRawCluster=0x8000U;
+    constexpr std::size_t kHashSize=0x400U;
+    constexpr std::size_t kPayloadSize=0x7C00U;
+    constexpr std::size_t kH0Size=0x26CU;
+    constexpr std::size_t kH1Offset=0x280U;
+    constexpr std::size_t kH1Size=0xA0U;
+    constexpr std::size_t kH2Offset=0x340U;
+    constexpr std::size_t kH2Size=0xA0U;
+    const crypto::Aes128Key title_key={
+        0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x07,
+        0x08,0x09,0x0A,0x0B,0x0C,0x0D,0x0E,0x0F
+    };
+    std::vector<std::array<u8,kHashSize>> headers(kClusters);
+    std::vector<std::array<u8,kPayloadSize>> plaintext(kClusters);
+    for(u64 cluster=0;cluster<kClusters;++cluster) {
+        auto& payload=plaintext[static_cast<std::size_t>(cluster)];
+        for(std::size_t i=0;i<payload.size();++i)
+            payload[i]=static_cast<u8>((cluster*13U+i*7U+3U)&0xFFU);
+        auto& header=headers[static_cast<std::size_t>(cluster)];
+        for(std::size_t sector=0;sector<31U;++sector) {
+            const auto digest=crypto::sha1(std::span<const u8>(
+                payload.data()+sector*0x400U,0x400U));
+            std::copy(digest.begin(),digest.end(),
+                      header.begin()+static_cast<std::ptrdiff_t>(sector*20U));
+        }
+    }
+    // H1 stores the SHA-1 of each cluster's H0 table within each group of 8.
+    for(u64 subgroup=0;subgroup<8U;++subgroup) {
+        for(u64 slot=0;slot<8U;++slot) {
+            const u64 cluster=subgroup*8U+slot;
+            const auto digest=crypto::sha1(std::span<const u8>(
+                headers[static_cast<std::size_t>(cluster)].data(),kH0Size));
+            for(u64 member=0;member<8U;++member) {
+                auto& h=headers[static_cast<std::size_t>(subgroup*8U+member)];
+                std::copy(digest.begin(),digest.end(),
+                          h.begin()+static_cast<std::ptrdiff_t>(kH1Offset+slot*20U));
+            }
+        }
+    }
+    // H2 stores the SHA-1 of each subgroup's H1 table in the 64-cluster group.
+    for(u64 subgroup=0;subgroup<8U;++subgroup) {
+        const auto& first=headers[static_cast<std::size_t>(subgroup*8U)];
+        const auto digest=crypto::sha1(std::span<const u8>(
+            first.data()+kH1Offset,kH1Size));
+        for(auto& h:headers)
+            std::copy(digest.begin(),digest.end(),
+                      h.begin()+static_cast<std::ptrdiff_t>(kH2Offset+subgroup*20U));
+    }
+    std::vector<u8> h3(0x18000U,0);
+    const auto h3_entry=crypto::sha1(std::span<const u8>(
+        headers[0].data()+kH2Offset,kH2Size));
+    std::copy(h3_entry.begin(),h3_entry.end(),h3.begin());
+
+    std::vector<u8> image(static_cast<std::size_t>(kDataOffset+kClusters*kRawCluster),0);
+    std::copy(h3.begin(),h3.end(),image.begin()+static_cast<std::ptrdiff_t>(kH3Offset));
+    const auto tmd_digest=crypto::sha1(std::span<const u8>(h3.data(),h3.size()));
+    image[static_cast<std::size_t>(kTmdOffset)+0x1DEU]=0;
+    image[static_cast<std::size_t>(kTmdOffset)+0x1DEU+1U]=1;
+    std::copy(tmd_digest.begin(),tmd_digest.end(),
+              image.begin()+static_cast<std::ptrdiff_t>(kTmdOffset+0x1E4U+0x10U));
+
+    for(u64 cluster=0;cluster<kClusters;++cluster) {
+        const u64 base=kDataOffset+cluster*kRawCluster;
+        auto& header=headers[static_cast<std::size_t>(cluster)];
+        crypto::Aes128Iv hash_iv{};
+        CHECK(crypto::aes128_cbc_encrypt(title_key,hash_iv,header));
+        std::copy(header.begin(),header.end(),
+                  image.begin()+static_cast<std::ptrdiff_t>(base));
+        if(cluster==0U) {
+            auto& payload=plaintext[0];
+            crypto::Aes128Iv data_iv{};
+            std::copy_n(header.begin()+0x3D0,data_iv.size(),data_iv.begin());
+            CHECK(crypto::aes128_cbc_encrypt(title_key,data_iv,payload));
+            std::copy(payload.begin(),payload.end(),
+                      image.begin()+static_cast<std::ptrdiff_t>(base+kHashSize));
+        }
+    }
+
+    disc::MemoryDisc raw(std::move(image));
+    disc::WiiPartitionInfo part;
+    part.offset=0x100U;
+    part.tmd_offset=kTmdOffset;
+    part.tmd_size=0x208U;
+    part.h3_offset=kH3Offset;
+    part.data_offset=kDataOffset;
+    part.data_size=kClusters*kRawCluster;
+    disc::WiiPartitionReader reader(raw,part,title_key);
+    CHECK(reader.valid());
+    std::array<u8,kPayloadSize> decoded{};
+    CHECK(reader.read(0,decoded));
+    // Restore the expected plaintext after it was encrypted for the fixture.
+    for(std::size_t i=0;i<decoded.size();++i)
+        CHECK_EQ(decoded[i],static_cast<u8>((i*7U+3U)&0xFFU));
+}
+
 TEST_CASE(wii_partition_reader_validates_h3_table_against_tmd) {
     std::vector<u8> image(0x28000,0);
     constexpr u64 tmd_offset=0x1000;
