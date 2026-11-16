@@ -26,9 +26,13 @@ public:
     const std::string& error() const noexcept { return error_; }
 
 private:
+    bool read_hash_header(u64 index, std::array<u8, kWiiClusterHashSize>& out);
+    bool verify_hash_group(u64 index);
     bool read_cluster(u64 index, std::array<u8, kWiiClusterDataSize>& out);
     DiscReader& raw_;
     u64 data_offset_{0};
+    u64 h3_offset_{0};
+    u64 verified_group_{~u64{0}};
     u64 cluster_count_{0};
     u64 logical_size_{0};
     crypto::Aes128Key title_key_{};
