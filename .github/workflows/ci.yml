@@ -2,7 +2,7 @@ name: Orca Core M026 CI
 
 on:
   push:
-    branches: [main, m026-runtime-jit-ci]
+    branches: [main]
   pull_request:
     branches: [main]
   workflow_dispatch:
