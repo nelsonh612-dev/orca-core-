@@ -6,7 +6,7 @@ namespace orca::crypto {
 namespace {
 constexpr u32 rol(u32 x,unsigned n) noexcept { return (x<<n)|(x>>(32U-n)); }
 }
-Sha1Digest sha1(std::span<const u8> data) noexcept {
+Sha1Digest sha1(std::span<const u8> data) {
     u32 h0=0x67452301U,h1=0xEFCDAB89U,h2=0x98BADCFEU,h3=0x10325476U,h4=0xC3D2E1F0U;
     const u64 bit_len=static_cast<u64>(data.size())*8ULL;
     const std::size_t total=((data.size()+9U+63U)/64U)*64U;
