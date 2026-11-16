@@ -1,0 +1,16 @@
+# CMake / native builds
+/orca_core/build/
+/build/
+cmake-build-*/
+
+# Gradle / Android Studio
+/orca_core/android/.gradle/
+/orca_core/android/**/build/
+**/local.properties
+.idea/
+*.iml
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+*.user
