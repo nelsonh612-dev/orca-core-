@@ -332,6 +332,35 @@ TEST_CASE(jit_arm64_executes_all_cr_logical_boolean_operations) {
 }
 
 
+
+TEST_CASE(jit_arm64_cr_boolean_ops_preserve_unrelated_bits_for_all_input_pairs) {
+    const std::array<u32,8> code{
+        A::crand(4U,7U,11U), A::crandc(4U,7U,11U),
+        A::creqv(4U,7U,11U), A::crnand(4U,7U,11U),
+        A::crnor(4U,7U,11U), A::cror(4U,7U,11U),
+        A::crorc(4U,7U,11U), A::crxor(4U,7U,11U)
+    };
+    constexpr u32 dest_mask = u32{1} << (31U-4U);
+    constexpr u32 a_mask = u32{1} << (31U-7U);
+    constexpr u32 b_mask = u32{1} << (31U-11U);
+    for (u32 op : code) {
+        for (unsigned pair=0; pair<4U; ++pair) {
+            Machine reference;
+            Machine candidate;
+            reference.code(0x1000U,{op});
+            candidate.code(0x1000U,{op});
+            const u32 unrelated = 0xA5C3F00FU & ~(dest_mask|a_mask|b_mask);
+            const u32 initial = unrelated | ((pair&2U)?a_mask:0U) | ((pair&1U)?b_mask:0U);
+            reference.s().cr=initial;
+            candidate.s().cr=initial;
+            CHECK(reference.cpu->run(1U)==StepResult::Executed);
+            CHECK(candidate.cpu->run_jit(1U)==StepResult::Executed);
+            CHECK(candidate.s()==reference.s());
+            CHECK_EQ(candidate.s().cr & ~dest_mask, initial & ~dest_mask);
+        }
+    }
+}
+
 TEST_CASE(jit_arm64_executes_mcrf_copy_between_cr_fields) {
     Machine reference;
     Machine candidate;
