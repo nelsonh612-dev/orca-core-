@@ -308,6 +308,13 @@ TEST_CASE(wii_partition_reader_decrypts_cluster_and_validates_h0_h1_h2_h3) {
     // Restore the expected plaintext after it was encrypted for the fixture.
     for(std::size_t i=0;i<decoded.size();++i)
         CHECK_EQ(decoded[i],static_cast<u8>((i*7U+3U)&0xFFU));
+
+    // Repeated partial reads from the same cluster must return the identical
+    // decrypted bytes (the reader keeps a one-cluster plaintext cache).
+    std::array<u8,64> repeated{};
+    CHECK(reader.read(0x123U,repeated));
+    for(std::size_t i=0;i<repeated.size();++i)
+        CHECK_EQ(repeated[i],static_cast<u8>(((0x123U+i)*7U+3U)&0xFFU));
 }
 
 TEST_CASE(wii_partition_reader_validates_h3_table_against_tmd) {
