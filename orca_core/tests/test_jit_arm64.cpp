@@ -329,7 +329,7 @@ TEST_CASE(jit_arm64_executes_signed_and_unsigned_high_word_multiply) {
 TEST_CASE(jit_arm64_executes_mullw_low_word_multiply) {
     Machine reference;
     Machine candidate;
-    const std::array<u32,2> code{A::mullw(3U,4U,5U,true),A::mullw(6U,7U,8U,true)};
+    const std::array<u32,2> code{A::mullw(3U,4U,5U,false,true),A::mullw(6U,7U,8U,false,true)};
     reference.code(0x1000U,{code[0],code[1]});
     candidate.code(0x1000U,{code[0],code[1]});
     reference.s().gpr[4]=0x12345678U; candidate.s().gpr[4]=0x12345678U;
