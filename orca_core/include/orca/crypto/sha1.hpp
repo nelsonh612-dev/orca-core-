@@ -6,5 +6,5 @@
 
 namespace orca::crypto {
 using Sha1Digest = std::array<u8,20>;
-Sha1Digest sha1(std::span<const u8> data) noexcept;
+Sha1Digest sha1(std::span<const u8> data);
 } // namespace orca::crypto
