@@ -24,6 +24,7 @@ add_library(orca_core
     src/crypto/aes128.cpp
     src/disc/disc_image.cpp
     src/disc/wii_partition.cpp
+    src/disc/wii_partition_reader.cpp
     src/disc/fst.cpp
     src/dsp/dsp_core.cpp
     src/hw/audio_interface.cpp
