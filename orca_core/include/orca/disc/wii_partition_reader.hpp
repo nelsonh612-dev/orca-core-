@@ -27,6 +27,7 @@ public:
 
 private:
     bool verify_tmd_h3_hash(u64 tmd_offset, u32 tmd_size);
+    bool verify_tmd_h3_hash(u64 tmd_offset, u32 tmd_size);
     bool read_hash_header(u64 index, std::array<u8, kWiiClusterHashSize>& out);
     bool verify_hash_group(u64 index);
     bool read_cluster(u64 index, std::array<u8, kWiiClusterDataSize>& out);
