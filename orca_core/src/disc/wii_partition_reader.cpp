@@ -8,6 +8,9 @@
 namespace orca::disc {
 namespace {
 constexpr u64 kWiiH3TableSize=0x18000ULL;
+constexpr u64 kWiiH3EntrySize=20ULL;
+constexpr u64 kWiiH3EntryCount=kWiiH3TableSize/kWiiH3EntrySize;
+constexpr u64 kWiiClustersPerH3Group=64ULL;
 constexpr std::size_t kH0Size=0x26CU;
 constexpr std::size_t kH1Offset=0x280U;
 constexpr std::size_t kH1Size=0xA0U;
@@ -26,8 +29,17 @@ WiiPartitionReader::WiiPartitionReader(DiscReader& raw,const WiiPartitionInfo& p
         error_="Wii partition: logical data size overflows";
         return;
     }
+    // The fixed-size H3 table has one 20-byte digest per 64 encrypted
+    // clusters. Reject images whose data area cannot be authenticated instead
+    // of allocating a cache that can never cover the complete partition.
+    const u64 group_count=cluster_count_/kWiiClustersPerH3Group+
+                          (cluster_count_%kWiiClustersPerH3Group!=0U ? 1U : 0U);
+    if(group_count>kWiiH3EntryCount) {
+        error_="Wii partition: encrypted data exceeds the H3 table's hash-group capacity";
+        return;
+    }
     logical_size_=cluster_count_*kWiiClusterDataSize;
-    verified_groups_.assign(static_cast<std::size_t>((cluster_count_ + 63U) / 64U), 0U);
+    verified_groups_.assign(static_cast<std::size_t>(group_count), 0U);
     if(data_offset_>raw_.size() || p.data_size>raw_.size()-data_offset_) {
         error_="Wii partition: encrypted data range exceeds the raw disc";
         logical_size_=0;
@@ -168,8 +180,8 @@ bool WiiPartitionReader::verify_hash_group(u64 index) {
     }
     // H3 authenticates the H2 table for this 64-cluster group.
     std::array<u8,20> stored_h3{};
-    const u64 h3_entry=h3_offset_+group*20U;
-    if(group*20U+stored_h3.size()>kWiiH3TableSize ||
+    const u64 h3_entry=h3_offset_+group*kWiiH3EntrySize;
+    if(group*kWiiH3EntrySize+stored_h3.size()>kWiiH3TableSize ||
        !raw_.read(h3_entry,stored_h3)) {
         error_="Wii partition: H3 entry is outside the H3 table";
         return false;
