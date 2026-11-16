@@ -296,6 +296,29 @@ TEST_CASE(wii_hle_boot_maps_uncached_mem2_data_alias) {
     CHECK_EQ(wii.cpu().state().gpr[5], 0x89ABCDEFU);
 }
 
+TEST_CASE(si_standard_controller_forwards_rumble_state_changes) {
+    hw::StandardController pad;
+    std::vector<u8> commands;
+    pad.set_rumble_sink([&](u8 command) { commands.push_back(command); });
+    std::string error;
+    const auto start = pad.transfer({0x40U, 3U, 1U}, error);
+    CHECK(start.has_value());
+    CHECK_EQ(pad.motor, 1U);
+    CHECK_EQ(commands.size(), 1U);
+    CHECK_EQ(commands[0], 1U);
+
+    // Repeating the same poll state must not generate redundant haptic events.
+    const auto repeated = pad.transfer({0x40U, 3U, 1U}, error);
+    CHECK(repeated.has_value());
+    CHECK_EQ(commands.size(), 1U);
+
+    const auto stop = pad.transfer({0x40U, 3U, 0U}, error);
+    CHECK(stop.has_value());
+    CHECK_EQ(pad.motor, 0U);
+    CHECK_EQ(commands.size(), 2U);
+    CHECK_EQ(commands[1], 0U);
+}
+
 TEST_CASE(decrementer_interrupt_through_system_loop) {
     system::System sys({});
     auto& s = sys.cpu().state();
