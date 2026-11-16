@@ -39,6 +39,9 @@ constexpr u32 bic_w(unsigned rd, unsigned rn, unsigned rm) {
     return 0x0A200000U | (rm << 16U) | (rn << 5U) | rd;
 }
 constexpr u32 cmp_zero_w(unsigned rn) { return 0x7100001FU | (rn << 5U); }
+constexpr u32 csel_w(unsigned rd,unsigned rn,unsigned rm,unsigned condition) {
+    return 0x1A800000U | (rm << 16U) | (condition << 12U) | (rn << 5U) | rd;
+}
 constexpr u32 cset_w(unsigned rd, unsigned condition) {
     return 0x1A9F07E0U | ((condition ^ 1U) << 12U) | rd;
 }
@@ -47,12 +50,70 @@ void load_imm(std::vector<u32>& out, unsigned reg, u32 value) {
     out.push_back(movz_w(reg, value & 0xFFFFU));
     if ((value >> 16U) != 0U) out.push_back(movk_w(reg, value >> 16U));
 }
-bool translate_one(u32 ins, std::vector<u32>& out) {
+bool translate_one(u32 ins, u32 guest_pc, std::vector<u32>& out, bool& terminates) {
     const unsigned op = ins >> 26U;
     const unsigned rt = (ins >> 21U) & 31U;
     const unsigned ra = (ins >> 16U) & 31U;
     const unsigned rb = (ins >> 11U) & 31U;
     const u32 imm = ins & 0xFFFFU;
+
+    if(op==18U) { // b: direct unconditional branch
+        const s32 displacement=sign_extend((ins>>2U)&0x00FFFFFFU,24U)*4;
+        const u32 target=(ins&2U)!=0U ? static_cast<u32>(displacement)
+                                      : guest_pc+static_cast<u32>(displacement);
+        if((ins&1U)!=0U) {
+            load_imm(out,9,guest_pc+4U);
+            out.push_back(str_w(9,0,static_cast<unsigned>(offsetof(CpuState,lr))));
+        }
+        load_imm(out,9,target);
+        out.push_back(str_w(9,0,static_cast<unsigned>(offsetof(CpuState,pc))));
+        terminates=true;
+        return true;
+    }
+    if(op==16U) { // bc: CTR/CR conditional branch
+        const unsigned bo=(ins>>21U)&31U;
+        const unsigned bi=(ins>>16U)&31U;
+        const s32 displacement=sign_extend((ins>>2U)&0x3FFFU,14U)*4;
+        const u32 target=(ins&2U)!=0U ? static_cast<u32>(displacement)
+                                      : guest_pc+static_cast<u32>(displacement);
+        // BO[2] disables CTR decrement/check; BO[3] inverts CTR!=0.
+        if((bo&0x04U)!=0U) {
+            load_imm(out,12,1U);
+        } else {
+            out.push_back(ldr_w(9,0,static_cast<unsigned>(offsetof(CpuState,ctr))));
+            load_imm(out,10,1U);
+            out.push_back(subs_w(9,9,10));
+            out.push_back(str_w(9,0,static_cast<unsigned>(offsetof(CpuState,ctr))));
+            out.push_back(cmp_zero_w(9));
+            out.push_back(cset_w(12,1U)); // CTR != 0
+            if((bo&0x02U)!=0U) {
+                load_imm(out,15,1U);
+                out.push_back(eor_w(12,12,15));
+            }
+        }
+        // BO[0] disables CR testing; BO[1] selects expected CR[BI] value.
+        if((bo&0x10U)!=0U) {
+            load_imm(out,13,1U);
+        } else {
+            out.push_back(ldr_w(9,0,static_cast<unsigned>(offsetof(CpuState,cr))));
+            out.push_back(ubfx_w(9,9,31U-bi,1U));
+            load_imm(out,10,(bo&0x08U)!=0U?1U:0U);
+            out.push_back(subs_w(14,9,10));
+            out.push_back(cset_w(13,0U)); // CR[BI] == BO[1]
+        }
+        out.push_back(and_w(14,12,13));
+        out.push_back(cmp_zero_w(14));
+        if((ins&1U)!=0U) {
+            load_imm(out,9,guest_pc+4U);
+            out.push_back(str_w(9,0,static_cast<unsigned>(offsetof(CpuState,lr))));
+        }
+        load_imm(out,9,target);
+        load_imm(out,10,guest_pc+4U);
+        out.push_back(csel_w(11,9,10,1U)); // NE: branch target, EQ: fall through
+        out.push_back(str_w(11,0,static_cast<unsigned>(offsetof(CpuState,pc))));
+        terminates=true;
+        return true;
+    }
     // x0 = CpuState*, w9/w10/w11 are scratch. Architectural r0 is ordinary
     // storage except where the ISA explicitly defines RA=0 as literal zero.
     if (op == 8U || op == 12U || op == 13U) { // subfic / addic / addic.
@@ -232,15 +293,21 @@ Block compile_arm64(std::span<const u32> words, u32 start_pc) {
     // Bound blocks to a single 4 KiB guest code page; no control flow or
     // memory operations are crossed in this initial translator.
     if ((start_pc & 3U) != 0U) return b;
+    bool terminated=false;
     for (u32 ins : words) {
-        if ((b.end_pc >> 12U) != (start_pc >> 12U) || !translate_one(ins, b.host_words)) break;
+        if ((b.end_pc >> 12U) != (start_pc >> 12U)) break;
+        bool instruction_terminates=false;
+        if(!translate_one(ins,b.end_pc,b.host_words,instruction_terminates)) break;
         ++b.guest_instructions;
         b.end_pc += 4U;
+        if(instruction_terminates) { terminated=true; break; }
     }
     if (b.guest_instructions != 0U) {
-        // Load immediate end_pc into w9 then store PC.
-        load_imm(b.host_words, 9, b.end_pc);
-        b.host_words.push_back(str_w(9, 0, static_cast<unsigned>(offsetof(CpuState, pc))));
+        if(!terminated) {
+            // Load immediate end_pc into w9 then store PC.
+            load_imm(b.host_words, 9, b.end_pc);
+            b.host_words.push_back(str_w(9, 0, static_cast<unsigned>(offsetof(CpuState, pc))));
+        }
         b.host_words.push_back(ret());
     }
     return b;
