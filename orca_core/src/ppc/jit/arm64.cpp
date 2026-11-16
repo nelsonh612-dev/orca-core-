@@ -28,7 +28,6 @@ constexpr u32 rorv_w(unsigned rd,unsigned rn,unsigned rm) { return 0x1AC02C00U |
 constexpr u32 lslv_w(unsigned rd,unsigned rn,unsigned rm) { return 0x1AC02000U | (rm << 16U) | (rn << 5U) | rd; }
 constexpr u32 lsrv_w(unsigned rd,unsigned rn,unsigned rm) { return 0x1AC02400U | (rm << 16U) | (rn << 5U) | rd; }
 constexpr u32 asrv_w(unsigned rd,unsigned rn,unsigned rm) { return 0x1AC02800U | (rm << 16U) | (rn << 5U) | rd; }
-constexpr u32 mul_w(unsigned rd,unsigned rn,unsigned rm) { return 0x1B007C00U | (rm << 16U) | (rn << 5U) | rd; }
 constexpr u32 mvn_w(unsigned rd, unsigned rm) { return 0x2A2003E0U | (rm << 16U) | rd; }
 constexpr u32 subs_w(unsigned rd, unsigned rn, unsigned rm) { return 0x6B000000U | (rm << 16U) | (rn << 5U) | rd; }
 constexpr u32 mrs_nzcv_x(unsigned rt) { return 0xD53B4200U | rt; }
