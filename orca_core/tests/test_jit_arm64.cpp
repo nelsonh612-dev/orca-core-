@@ -312,6 +312,20 @@ TEST_CASE(jit_arm64_executes_slw_srw_and_zeroes_shift_counts_at_least_32) {
 
 
 
+
+TEST_CASE(jit_arm64_executes_mcrf_copy_between_cr_fields) {
+    Machine reference;
+    Machine candidate;
+    const std::array<u32,1> code{A::mcrf(6U,1U)};
+    reference.code(0x1000U,{code[0]});
+    candidate.code(0x1000U,{code[0]});
+    reference.s().cr=0x12345678U; candidate.s().cr=0x12345678U;
+    CHECK(reference.cpu->run(1U)==StepResult::Executed);
+    CHECK(candidate.cpu->run_jit(1U)==StepResult::Executed);
+    CHECK(candidate.s()==reference.s());
+    CHECK_EQ(candidate.s().cr,0x12345628U);
+}
+
 TEST_CASE(jit_arm64_executes_mcrxr_and_clears_xer_status_nibble) {
     Machine reference;
     Machine candidate;
