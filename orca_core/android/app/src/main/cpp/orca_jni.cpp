@@ -8,8 +8,12 @@
 #include "orca/video/xfb.hpp"
 
 #include <algorithm>
+#include <array>
+#include <atomic>
+#include <bit>
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -34,6 +38,36 @@ constexpr GLfloat kBlitVertices[] = {
     -1.f,-1.f, 0.f,1.f,  1.f,-1.f, 1.f,1.f,
     -1.f, 1.f, 0.f,0.f,  1.f, 1.f, 1.f,0.f
 };
+constexpr std::uint32_t kAudioRingSamples = 1U << 15U;
+constexpr std::uint32_t kAudioRingMask = kAudioRingSamples - 1U;
+std::array<std::int16_t, kAudioRingSamples> g_audio_ring{};
+std::atomic<std::uint32_t> g_audio_head{0};
+std::atomic<std::uint32_t> g_audio_tail{0};
+std::atomic<std::uint64_t> g_audio_dropped{0};
+std::atomic<jint> g_audio_rate{48000};
+
+void reset_audio_ring() noexcept {
+    g_audio_head.store(0, std::memory_order_relaxed);
+    g_audio_tail.store(0, std::memory_order_relaxed);
+    g_audio_dropped.store(0, std::memory_order_relaxed);
+}
+
+void enqueue_audio_pcm16be(std::span<const orca::u8> bytes) noexcept {
+    std::uint32_t head = g_audio_head.load(std::memory_order_relaxed);
+    const std::uint32_t tail = g_audio_tail.load(std::memory_order_acquire);
+    for (std::size_t i = 0; i + 1U < bytes.size(); i += 2U) {
+        if (static_cast<std::uint32_t>(head - tail) >= kAudioRingSamples) {
+            g_audio_dropped.fetch_add(1U, std::memory_order_relaxed);
+            continue;
+        }
+        const std::uint16_t raw = static_cast<std::uint16_t>(
+            (static_cast<std::uint16_t>(bytes[i]) << 8U) | bytes[i + 1U]);
+        g_audio_ring[head & kAudioRingMask] = std::bit_cast<std::int16_t>(raw);
+        ++head;
+    }
+    g_audio_head.store(head, std::memory_order_release);
+}
+
 bool g_backend_attached = false;
 bool g_frame_dirty = false;
 std::string g_last_run_status = "Sin juego cargado";
@@ -168,6 +202,7 @@ void draw_frame() {
             budget = g_system->vi().cycles_per_line() * half_lines / 2U;
         }
         const auto result = g_system->run(budget);
+        g_audio_rate.store(g_system->ai().dma_rate_32khz() ? 32000 : 48000, std::memory_order_release);
         if (result.device_stop) g_last_run_status = "Dispositivo detenido: " + result.device_error;
         else if (result.stop != orca::ppc::StepResult::Executed && result.stop != orca::ppc::StepResult::Idle)
             g_last_run_status = std::string("CPU detenido en ") + orca::ppc::to_string(result.stop) +
@@ -249,7 +284,10 @@ Java_org_orcacore_android_MainActivity_nativeLoadDisc(JNIEnv* env, jobject, jstr
     candidate->insert_disc(std::move(disc));
     if (!candidate->boot_disc(error)) return java_string(env, "No se pudo iniciar el disco: " + error);
     candidate->set_field_listener([](bool bottom) { capture_xfb(bottom); });
+    reset_audio_ring();
+    candidate->dsp().set_audio_sink([](std::span<const orca::u8> block) { enqueue_audio_pcm16be(block); });
     g_system = std::move(candidate);
+    g_audio_rate.store(g_system->ai().dma_rate_32khz() ? 32000 : 48000, std::memory_order_release);
     g_rgba.clear();
     g_frame_width = g_frame_height = 0;
     g_frame_dirty = false;
@@ -272,6 +310,33 @@ Java_org_orcacore_android_MainActivity_nativeSetPadState(JNIEnv*, jobject, jint 
     p.trigger_r = static_cast<orca::u8>(std::clamp(tr, 0, 255));
 }
 
+extern "C" JNIEXPORT jint JNICALL
+Java_org_orcacore_android_MainActivity_nativeAudioRate(JNIEnv*, jobject) {
+    return g_audio_rate.load(std::memory_order_acquire);
+}
+
+extern "C" JNIEXPORT jint JNICALL
+Java_org_orcacore_android_MainActivity_nativeReadAudio(JNIEnv* env, jobject, jshortArray output) {
+    if (output == nullptr) return 0;
+    const jsize length = env->GetArrayLength(output);
+    if (length <= 0) return 0;
+    jshort* destination = env->GetShortArrayElements(output, nullptr);
+    if (destination == nullptr) return 0;
+
+    std::uint32_t tail = g_audio_tail.load(std::memory_order_relaxed);
+    const std::uint32_t head = g_audio_head.load(std::memory_order_acquire);
+    const std::uint32_t available = static_cast<std::uint32_t>(head - tail);
+    const std::uint32_t count = std::min<std::uint32_t>(available, static_cast<std::uint32_t>(length));
+    for (std::uint32_t i = 0; i < count; ++i) {
+        destination[i] = static_cast<jshort>(g_audio_ring[(tail + i) & kAudioRingMask]);
+    }
+    for (std::uint32_t i = count; i < static_cast<std::uint32_t>(length); ++i) destination[i] = 0;
+    tail += count;
+    g_audio_tail.store(tail, std::memory_order_release);
+    env->ReleaseShortArrayElements(output, destination, 0);
+    return length;
+}
+
 extern "C" JNIEXPORT jstring JNICALL
 Java_org_orcacore_android_MainActivity_nativeStatus(JNIEnv* env, jobject) {
     return java_string(env, g_last_run_status);
@@ -285,6 +350,8 @@ Java_org_orcacore_android_MainActivity_nativeDrawFrame(JNIEnv*, jobject) {
 extern "C" JNIEXPORT void JNICALL
 Java_org_orcacore_android_MainActivity_nativeShutdown(JNIEnv*, jobject) {
     g_system.reset();
+    reset_audio_ring();
+    g_audio_rate.store(48000, std::memory_order_release);
     g_backend.reset();
     g_rgba.clear();
     g_frame_dirty = false;
