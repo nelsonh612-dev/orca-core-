@@ -1,6 +1,7 @@
 #include "orca/disc/wii_partition.hpp"
 
 #include <array>
+#include <cstring>
 #include <limits>
 
 namespace orca::disc {
