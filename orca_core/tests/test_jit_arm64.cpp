@@ -278,6 +278,24 @@ TEST_CASE(jit_arm64_executes_andi_and_andis_with_cr0_updates) {
 }
 
 
+
+TEST_CASE(jit_arm64_executes_srawi_with_exact_xer_carry) {
+    Machine reference;
+    Machine candidate;
+    const std::array<u32,1> code{A::srawi(3U,4U,2U,true)};
+    reference.code(0x1000U,{code[0]});
+    candidate.code(0x1000U,{code[0]});
+    reference.s().gpr[4]=0xFFFFFFF9U;
+    candidate.s().gpr[4]=0xFFFFFFF9U;
+    reference.s().xer=XER_SO;
+    candidate.s().xer=XER_SO;
+    CHECK(reference.cpu->run(1U)==StepResult::Executed);
+    CHECK(candidate.cpu->run_jit(1U)==StepResult::Executed);
+    CHECK(candidate.s()==reference.s());
+    CHECK_EQ(candidate.s().gpr[3],0xFFFFFFFEU);
+    CHECK((candidate.s().xer&XER_CA)!=0U);
+}
+
 TEST_CASE(jit_arm64_executes_sign_extend_clz_and_logical_xo_operations) {
     Machine reference;
     Machine candidate;
