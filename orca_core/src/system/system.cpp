@@ -106,6 +106,8 @@ std::optional<u32> System::call_guest(u32 function, std::initializer_list<u32> a
 }
 
 bool System::boot_disc(std::string& error) {
+    di_->set_read_view(nullptr);
+    wii_partition_.reset();
     disc::DiscReader* raw = di_->disc();
     if (raw == nullptr) { error = "boot_disc: no disc inserted"; return false; }
 
@@ -157,6 +159,7 @@ bool System::boot_disc(std::string& error) {
 
     const auto app=disc::parse_apploader_header(*boot_reader,error);
     if(!app) return false;
+    if(is_wii) di_->set_read_view(wii_partition_.get());
     const u32 app_bytes=app->size+app->trailer_size;
     if(disc::kApploaderLoadAddress+app_bytes>kGuestReturn) {
         error="boot_disc: apploader overlaps the HLE stub area";
