@@ -1,7 +1,6 @@
 #include "orca/disc/wii_ticket.hpp"
 #include <array>
 #include <algorithm>
-#include <cctype>
 
 namespace orca::disc {
 namespace {
@@ -55,8 +54,7 @@ bool WiiCommonKeyFileProvider::load_text(std::string_view text, std::string& err
             line = line.substr(0, last + 1U);
             const auto equals = line.find('=');
             if (equals == std::string_view::npos) {
-                error = "Wii keys: expected index=32-hex-digit-key at line " + std::to_string(line_number);
-                return false;
+                return fail("Wii keys: expected index=32-hex-digit-key at line " + std::to_string(line_number));
             }
             auto index_text = line.substr(0, equals);
             auto key_text = line.substr(equals + 1U);
@@ -71,14 +69,12 @@ bool WiiCommonKeyFileProvider::load_text(std::string_view text, std::string& err
             unsigned index = 0;
             for (char ch : index_text) {
                 if (ch < '0' || ch > '9' || index > 25U) {
-                    error = "Wii keys: invalid decimal key index at line " + std::to_string(line_number);
-                    return false;
+                    return fail("Wii keys: invalid decimal key index at line " + std::to_string(line_number));
                 }
                 index = index * 10U + static_cast<unsigned>(ch - '0');
             }
             if (index_text.empty() || index > 255U || key_text.size() != 32U) {
-                error = "Wii keys: invalid index or key length at line " + std::to_string(line_number);
-                return false;
+                return fail("Wii keys: invalid index or key length at line " + std::to_string(line_number));
             }
             crypto::Aes128Key key{};
             for (std::size_t i = 0; i < key.size(); ++i) {
@@ -86,8 +82,7 @@ bool WiiCommonKeyFileProvider::load_text(std::string_view text, std::string& err
                 const int lo = hex_digit(key_text[i * 2U + 1U]);
                 if (hi < 0 || lo < 0) {
                     wipe_key(key);
-                    error = "Wii keys: non-hexadecimal key at line " + std::to_string(line_number);
-                    return false;
+                    return fail("Wii keys: non-hexadecimal key at line " + std::to_string(line_number));
                 }
                 key[i] = static_cast<u8>((hi << 4) | lo);
             }
@@ -98,7 +93,6 @@ bool WiiCommonKeyFileProvider::load_text(std::string_view text, std::string& err
         if (end == std::string_view::npos) break;
         begin = end + 1U;
     }
-    clear();
     keys_ = parsed;
     error.clear();
     return true;
