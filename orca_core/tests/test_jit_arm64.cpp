@@ -307,6 +307,24 @@ TEST_CASE(jit_arm64_executes_slw_srw_and_zeroes_shift_counts_at_least_32) {
 }
 
 
+
+TEST_CASE(jit_arm64_executes_mullw_low_word_multiply) {
+    Machine reference;
+    Machine candidate;
+    const std::array<u32,2> code{A::mullw(3U,4U,5U,true),A::mullw(6U,7U,8U,true)};
+    reference.code(0x1000U,{code[0],code[1]});
+    candidate.code(0x1000U,{code[0],code[1]});
+    reference.s().gpr[4]=0x12345678U; candidate.s().gpr[4]=0x12345678U;
+    reference.s().gpr[5]=16U; candidate.s().gpr[5]=16U;
+    reference.s().gpr[7]=0xFFFFFFFEU; candidate.s().gpr[7]=0xFFFFFFFEU;
+    reference.s().gpr[8]=3U; candidate.s().gpr[8]=3U;
+    CHECK(reference.cpu->run(2U)==StepResult::Executed);
+    CHECK(candidate.cpu->run_jit(2U)==StepResult::Executed);
+    CHECK(candidate.s()==reference.s());
+    CHECK_EQ(candidate.s().gpr[3],0x23456780U);
+    CHECK_EQ(candidate.s().gpr[6],0xFFFFFFFAU);
+}
+
 TEST_CASE(jit_arm64_executes_sraw_variable_shift_and_xer_carry) {
     Machine reference;
     Machine candidate;
