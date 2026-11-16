@@ -179,15 +179,9 @@ TEST_CASE(wii_common_key_file_provider_parses_user_supplied_slots_and_rejects_ba
 }
 
 TEST_CASE(wii_ticket_derives_title_key_with_external_common_key) {
-    class TestKeys final : public disc::WiiCommonKeyProvider {
-    public:
-        bool get_common_key(u8 index,crypto::Aes128Key& key) override {
-            if(index!=0U) return false;
-            key={0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x07,
-                 0x08,0x09,0x0A,0x0B,0x0C,0x0D,0x0E,0x0F};
-            return true;
-        }
-    } provider;
+    disc::WiiCommonKeyFileProvider provider;
+    std::string error;
+    CHECK(provider.load_text("0=000102030405060708090A0B0C0D0E0F",error));
     std::vector<u8> image(0x1000,0);
     const std::array<u8,16> encrypted={
         0x69,0xC4,0xE0,0xD8,0x6A,0x7B,0x04,0x30,
@@ -199,7 +193,6 @@ TEST_CASE(wii_ticket_derives_title_key_with_external_common_key) {
     disc::WiiPartitionInfo part;
     part.offset=0x100;
     crypto::Aes128Key title{};
-    std::string error;
     CHECK(disc::derive_wii_title_key(raw,part,provider,title,error));
     const crypto::Aes128Key expected={
         0x00,0x11,0x22,0x33,0x44,0x55,0x66,0x77,
