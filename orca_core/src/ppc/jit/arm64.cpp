@@ -134,7 +134,7 @@ bool translate_one(u32 ins, u32 guest_pc, std::vector<u32>& out, bool& terminate
 
     if(op==19U) {
         const unsigned xo10=(ins>>1U)&0x3FFU;
-        if(xo10==0U) { // mcrf BF,BFA
+        if(xo10==0U) { // mcrf BF,BFA: copy one CR nibble without disturbing others
             const unsigned bf=(ins>>23U)&7U;
             const unsigned bfa=(ins>>18U)&7U;
             const unsigned source_shift=28U-bfa*4U;
