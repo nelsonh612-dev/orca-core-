@@ -27,6 +27,7 @@ constexpr u32 sub_w(unsigned rd,unsigned rn,unsigned rm) { return 0x4B000000U | 
 constexpr u32 rorv_w(unsigned rd,unsigned rn,unsigned rm) { return 0x1AC02C00U | (rm << 16U) | (rn << 5U) | rd; }
 constexpr u32 lslv_w(unsigned rd,unsigned rn,unsigned rm) { return 0x1AC02000U | (rm << 16U) | (rn << 5U) | rd; }
 constexpr u32 lsrv_w(unsigned rd,unsigned rn,unsigned rm) { return 0x1AC02400U | (rm << 16U) | (rn << 5U) | rd; }
+constexpr u32 asrv_w(unsigned rd,unsigned rn,unsigned rm) { return 0x1AC02800U | (rm << 16U) | (rn << 5U) | rd; }
 constexpr u32 mvn_w(unsigned rd, unsigned rm) { return 0x2A2003E0U | (rm << 16U) | rd; }
 constexpr u32 subs_w(unsigned rd, unsigned rn, unsigned rm) { return 0x6B000000U | (rm << 16U) | (rn << 5U) | rd; }
 constexpr u32 mrs_nzcv_x(unsigned rt) { return 0xD53B4200U | rt; }
@@ -393,6 +394,41 @@ bool translate_one(u32 ins, u32 guest_pc, std::vector<u32>& out, bool& terminate
         const bool rc=(ins&1U)!=0U;
 
 
+
+        if(xo10==792U) { // sraw: variable arithmetic shift with XER[CA]
+            out.push_back(ldr_w(9,0,static_cast<unsigned>(offsetof(CpuState,gpr)+rt*4U)));
+            out.push_back(ldr_w(10,0,static_cast<unsigned>(offsetof(CpuState,gpr)+rb*4U)));
+            load_imm(out,13,31U);
+            out.push_back(and_w(11,10,13)); // shift modulo 32
+            out.push_back(ubfx_w(12,10,5U,1U)); // shift >= 32
+            out.push_back(asrv_w(13,9,11));
+            out.push_back(asr_w(14,9,31U)); // sign-fill result for shift >= 32
+            out.push_back(cmp_zero_w(12));
+            out.push_back(csel_w(13,13,14,0U)); // EQ: <32, NE: >=32
+            out.push_back(str_w(13,0,static_cast<unsigned>(offsetof(CpuState,gpr)+ra*4U)));
+
+            // CA = source_negative && any discarded bit; for shift >=32,
+            // every source bit is discarded, so CA equals the sign bit.
+            load_imm(out,14,1U);
+            out.push_back(lslv_w(14,14,11));
+            load_imm(out,15,1U);
+            out.push_back(sub_w(14,14,15));
+            out.push_back(and_w(15,9,14));
+            out.push_back(cmp_zero_w(15));
+            out.push_back(cset_w(15,1U)); // any low discarded bit
+            out.push_back(ubfx_w(14,9,31U,1U)); // source sign
+            out.push_back(and_w(15,15,14)); // CA for shift <32
+            out.push_back(cmp_zero_w(12));
+            out.push_back(csel_w(15,15,14,1U)); // NE: shift >=32 -> sign bit
+            out.push_back(lsl_w(15,15,29U));
+            load_imm(out,14,XER_CA);
+            out.push_back(ldr_w(9,0,static_cast<unsigned>(offsetof(CpuState,xer))));
+            out.push_back(bic_w(9,9,14));
+            out.push_back(orr_w(9,9,15));
+            out.push_back(str_w(9,0,static_cast<unsigned>(offsetof(CpuState,xer))));
+            if(rc) emit_cr0(out,13);
+            return true;
+        }
         if(xo10==24U || xo10==536U) { // slw / srw
             out.push_back(ldr_w(9,0,static_cast<unsigned>(offsetof(CpuState,gpr)+rt*4U)));
             out.push_back(ldr_w(10,0,static_cast<unsigned>(offsetof(CpuState,gpr)+rb*4U)));
