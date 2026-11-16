@@ -123,7 +123,7 @@ class MainActivity : Activity() {
             }
         }
         root.addView(open, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-        root.addView(glView, LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
+        root.addView(glView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
         root.addView(buildControls(), LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
         setContentView(root)
     }
