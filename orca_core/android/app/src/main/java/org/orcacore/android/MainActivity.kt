@@ -109,7 +109,7 @@ class MainActivity : Activity() {
             var activeRate = initialRate
             val samples = ShortArray(1024)
             try {
-                track.play()
+                if (audioRunning) track.play()
                 while (audioRunning) {
                     val requestedRate = nativeAudioRate()
                     if (requestedRate != activeRate) {
@@ -131,7 +131,10 @@ class MainActivity : Activity() {
                     var offset = 0
                     while (offset < count && audioRunning) {
                         val written = track.write(samples, offset, count - offset, AudioTrack.WRITE_BLOCKING)
-                        if (written <= 0) break
+                        if (written <= 0) {
+                            audioRunning = false
+                            break
+                        }
                         offset += written
                     }
                 }
