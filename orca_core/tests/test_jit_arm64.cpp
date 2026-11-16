@@ -279,6 +279,33 @@ TEST_CASE(jit_arm64_executes_andi_and_andis_with_cr0_updates) {
 
 
 
+
+TEST_CASE(jit_arm64_executes_slw_srw_and_zeroes_shift_counts_at_least_32) {
+    Machine reference;
+    Machine candidate;
+    const std::array<u32,4> code{
+        A::slw(3U,4U,5U,true), A::srw(6U,7U,8U,true),
+        A::slw(9U,10U,11U,false), A::srw(12U,13U,14U,false)
+    };
+    reference.code(0x1000U,{code[0],code[1],code[2],code[3]});
+    candidate.code(0x1000U,{code[0],code[1],code[2],code[3]});
+    reference.s().gpr[4]=0x12345678U; candidate.s().gpr[4]=0x12345678U;
+    reference.s().gpr[5]=4U; candidate.s().gpr[5]=4U;
+    reference.s().gpr[7]=0x12345678U; candidate.s().gpr[7]=0x12345678U;
+    reference.s().gpr[8]=4U; candidate.s().gpr[8]=4U;
+    reference.s().gpr[10]=0xFFFFFFFFU; candidate.s().gpr[10]=0xFFFFFFFFU;
+    reference.s().gpr[11]=32U; candidate.s().gpr[11]=32U;
+    reference.s().gpr[13]=0xFFFFFFFFU; candidate.s().gpr[13]=0xFFFFFFFFU;
+    reference.s().gpr[14]=32U; candidate.s().gpr[14]=32U;
+    CHECK(reference.cpu->run(4U)==StepResult::Executed);
+    CHECK(candidate.cpu->run_jit(4U)==StepResult::Executed);
+    CHECK(candidate.s()==reference.s());
+    CHECK_EQ(candidate.s().gpr[3],0x23456780U);
+    CHECK_EQ(candidate.s().gpr[6],0x01234567U);
+    CHECK_EQ(candidate.s().gpr[9],0U);
+    CHECK_EQ(candidate.s().gpr[12],0U);
+}
+
 TEST_CASE(jit_arm64_executes_srawi_with_exact_xer_carry) {
     Machine reference;
     Machine candidate;
