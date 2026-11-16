@@ -309,6 +309,29 @@ TEST_CASE(jit_arm64_executes_slw_srw_and_zeroes_shift_counts_at_least_32) {
 
 
 
+
+TEST_CASE(jit_arm64_executes_signed_unsigned_compare_and_updates_selected_cr_fields) {
+    Machine reference;
+    Machine candidate;
+    const std::array<u32,4> code{
+        A::cmpi(2U,4U,-1), A::cmpli(3U,5U,0xFFFFU),
+        A::cmp(1U,6U,7U), A::cmpl(4U,8U,9U)
+    };
+    reference.code(0x1000U,{code[0],code[1],code[2],code[3]});
+    candidate.code(0x1000U,{code[0],code[1],code[2],code[3]});
+    reference.s().gpr[4]=0U; candidate.s().gpr[4]=0U;
+    reference.s().gpr[5]=0x0000FFFFU; candidate.s().gpr[5]=0x0000FFFFU;
+    reference.s().gpr[6]=0xFFFFFFFFU; candidate.s().gpr[6]=0xFFFFFFFFU;
+    reference.s().gpr[7]=1U; candidate.s().gpr[7]=1U;
+    reference.s().gpr[8]=0xFFFFFFFFU; candidate.s().gpr[8]=0xFFFFFFFFU;
+    reference.s().gpr[9]=1U; candidate.s().gpr[9]=1U;
+    reference.s().xer=XER_SO; candidate.s().xer=XER_SO;
+    CHECK(reference.cpu->run(4U)==StepResult::Executed);
+    CHECK(candidate.cpu->run_jit(4U)==StepResult::Executed);
+    CHECK(candidate.s()==reference.s());
+    CHECK_EQ(candidate.s().cr,0x09535000U);
+}
+
 TEST_CASE(jit_arm64_executes_signed_and_unsigned_high_word_multiply) {
     Machine reference;
     Machine candidate;
