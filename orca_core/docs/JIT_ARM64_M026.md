@@ -2,6 +2,9 @@
 
 ## Cambios
 
+- El presentador XFB reutiliza los buffers YUV/RGBA entre campos, conserva la asignación de la textura de salida cuando la resolución no cambia y carga el VBO de pantalla una sola vez. Esto elimina asignaciones y transferencias de almacenamiento innecesarias por fotograma.
+- El diagnóstico Android distingue el caso de `GL_ARM_shader_framebuffer_fetch` sin `GL_EXT_shader_framebuffer_fetch`: el backend EFB actual no es compatible con esa variante ARM porque depende de dos salidas enteras con fetch EXT.
+
 - `System::run()` usa `Cpu::run_jit()` en compilaciones AArch64; las compilaciones de escritorio no AArch64 conservan el bucle de referencia paso a paso.
 - El tamaño del lote JIT queda limitado por el siguiente evento del scheduler y por el presupuesto de ciclos restante. El sistema avanza el reloj por el número exacto de instrucciones completadas antes de seguir procesando eventos.
 - `Cpu::run_jit()` informa cuántas instrucciones completó incluso si encuentra una instrucción no traducible, un estado Idle o una parada del host.
