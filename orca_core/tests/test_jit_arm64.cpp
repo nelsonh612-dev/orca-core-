@@ -633,3 +633,37 @@ TEST_CASE(jit_arm64_dispatcher_falls_back_to_reference_for_memory_and_resumes_na
     CHECK_EQ(candidate.r32(0x2004U), reference.r32(0x2004U));
     CHECK_EQ(candidate.cpu->instructions_retired(), reference.cpu->instructions_retired());
 }
+
+TEST_CASE(jit_arm64_dispatcher_matches_interpreter_for_dform_byte_halfword_and_update_accesses) {
+    Machine reference;
+    Machine candidate;
+    const std::array<u32, 8> code{
+        A::addi(4U, 0U, 0x2000),
+        A::lbz(3U, 1, 4U),
+        A::lhz(5U, 2, 4U),
+        A::lha(6U, 4, 4U),
+        A::stb(3U, 6, 4U),
+        A::sth(5U, 8, 4U),
+        A::lwzu(7U, 4, 4U),
+        A::stwu(7U, 4, 4U)
+    };
+    reference.code(0x1000U, {code[0],code[1],code[2],code[3],code[4],code[5],code[6],code[7]});
+    candidate.code(0x1000U, {code[0],code[1],code[2],code[3],code[4],code[5],code[6],code[7]});
+    const std::array<u8, 8> bytes{0xAAU,0xFEU,0xDCU,0x80U,0x12U,0x34U,0x56U,0x78U};
+    for (u32 i=0;i<bytes.size();++i) {
+        CHECK(reference.bus.write8(0x2000U+i,bytes[i])==mem::BusStatus::Ok);
+        CHECK(candidate.bus.write8(0x2000U+i,bytes[i])==mem::BusStatus::Ok);
+    }
+    CHECK(reference.cpu->run(code.size())==StepResult::Executed);
+    u64 completed=0;
+    CHECK(candidate.cpu->run_jit(code.size(),&completed)==StepResult::Executed);
+    CHECK_EQ(completed,code.size());
+    CHECK(candidate.s()==reference.s());
+    CHECK_EQ(candidate.s().gpr[3],0xFEU);
+    CHECK_EQ(candidate.s().gpr[5],0xDC80U);
+    CHECK_EQ(candidate.s().gpr[6],0x1234U);
+    CHECK_EQ(candidate.s().gpr[4],0x2008U);
+    CHECK_EQ(candidate.r8(0x2006U),0xFEU);
+    CHECK_EQ(candidate.r16(0x2008U),0xDC80U);
+    CHECK_EQ(candidate.r32(0x2008U),0x12345678U);
+}
