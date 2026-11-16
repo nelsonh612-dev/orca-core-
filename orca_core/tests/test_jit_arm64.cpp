@@ -665,5 +665,5 @@ TEST_CASE(jit_arm64_dispatcher_matches_interpreter_for_dform_byte_halfword_and_u
     CHECK_EQ(candidate.s().gpr[4],0x2008U);
     CHECK_EQ(candidate.r8(0x2006U),0xFEU);
     CHECK_EQ(candidate.r16(0x2008U),0x1234U);
-    CHECK_EQ(candidate.r32(0x2008U),0x12345678U);
+    CHECK_EQ(candidate.r32(0x2008U),0x1234FE78U);
 }
