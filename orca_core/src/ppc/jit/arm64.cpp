@@ -86,6 +86,30 @@ void emit_cr0(std::vector<u32>& out,unsigned result_reg) {
     out.push_back(orr_w(9,9,12));
     out.push_back(str_w(9,0,static_cast<unsigned>(offsetof(CpuState,cr))));
 }
+
+void emit_cr_compare(std::vector<u32>& out,unsigned bf,unsigned lt_condition,
+                     unsigned gt_condition,unsigned eq_condition) {
+    out.push_back(cset_w(12,lt_condition));
+    out.push_back(lsl_w(12,12,3U));
+    out.push_back(cset_w(13,gt_condition));
+    out.push_back(lsl_w(13,13,2U));
+    out.push_back(cset_w(14,eq_condition));
+    out.push_back(lsl_w(14,14,1U));
+    out.push_back(orr_w(12,12,13));
+    out.push_back(orr_w(12,12,14));
+    out.push_back(ldr_w(15,0,static_cast<unsigned>(offsetof(CpuState,xer))));
+    out.push_back(ubfx_w(15,15,31U,1U));
+    out.push_back(orr_w(12,12,15));
+    const unsigned shift=28U-bf*4U;
+    if(shift==0U) out.push_back(orr_w(13,12,12));
+    else out.push_back(lsl_w(13,12,shift));
+    load_imm(out,15,~(0xFU<<shift));
+    out.push_back(ldr_w(9,0,static_cast<unsigned>(offsetof(CpuState,cr))));
+    out.push_back(and_w(9,9,15));
+    out.push_back(orr_w(9,9,13));
+    out.push_back(str_w(9,0,static_cast<unsigned>(offsetof(CpuState,cr))));
+}
+
 bool translate_one(u32 ins, u32 guest_pc, std::vector<u32>& out, bool& terminates) {
     const unsigned op = ins >> 26U;
     const unsigned rt = (ins >> 21U) & 31U;
@@ -288,6 +312,18 @@ bool translate_one(u32 ins, u32 guest_pc, std::vector<u32>& out, bool& terminate
         emit_cr0(out,11);
         return true;
     }
+
+    if(op==10U || op==11U) { // cmpli / cmpi
+        if((ins&(1U<<21U))!=0U) return false;
+        const unsigned bf=(ins>>23U)&7U;
+        out.push_back(ldr_w(9,0,static_cast<unsigned>(offsetof(CpuState,gpr)+ra*4U)));
+        const u32 immediate=op==11U ? static_cast<u32>(static_cast<s32>(static_cast<s16>(ins&0xFFFFU)))
+                                    : (ins&0xFFFFU);
+        load_imm(out,10,immediate);
+        out.push_back(subs_w(31U,9,10));
+        emit_cr_compare(out,bf,op==11U?0xBU:0x3U,op==11U?0xCU:0x8U,0U);
+        return true;
+    }
     if (op == 24U || op == 25U || op == 26U || op == 27U) { // ori/oris/xori/xoris
         out.push_back(ldr_w(9, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + rt * 4U)));
         load_imm(out, 10, op == 25U || op == 27U ? (imm << 16U) : imm);
@@ -392,8 +428,17 @@ bool translate_one(u32 ins, u32 guest_pc, std::vector<u32>& out, bool& terminate
         }
     }
 
+
     if(op==31U) {
         const unsigned xo10=(ins>>1U)&0x3FFU;
+        if((xo10==0U || xo10==32U) && (ins&(1U<<21U))==0U) { // cmp / cmpl
+            const unsigned bf=(ins>>23U)&7U;
+            out.push_back(ldr_w(9,0,static_cast<unsigned>(offsetof(CpuState,gpr)+ra*4U)));
+            out.push_back(ldr_w(10,0,static_cast<unsigned>(offsetof(CpuState,gpr)+rb*4U)));
+            out.push_back(subs_w(31U,9,10));
+            emit_cr_compare(out,bf,xo10==0U?0xBU:0x3U,xo10==0U?0xCU:0x8U,0U);
+            return true;
+        }
         const bool rc=(ins&1U)!=0U;
 
 
