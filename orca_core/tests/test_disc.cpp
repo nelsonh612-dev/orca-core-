@@ -4,6 +4,8 @@
 #include "orca/disc/fst.hpp"
 #include "orca/disc/wii_partition.hpp"
 #include "orca/disc/wii_ticket.hpp"
+#include "orca/disc/wii_partition_reader.hpp"
+#include "orca/crypto/sha1.hpp"
 #include "orca/hw/disc_interface.hpp"
 #include "orca/hw/mmio_splitter.hpp"
 #include "orca/system/system.hpp"
@@ -182,6 +184,34 @@ TEST_CASE(wii_ticket_derives_title_key_with_external_common_key) {
         0x88,0x99,0xAA,0xBB,0xCC,0xDD,0xEE,0xFF
     };
     CHECK(title==expected);
+}
+
+
+TEST_CASE(wii_partition_reader_validates_h3_table_against_tmd) {
+    std::vector<u8> image(0x28000,0);
+    constexpr u64 tmd_offset=0x1000;
+    constexpr u64 h3_offset=0x4000;
+    constexpr u64 data_offset=0x20000;
+    std::vector<u8> h3(0x18000,0);
+    const auto digest=crypto::sha1(std::span<const u8>(h3.data(),h3.size()));
+    std::copy(h3.begin(),h3.end(),image.begin()+static_cast<std::ptrdiff_t>(h3_offset));
+    const std::size_t count_offset=static_cast<std::size_t>(tmd_offset)+0x1DEU;
+    image[count_offset]=0;
+    image[count_offset+1U]=1;
+    const std::size_t hash_offset=static_cast<std::size_t>(tmd_offset)+0x1E4U+0x10U;
+    std::copy(digest.begin(),digest.end(),image.begin()+static_cast<std::ptrdiff_t>(hash_offset));
+    disc::MemoryDisc raw(std::move(image));
+    disc::WiiPartitionInfo part;
+    part.offset=0x100;
+    part.tmd_offset=tmd_offset;
+    part.tmd_size=0x208;
+    part.h3_offset=h3_offset;
+    part.data_offset=data_offset;
+    part.data_size=0x8000;
+    crypto::Aes128Key title_key{};
+    disc::WiiPartitionReader reader(raw,part,title_key);
+    CHECK(reader.valid());
+    CHECK_EQ(reader.size(),0x7C00U);
 }
 
 TEST_CASE(wii_partition_table_rejects_corrupt_ranges) {
