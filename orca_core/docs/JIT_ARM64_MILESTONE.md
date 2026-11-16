@@ -40,3 +40,12 @@ Android SDK/NDK/Gradle no están disponibles; no se compiló APK. No hay prueba 
 ## M020 — dispatcher, caché e invalidación
 
 El trabajo posterior está documentado en [`JIT_ARM64_M020.md`](JIT_ARM64_M020.md). Añade `Cpu::run_jit()`, caché de bloques con páginas nativas persistentes RW→RX, traducción de fetch MMU/BAT, revalidación de mapeos, invalidación por escrituras del bus e `icbi`, y fallback al intérprete. La ejecución nativa sigue pendiente de probar en ARM64; `System::run()` conserva `step()` para no alterar la temporización del scheduler/decrementer.
+
+
+## M026 — integración temporizada del JIT ARM64
+
+M026 conecta el dispatcher `Cpu::run_jit()` al bucle `System::run()` en compilaciones AArch64. El límite de cada lote se calcula hasta el siguiente evento del scheduler y hasta el final del presupuesto de ciclos. La CPU devuelve el número exacto de instrucciones completadas incluso cuando una instrucción no traducible obliga a volver al intérprete; el sistema avanza el scheduler por esos ciclos antes de continuar o informar la parada. También se pasa el `stop_pc` de `run_until()` al dispatcher para que una rama interpretada que llegue a la dirección de retorno no ejecute el stub.
+
+En hosts no AArch64, `run_jit()` conserva la semántica del intérprete y reporta el número de instrucciones completadas; la ruta de `System::run()` sigue siendo el paso individual de referencia. El traductor nativo continúa limitado a operaciones enteras soportadas y bloques lineales: las ramas y las operaciones de memoria/FPU/paired-single no se traducen todavía.
+
+**Verificación pendiente:** los tests host pueden comprobar la semántica de fallback y los límites de parada, pero no ejecutan bytes AArch64. El workflow M026 compila el núcleo con GCC/Clang y genera un APK ARM64; una compilación exitosa no sustituye una prueba diferencial en un dispositivo ARM64. No se afirman aún mejoras de FPS ni compatibilidad con juegos comerciales.

@@ -19,11 +19,21 @@ constexpr const char* kTag = "OrcaCore";
 std::unique_ptr<orca::gpu::gles::Backend> g_backend;
 std::unique_ptr<orca::system::System> g_system;
 std::vector<orca::u8> g_rgba;
+std::vector<orca::u8> g_yuv_scratch;
+std::vector<orca::u8> g_rgba_scratch;
 std::uint32_t g_frame_width = 0;
 std::uint32_t g_frame_height = 0;
+std::uint32_t g_blit_alloc_width = 0;
+std::uint32_t g_blit_alloc_height = 0;
 GLuint g_blit_program = 0;
 GLuint g_blit_texture = 0;
 GLuint g_blit_vbo = 0;
+GLuint g_blit_vao = 0;
+GLint g_blit_u_frame = -1;
+constexpr GLfloat kBlitVertices[] = {
+    -1.f,-1.f, 0.f,1.f,  1.f,-1.f, 1.f,1.f,
+    -1.f, 1.f, 0.f,0.f,  1.f, 1.f, 1.f,0.f
+};
 bool g_backend_attached = false;
 bool g_frame_dirty = false;
 std::string g_last_run_status = "Sin juego cargado";
@@ -112,7 +122,18 @@ void main(){ outColor=texture(uFrame,vUv); }
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    g_blit_u_frame = glGetUniformLocation(g_blit_program, "uFrame");
+    if (g_blit_u_frame < 0) { error = "uFrame uniform not found"; return false; }
+    glGenVertexArrays(1, &g_blit_vao);
+    glBindVertexArray(g_blit_vao);
     glGenBuffers(1, &g_blit_vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, g_blit_vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(kBlitVertices), kBlitVertices, GL_STATIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(GLfloat), nullptr);
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(GLfloat), reinterpret_cast<void*>(2 * sizeof(GLfloat)));
+    glBindVertexArray(0);
     return glGetError() == GL_NO_ERROR;
 }
 
@@ -121,11 +142,10 @@ void capture_xfb(bool bottom) {
     const auto field = g_system->vi().xfb_field(bottom);
     if (field.width == 0U || field.height == 0U || field.stride < field.width * 2U ||
         field.width > 1024U || field.height > 600U || field.stride > 4096U) return;
-    std::vector<orca::u8> yuv(static_cast<std::size_t>(field.stride) * field.height);
-    if (g_system->bus().dma_read(field.address, yuv) != orca::mem::BusStatus::Ok) return;
-    std::vector<orca::u8> rgba;
-    if (!orca::video::decode_xfb(yuv, field.width, field.height, field.stride, rgba)) return;
-    g_rgba.swap(rgba);
+    g_yuv_scratch.resize(static_cast<std::size_t>(field.stride) * field.height);
+    if (g_system->bus().dma_read(field.address, g_yuv_scratch) != orca::mem::BusStatus::Ok) return;
+    if (!orca::video::decode_xfb(g_yuv_scratch, field.width, field.height, field.stride, g_rgba_scratch)) return;
+    g_rgba.swap(g_rgba_scratch);
     g_frame_width = field.width;
     g_frame_height = field.height;
     g_frame_dirty = true;
@@ -157,24 +177,22 @@ void draw_frame() {
     glUseProgram(g_blit_program);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, g_blit_texture);
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
     if (g_frame_dirty) {
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, static_cast<GLsizei>(g_frame_width),
-                     static_cast<GLsizei>(g_frame_height), 0, GL_RGBA, GL_UNSIGNED_BYTE, g_rgba.data());
+        // Allocate texture storage only when the VI changes XFB dimensions;
+        // ordinary frames update the existing allocation in place.
+        if (g_blit_alloc_width != g_frame_width || g_blit_alloc_height != g_frame_height) {
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, static_cast<GLsizei>(g_frame_width),
+                         static_cast<GLsizei>(g_frame_height), 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+            g_blit_alloc_width = g_frame_width;
+            g_blit_alloc_height = g_frame_height;
+        }
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, static_cast<GLsizei>(g_frame_width),
+                        static_cast<GLsizei>(g_frame_height), GL_RGBA, GL_UNSIGNED_BYTE, g_rgba.data());
         g_frame_dirty = false;
     }
-    glUniform1i(glGetUniformLocation(g_blit_program, "uFrame"), 0);
-    // Triangle strip: position.xy, uv.xy. Flip Y because XFB row zero is the top line.
-    static constexpr GLfloat vertices[] = {
-        -1.f,-1.f, 0.f,1.f,  1.f,-1.f, 1.f,1.f,
-        -1.f, 1.f, 0.f,0.f,  1.f, 1.f, 1.f,0.f
-    };
-    glBindBuffer(GL_ARRAY_BUFFER, g_blit_vbo);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STREAM_DRAW);
-    glEnableVertexAttribArray(0);
-    glEnableVertexAttribArray(1);
-    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(GLfloat), nullptr);
-    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(GLfloat), reinterpret_cast<void*>(2 * sizeof(GLfloat)));
+    glUniform1i(g_blit_u_frame, 0);
+    // Dedicated VAO isolates the blitter from the EFB backend's vertex state.
+    glBindVertexArray(g_blit_vao);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 }
 } // namespace
@@ -192,7 +210,7 @@ Java_org_orcacore_android_MainActivity_nativeInit(JNIEnv* env, jobject) {
     const auto ext = extensions();
     const bool ext_fetch = has(ext, "GL_EXT_shader_framebuffer_fetch");
     const bool arm_fetch = has(ext, "GL_ARM_shader_framebuffer_fetch");
-    report << "Orca Core 0.18.0-dev — frontend Android\n\n"
+    report << "Orca Core 0.26.0-dev — frontend Android\n\n"
            << "Fabricante: " << vendor << "\nGPU: " << renderer << "\n"
            << "OpenGL ES: " << version << " (" << major << "." << minor << ")\n"
            << "GLSL: " << shading << "\n"
@@ -236,7 +254,7 @@ Java_org_orcacore_android_MainActivity_nativeLoadDisc(JNIEnv* env, jobject, jstr
     g_frame_width = g_frame_height = 0;
     g_frame_dirty = false;
     g_backend_attached = false;
-    g_last_run_status = "Disco iniciado; ejecutando CPU PowerPC interpretada.";
+    g_last_run_status = "Disco iniciado; CPU PowerPC con JIT ARM64 parcial y fallback al intérprete.";
     return java_string(env, "Disco GameCube cargado. " + g_last_run_status);
 }
 
@@ -273,6 +291,12 @@ Java_org_orcacore_android_MainActivity_nativeShutdown(JNIEnv*, jobject) {
     g_backend_attached = false;
     if (g_blit_texture) glDeleteTextures(1, &g_blit_texture);
     if (g_blit_vbo) glDeleteBuffers(1, &g_blit_vbo);
+    if (g_blit_vao) glDeleteVertexArrays(1, &g_blit_vao);
     if (g_blit_program) glDeleteProgram(g_blit_program);
-    g_blit_texture = g_blit_vbo = g_blit_program = 0;
+    g_blit_texture = g_blit_vbo = g_blit_vao = g_blit_program = 0;
+    g_blit_u_frame = -1;
+    g_blit_alloc_width = g_blit_alloc_height = 0;
+    std::vector<orca::u8>().swap(g_yuv_scratch);
+    std::vector<orca::u8>().swap(g_rgba_scratch);
+    std::vector<orca::u8>().swap(g_rgba);
 }

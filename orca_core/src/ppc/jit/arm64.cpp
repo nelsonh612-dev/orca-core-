@@ -169,16 +169,15 @@ bool translate_one(u32 ins, std::vector<u32>& out) {
             out.push_back(ldr_w(10, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + rb * 4U)));
             if (xo9 == 266U) out.push_back(add_w(11, 9, 10));
             else if (xo9 == 10U) out.push_back(adds_w(11, 9, 10));
-            else {
+            else if (xo9 == 40U) {
+                // subf RT,RA,RB = RB - RA = RB + ~RA + 1.
                 out.push_back(mvn_w(9, 9));
-                if (xo9 == 40U) {
-                    load_imm(out, 12, 1U);
-                    out.push_back(add_w(11, 9, 10));
-                    out.push_back(add_w(11, 11, 12));
-                } else {
-                    // subfc RT,RA,RB = RB - RA; C=1 means no borrow.
-                    out.push_back(subs_w(11, 10, 9));
-                }
+                load_imm(out, 12, 1U);
+                out.push_back(add_w(11, 9, 10));
+                out.push_back(add_w(11, 11, 12));
+            } else {
+                // subfc RT,RA,RB = RB - RA; SUBS sets C=1 when no borrow.
+                out.push_back(subs_w(11, 10, 9));
             }
             out.push_back(str_w(11, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + rt * 4U)));
             if (xo9 == 10U || xo9 == 8U) {

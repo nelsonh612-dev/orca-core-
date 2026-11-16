@@ -1,0 +1,35 @@
+# Orca Core M026 — integración temporizada del JIT ARM64
+
+## Cambios
+
+- El presentador XFB reutiliza los buffers YUV/RGBA entre campos, conserva la asignación de la textura de salida cuando la resolución no cambia, carga el VBO una sola vez y usa un VAO dedicado con la ubicación del uniform cacheada. Así evita asignaciones, realocaciones de textura, consultas de uniform y configuración de atributos repetidas por fotograma.
+- El diagnóstico Android distingue el caso de `GL_ARM_shader_framebuffer_fetch` sin `GL_EXT_shader_framebuffer_fetch`: el backend EFB actual no es compatible con esa variante ARM porque depende de dos salidas enteras con fetch EXT.
+
+- `System::run()` usa `Cpu::run_jit()` en compilaciones AArch64; las compilaciones de escritorio no AArch64 conservan el bucle de referencia paso a paso.
+- El tamaño del lote JIT queda limitado por el siguiente evento del scheduler y por el presupuesto de ciclos restante. El sistema avanza el reloj por el número exacto de instrucciones completadas antes de seguir procesando eventos.
+- `Cpu::run_jit()` informa cuántas instrucciones completó incluso si encuentra una instrucción no traducible, un estado Idle o una parada del host.
+- `run_until()` / `call_guest()` pasan su dirección de parada al dispatcher. Esto impide que una rama ejecutada por fallback llegue a la dirección de retorno y continúe ejecutando el stub dentro del mismo lote.
+- Se añadió una prueba para el caso de rama interpretada que aterriza en `stop_pc`.
+- Se corrigió la ubicación del workflow: GitHub Actions solo descubre workflows en `.github/workflows/` desde la raíz del repositorio. Ahora prueba GCC y Clang y compila el APK Android ARM64.
+- Se corrigió la instalación del SDK Android: se evita el paquete retirado `tools`.
+- La versión Android se actualizó a `0.26.0-dev` (versionCode 20).
+
+## Límites que permanecen
+
+- La traducción nativa sigue siendo un subconjunto de operaciones enteras lineales. Ramas, cargas/almacenamientos, FPU, paired-single, excepciones y operaciones con efectos laterales usan el intérprete.
+- No se ha medido rendimiento ni se ha ejecutado el código generado en un teléfono ARM64.
+- La ejecución bajo QEMU verifica las instrucciones generadas en un entorno AArch64 emulado, pero no sustituye la validación en un teléfono físico. Un APK compilado correctamente tampoco demuestra compatibilidad con juegos reales.
+- La salida de audio Android y la optimización adicional del backend GPU siguen pendientes.
+
+## Validación
+
+**Ejecución AArch64 bajo QEMU:** aprobada en el job `Execute generated ARM64 JIT code under QEMU`. El binario cruzado ejecutó las instrucciones AArch64 generadas (no solo el traductor): 16 tests, 102 checks, 0 failures. Esta prueba detectó y permitió corregir un error de operandos en `subfc`; la operación ahora coincide con el intérprete de referencia en la prueba diferencial.
+
+**Límite:** QEMU valida la ejecución de código máquina en una CPU AArch64 emulada. No demuestra rendimiento, temporización física ni estabilidad en el dispositivo Android real.
+
+El workflow `Orca Core M026 CI` ejecuta:
+- Configuración, compilación y CTest con GCC y Clang, `ORCA_WERROR=ON`.
+- Compilación cruzada del test JIT AArch64 y ejecución del código máquina generado bajo QEMU user-mode.
+- Compilación de APK Debug limitada a `arm64-v8a` y publicación del APK como artefacto.
+
+Los resultados finales de cada job deben consultarse en la pestaña Actions; no se deben inferir del hecho de que el workflow haya arrancado.

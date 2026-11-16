@@ -68,7 +68,7 @@ public:
     StepResult run(u64 budget);
     // Executes cached native AArch64 blocks when safe; every unsupported mode,
     // instruction, fetch condition or non-AArch64 host uses the reference interpreter.
-    StepResult run_jit(u64 budget);
+    StepResult run_jit(u64 budget, u64* completed = nullptr, const u32* stop_pc = nullptr);
 
     // Level-sensitive external interrupt line from the processor interface.
     void set_external_interrupt(bool asserted) noexcept { external_line_ = asserted; }
