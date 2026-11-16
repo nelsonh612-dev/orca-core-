@@ -745,6 +745,7 @@ bool ExecutableBlock::execute(CpuState& state, Cpu* cpu) const noexcept {
     return true;
 #else
     (void)state;
+    (void)cpu;
     return false;
 #endif
 }
