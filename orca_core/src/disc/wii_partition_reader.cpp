@@ -1,4 +1,5 @@
 #include "orca/disc/wii_partition_reader.hpp"
+#include "orca/crypto/sha1.hpp"
 #include <algorithm>
 #include <array>
 #include <limits>
@@ -33,14 +34,37 @@ bool WiiPartitionReader::read_cluster(u64 index,std::array<u8,kWiiClusterDataSiz
     std::array<u8,kWiiClusterRawSize> raw{};
     const u64 offset=data_offset_+index*kWiiClusterRawSize;
     if(!raw_.read(offset,raw)) { error_="Wii partition: failed to read encrypted cluster"; return false; }
-    crypto::Aes128Iv iv{};
-    std::copy_n(raw.begin()+0x3D0,iv.size(),iv.begin());
-    std::span<u8> encrypted(raw.data()+kWiiClusterHashSize,kWiiClusterDataSize);
-    if(!crypto::aes128_cbc_decrypt(title_key_,iv,encrypted)) {
-        error_="Wii partition: AES-CBC rejected a non-block-aligned cluster";
+
+    // The IV for the user-data region is stored in the still-encrypted hash
+    // header. Save it before decrypting the 0x400-byte hash area with IV=0.
+    crypto::Aes128Iv data_iv{};
+    std::copy_n(raw.begin()+0x3D0,data_iv.size(),data_iv.begin());
+    crypto::Aes128Iv hash_iv{};
+    std::span<u8> encrypted_hash(raw.data(),kWiiClusterHashSize);
+    if(!crypto::aes128_cbc_decrypt(title_key_,hash_iv,encrypted_hash)) {
+        error_="Wii partition: failed to decrypt cluster hash header";
         return false;
     }
-    std::copy(encrypted.begin(),encrypted.end(),out.begin());
+
+    std::span<u8> encrypted_data(raw.data()+kWiiClusterHashSize,kWiiClusterDataSize);
+    if(!crypto::aes128_cbc_decrypt(title_key_,data_iv,encrypted_data)) {
+        error_="Wii partition: failed to decrypt cluster user data";
+        return false;
+    }
+
+    // H0: 31 SHA-1 digests, one for each 0x400-byte user-data sector.
+    // Reject corrupt/incorrect-key data before exposing it to the FST loader.
+    for(std::size_t sector=0;sector<31U;++sector) {
+        const auto sector_bytes=std::span<const u8>(encrypted_data.data()+sector*0x400U,0x400U);
+        const auto digest=crypto::sha1(sector_bytes);
+        const std::size_t hash_offset=sector*20U;
+        if(!std::equal(digest.begin(),digest.end(),encrypted_hash.begin()+static_cast<std::ptrdiff_t>(hash_offset))) {
+            error_="Wii partition: H0 SHA-1 mismatch in cluster "+std::to_string(index)+
+                   ", data sector "+std::to_string(sector);
+            return false;
+        }
+    }
+    std::copy(encrypted_data.begin(),encrypted_data.end(),out.begin());
     return true;
 }
 bool WiiPartitionReader::read(u64 offset,std::span<u8> out) {
