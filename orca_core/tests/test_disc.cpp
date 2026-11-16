@@ -11,6 +11,8 @@
 #include "test_framework.hpp"
 #include "test_port.hpp"
 
+#include <algorithm>
+#include <array>
 #include <cstdio>
 #include <fstream>
 #include <iterator>
