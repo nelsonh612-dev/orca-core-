@@ -2,6 +2,7 @@
 
 #include "orca/memory/console_maps.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstdio>
 #include <vector>
@@ -175,16 +176,36 @@ RunResult System::run(u64 max_cycles) {
     const u64 start = scheduler_.now();
     const u64 end = start + max_cycles;
     const u64 retired0 = cpu_->instructions_retired();
-    const u64 cpi = config_.cycles_per_instruction;
+    const u64 cpi = std::max<u64>(config_.cycles_per_instruction, 1U);
     while (scheduler_.now() < end) {
         if (dsp_->dsp_failed()) { r.device_stop = true; r.device_error = dsp_->dsp_error(); break; }
         if (cp_->stopped()) { r.device_stop = true; r.device_error = cp_->stop_reason(); break; }
         if (stop_pc_ && cpu_->state().pc == *stop_pc_) { r.reached_stop_pc = true; break; }
-        const ppc::StepResult s = cpu_->step();
-        if (s == ppc::StepResult::Executed || s == ppc::StepResult::ExceptionTaken) {
-            advance(cpi);
-            continue;
+        ppc::StepResult s = ppc::StepResult::Executed;
+        u64 completed = 0;
+#if defined(__aarch64__)
+        // Run native blocks only up to the next scheduler boundary. This keeps
+        // VI/AI/DI/DSP events and asynchronous interrupt delivery ordered.
+        const auto cycles_to_instructions = [cpi](u64 cycles) {
+            return cycles / cpi + (cycles % cpi != 0U ? 1U : 0U);
+        };
+        u64 budget = std::max<u64>(1U, cycles_to_instructions(end - scheduler_.now()));
+        if (const auto next = scheduler_.next_event_time()) {
+            const u64 until_event = *next > scheduler_.now() ? *next - scheduler_.now() : 0U;
+            budget = std::min(budget, std::max<u64>(1U, cycles_to_instructions(until_event)));
         }
+        // run_until()/call_guest() must stop before executing the return stub.
+        if (stop_pc_ && *stop_pc_ > cpu_->state().pc) {
+            const u64 distance = static_cast<u64>(*stop_pc_) - cpu_->state().pc;
+            if ((distance & 3U) == 0U) budget = std::min(budget, distance / 4U);
+        }
+        s = cpu_->run_jit(budget, &completed);
+#else
+        s = cpu_->step();
+        if (s == ppc::StepResult::Executed || s == ppc::StepResult::ExceptionTaken) completed = 1U;
+#endif
+        if (completed != 0U) advance(completed * cpi);
+        if (s == ppc::StepResult::Executed || s == ppc::StepResult::ExceptionTaken) continue;
         if (s == ppc::StepResult::Idle) {
             const auto next = scheduler_.next_event_time();
             if (!next) { r.stop = s; break; } // nothing can ever wake the CPU

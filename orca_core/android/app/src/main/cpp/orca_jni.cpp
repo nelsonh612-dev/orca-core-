@@ -192,7 +192,7 @@ Java_org_orcacore_android_MainActivity_nativeInit(JNIEnv* env, jobject) {
     const auto ext = extensions();
     const bool ext_fetch = has(ext, "GL_EXT_shader_framebuffer_fetch");
     const bool arm_fetch = has(ext, "GL_ARM_shader_framebuffer_fetch");
-    report << "Orca Core 0.18.0-dev — frontend Android\n\n"
+    report << "Orca Core 0.26.0-dev — frontend Android\n\n"
            << "Fabricante: " << vendor << "\nGPU: " << renderer << "\n"
            << "OpenGL ES: " << version << " (" << major << "." << minor << ")\n"
            << "GLSL: " << shading << "\n"
@@ -236,7 +236,7 @@ Java_org_orcacore_android_MainActivity_nativeLoadDisc(JNIEnv* env, jobject, jstr
     g_frame_width = g_frame_height = 0;
     g_frame_dirty = false;
     g_backend_attached = false;
-    g_last_run_status = "Disco iniciado; ejecutando CPU PowerPC interpretada.";
+    g_last_run_status = "Disco iniciado; CPU PowerPC con JIT ARM64 parcial y fallback al intérprete.";
     return java_string(env, "Disco GameCube cargado. " + g_last_run_status);
 }
 

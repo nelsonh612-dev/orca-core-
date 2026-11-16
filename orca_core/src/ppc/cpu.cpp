@@ -184,10 +184,19 @@ void Cpu::invalidate_jit_cache() noexcept {
     jit_blocks_.clear();
 }
 
-StepResult Cpu::run_jit(u64 budget) {
+StepResult Cpu::run_jit(u64 budget, u64* completed) {
+    if (completed != nullptr) *completed = 0;
 #if !defined(__aarch64__)
-    // Never interpret generated ARM64 bytes on another host architecture.
-    return run(budget);
+    // Host builds keep reference semantics and report completed instructions.
+    for (u64 done = 0; done < budget; ++done) {
+        const StepResult r = step();
+        if (r != StepResult::Executed && r != StepResult::ExceptionTaken) {
+            if (completed != nullptr) *completed = done;
+            return r;
+        }
+        if (completed != nullptr) *completed = done + 1U;
+    }
+    return StepResult::Executed;
 #else
     for (u64 done = 0; done < budget;) {
         // Keep all architectural boundary checks in Cpu::step(). In particular,
@@ -195,14 +204,14 @@ StepResult Cpu::run_jit(u64 budget) {
         if (state_.halted || (state_.msr & (MSR_SE | MSR_BE | MSR_LE | MSR_POW)) != 0U ||
             (((state_.msr & MSR_EE) != 0U) && (external_line_ || state_.dec_pending))) {
             const StepResult r = step();
-            if (r != StepResult::Executed && r != StepResult::ExceptionTaken) return r;
+            if (r != StepResult::Executed && r != StepResult::ExceptionTaken) { if (completed != nullptr) *completed = done; return r; }
             ++done;
             continue;
         }
         const u32 pc = state_.pc;
         if ((pc & 3U) != 0U) {
             const StepResult r = step();
-            if (r != StepResult::Executed && r != StepResult::ExceptionTaken) return r;
+            if (r != StepResult::Executed && r != StepResult::ExceptionTaken) { if (completed != nullptr) *completed = done; return r; }
             ++done;
             continue;
         }
@@ -210,7 +219,7 @@ StepResult Cpu::run_jit(u64 budget) {
         const Translation first_translation = translate(state_, bus_, pc, AccessType::Fetch);
         if (first_translation.status != TranslateStatus::Ok || !bus_.is_ram(first_translation.physical, 4U)) {
             const StepResult r = step();
-            if (r != StepResult::Executed && r != StepResult::ExceptionTaken) return r;
+            if (r != StepResult::Executed && r != StepResult::ExceptionTaken) { if (completed != nullptr) *completed = done; return r; }
             ++done;
             continue;
         }
@@ -244,14 +253,14 @@ StepResult Cpu::run_jit(u64 budget) {
             }
             if (!fetch_ok || words.empty()) {
                 const StepResult r = step();
-                if (r != StepResult::Executed && r != StepResult::ExceptionTaken) return r;
+                if (r != StepResult::Executed && r != StepResult::ExceptionTaken) { if (completed != nullptr) *completed = done; return r; }
                 ++done;
                 continue;
             }
             jit::Block block = jit::compile_arm64(words, pc);
             if (block.guest_instructions == 0U) {
                 const StepResult r = step();
-                if (r != StepResult::Executed && r != StepResult::ExceptionTaken) return r;
+                if (r != StepResult::Executed && r != StepResult::ExceptionTaken) { if (completed != nullptr) *completed = done; return r; }
                 ++done;
                 continue;
             }
@@ -282,19 +291,20 @@ StepResult Cpu::run_jit(u64 budget) {
         if (!mapping_valid) {
             invalidate_jit_cache();
             const StepResult r = step();
-            if (r != StepResult::Executed && r != StepResult::ExceptionTaken) return r;
+            if (r != StepResult::Executed && r != StepResult::ExceptionTaken) { if (completed != nullptr) *completed = done; return r; }
             ++done;
             continue;
         }
         if (!it->second->executable.execute(state_)) {
             const StepResult r = step();
-            if (r != StepResult::Executed && r != StepResult::ExceptionTaken) return r;
+            if (r != StepResult::Executed && r != StepResult::ExceptionTaken) { if (completed != nullptr) *completed = done; return r; }
             ++done;
             continue;
         }
         retired_ += count;
         done += count;
     }
+    if (completed != nullptr) *completed = done;
     return StepResult::Executed;
 #endif
 }

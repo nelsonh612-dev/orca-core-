@@ -1,0 +1,61 @@
+name: Orca Core M026 CI
+
+on:
+  push:
+    branches: [main, m026-runtime-jit-ci]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  core:
+    name: Core tests (${{ matrix.compiler }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - compiler: gcc
+            cc: gcc
+            cxx: g++
+          - compiler: clang
+            cc: clang
+            cxx: clang++
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Ninja
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+      - name: Configure
+        run: cmake -S orca_core -B orca_core/build -G Ninja -DCMAKE_C_COMPILER=${{ matrix.cc }} -DCMAKE_CXX_COMPILER=${{ matrix.cxx }} -DORCA_WERROR=ON -DORCA_BUILD_TESTS=ON -DORCA_GLES=OFF
+      - name: Build
+        run: cmake --build orca_core/build --parallel 2
+      - name: Test
+        run: ctest --test-dir orca_core/build --output-on-failure
+
+  android-arm64:
+    name: Android ARM64 debug APK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: android-actions/setup-android@v3
+      - name: Install Android toolchains
+        run: sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0" "ndk;27.2.12479018" "cmake;3.22.1"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      - name: Assemble ARM64 debug APK
+        run: gradle -p orca_core/android :app:assembleDebug
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: orca-core-m026-android-arm64-debug
+          path: orca_core/android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
