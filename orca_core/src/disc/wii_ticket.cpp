@@ -34,18 +34,24 @@ bool WiiCommonKeyFileProvider::get_common_key(u8 index, crypto::Aes128Key& key) 
 }
 
 bool WiiCommonKeyFileProvider::load_text(std::string_view text, std::string& error) {
+    clear();
     std::array<std::optional<crypto::Aes128Key>, 256> parsed{};
+    const auto fail = [&](std::string message) {
+        for (auto& entry : parsed) if (entry) wipe_key(*entry);
+        error = std::move(message);
+        return false;
+    };
     std::size_t line_number = 0;
     std::size_t begin = 0;
     while (begin <= text.size()) {
         ++line_number;
-        const std::size_t end = text.find('\\n', begin);
+        const std::size_t end = text.find('\n', begin);
         std::string_view line = text.substr(begin, end == std::string_view::npos ? text.size() - begin : end - begin);
         if (const auto comment = line.find('#'); comment != std::string_view::npos) line = line.substr(0, comment);
-        const auto first = line.find_first_not_of(" \\t\\r");
+        const auto first = line.find_first_not_of(" \t\r");
         if (first != std::string_view::npos) {
             line.remove_prefix(first);
-            const auto last = line.find_last_not_of(" \\t\\r");
+            const auto last = line.find_last_not_of(" \t\r");
             line = line.substr(0, last + 1U);
             const auto equals = line.find('=');
             if (equals == std::string_view::npos) {
@@ -55,9 +61,9 @@ bool WiiCommonKeyFileProvider::load_text(std::string_view text, std::string& err
             auto index_text = line.substr(0, equals);
             auto key_text = line.substr(equals + 1U);
             const auto trim = [](std::string_view value) {
-                const auto a = value.find_first_not_of(" \\t\\r");
+                const auto a = value.find_first_not_of(" \t\r");
                 if (a == std::string_view::npos) return std::string_view{};
-                const auto b = value.find_last_not_of(" \\t\\r");
+                const auto b = value.find_last_not_of(" \t\r");
                 return value.substr(a, b - a + 1U);
             };
             index_text = trim(index_text);
@@ -114,7 +120,7 @@ bool derive_wii_title_key(DiscReader& raw,const WiiPartitionInfo& partition,
     const u8 index=ticket[kCommonKeyIndexOffset];
     crypto::Aes128Key common_key{};
     if(!provider.get_common_key(index,common_key)) {
-        error="Wii ticket: no user-provided common key for slot "+std::to_string(index);
+        wipe_key(common_key);\n        error="Wii ticket: no user-provided common key for slot "+std::to_string(index);
         return false;
     }
     crypto::Aes128Iv iv{};
@@ -122,7 +128,7 @@ bool derive_wii_title_key(DiscReader& raw,const WiiPartitionInfo& partition,
     std::array<u8,16> encrypted{};
     std::copy_n(ticket.begin()+static_cast<std::ptrdiff_t>(kEncryptedTitleKeyOffset),16,encrypted.begin());
     if(!crypto::aes128_cbc_decrypt(common_key,iv,encrypted)) {
-        error="Wii ticket: encrypted title key has invalid AES block length";
+        wipe_key(common_key);\n        error="Wii ticket: encrypted title key has invalid AES block length";
         return false;
     }
     title_key=encrypted;
