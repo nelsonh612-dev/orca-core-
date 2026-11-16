@@ -50,6 +50,27 @@ void load_imm(std::vector<u32>& out, unsigned reg, u32 value) {
     out.push_back(movz_w(reg, value & 0xFFFFU));
     if ((value >> 16U) != 0U) out.push_back(movk_w(reg, value >> 16U));
 }
+
+void emit_cr0(std::vector<u32>& out,unsigned result_reg) {
+    out.push_back(cmp_zero_w(result_reg));
+    out.push_back(cset_w(12,0xBU)); // LT
+    out.push_back(lsl_w(12,12,31));
+    out.push_back(cset_w(14,0xCU)); // GT
+    out.push_back(lsl_w(14,14,30));
+    out.push_back(cset_w(15,0x0U)); // EQ
+    out.push_back(lsl_w(15,15,29));
+    out.push_back(ldr_w(9,0,static_cast<unsigned>(offsetof(CpuState,xer))));
+    out.push_back(ubfx_w(13,9,31,1));
+    out.push_back(lsl_w(13,13,28));
+    out.push_back(orr_w(12,12,14));
+    out.push_back(orr_w(12,12,15));
+    out.push_back(orr_w(12,12,13));
+    out.push_back(ldr_w(9,0,static_cast<unsigned>(offsetof(CpuState,cr))));
+    load_imm(out,14,0x0FFFFFFFU);
+    out.push_back(and_w(9,9,14));
+    out.push_back(orr_w(9,9,12));
+    out.push_back(str_w(9,0,static_cast<unsigned>(offsetof(CpuState,cr))));
+}
 bool translate_one(u32 ins, u32 guest_pc, std::vector<u32>& out, bool& terminates) {
     const unsigned op = ins >> 26U;
     const unsigned rt = (ins >> 21U) & 31U;
@@ -191,6 +212,15 @@ bool translate_one(u32 ins, u32 guest_pc, std::vector<u32>& out, bool& terminate
         load_imm(out, 10, addend);
         out.push_back(add_w(11, 9, 10));
         out.push_back(str_w(11, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + rt * 4U)));
+        return true;
+    }
+
+    if(op==28U || op==29U) { // andi./andis.
+        out.push_back(ldr_w(9,0,static_cast<unsigned>(offsetof(CpuState,gpr)+rt*4U)));
+        load_imm(out,10,op==29U ? (imm<<16U) : imm);
+        out.push_back(and_w(11,9,10));
+        out.push_back(str_w(11,0,static_cast<unsigned>(offsetof(CpuState,gpr)+ra*4U)));
+        emit_cr0(out,11);
         return true;
     }
     if (op == 24U || op == 25U || op == 26U || op == 27U) { // ori/oris/xori/xoris
