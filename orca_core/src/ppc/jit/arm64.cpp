@@ -431,6 +431,30 @@ bool translate_one(u32 ins, u32 guest_pc, std::vector<u32>& out, bool& terminate
 
     if(op==31U) {
         const unsigned xo10=(ins>>1U)&0x3FFU;
+
+        if(xo10==19U) { // mfcr RT
+            out.push_back(ldr_w(9,0,static_cast<unsigned>(offsetof(CpuState,cr))));
+            out.push_back(str_w(9,0,static_cast<unsigned>(offsetof(CpuState,gpr)+rt*4U)));
+            return true;
+        }
+        if(xo10==144U) { // mtcrf FXM,RS
+            const unsigned fxm=(ins>>12U)&0xFFU;
+            if(fxm==0U) return true;
+            out.push_back(ldr_w(9,0,static_cast<unsigned>(offsetof(CpuState,gpr)+rt*4U)));
+            out.push_back(ldr_w(10,0,static_cast<unsigned>(offsetof(CpuState,cr))));
+            for(unsigned bf=0;bf<8U;++bf) {
+                if((fxm&(1U<<(7U-bf)))==0U) continue;
+                const unsigned shift=28U-bf*4U;
+                out.push_back(ubfx_w(11,9,shift,4U));
+                if(shift==0U) out.push_back(orr_w(12,11,11));
+                else out.push_back(lsl_w(12,11,shift));
+                load_imm(out,13,~(0xFU<<shift));
+                out.push_back(and_w(10,10,13));
+                out.push_back(orr_w(10,10,12));
+            }
+            out.push_back(str_w(10,0,static_cast<unsigned>(offsetof(CpuState,cr))));
+            return true;
+        }
         if((xo10==0U || xo10==32U) && (ins&(1U<<21U))==0U) { // cmp / cmpl
             const unsigned bf=(ins>>23U)&7U;
             out.push_back(ldr_w(9,0,static_cast<unsigned>(offsetof(CpuState,gpr)+ra*4U)));
