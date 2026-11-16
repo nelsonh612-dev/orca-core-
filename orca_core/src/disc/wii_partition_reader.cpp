@@ -38,12 +38,55 @@ WiiPartitionReader::WiiPartitionReader(DiscReader& raw,const WiiPartitionInfo& p
         logical_size_=0;
         return;
     }
+    if(!verify_tmd_h3_hash(p.tmd_offset,p.tmd_size)) {
+        logical_size_=0;
+        return;
+    }
     valid_=true;
 }
 WiiPartitionReader::~WiiPartitionReader() {
     volatile u8* p=title_key_.data();
     for(std::size_t i=0;i<title_key_.size();++i) p[i]=0;
 }
+
+bool WiiPartitionReader::verify_tmd_h3_hash(u64 tmd_offset,u32 tmd_size) {
+    constexpr std::size_t kTmdContentCountOffset=0x1DEU;
+    constexpr std::size_t kTmdContentTableOffset=0x1E4U;
+    constexpr std::size_t kTmdContentRecordSize=0x24U;
+    constexpr std::size_t kTmdContentHashOffset=0x10U;
+    if(tmd_size<kTmdContentTableOffset+kTmdContentRecordSize ||
+       tmd_offset>raw_.size() || tmd_size>raw_.size()-tmd_offset) {
+        error_="Wii partition: TMD is truncated or outside the raw disc";
+        return false;
+    }
+    std::vector<u8> tmd(tmd_size);
+    if(!raw_.read(tmd_offset,tmd)) {
+        error_="Wii partition: failed to read TMD";
+        return false;
+    }
+    const u16 content_count=static_cast<u16>((u16{tmd[kTmdContentCountOffset]}<<8U)|
+                                             u16{tmd[kTmdContentCountOffset+1U]});
+    const u64 records_end=static_cast<u64>(kTmdContentTableOffset)+
+                          static_cast<u64>(content_count)*kTmdContentRecordSize;
+    if(content_count!=1U || records_end>tmd.size()) {
+        error_="Wii partition: disc TMD must contain one valid H3 content record";
+        return false;
+    }
+    std::vector<u8> h3(static_cast<std::size_t>(kWiiH3TableSize));
+    if(!raw_.read(h3_offset_,h3)) {
+        error_="Wii partition: failed to read H3 hash table";
+        return false;
+    }
+    const auto digest=crypto::sha1(std::span<const u8>(h3.data(),h3.size()));
+    const std::size_t hash_offset=kTmdContentTableOffset+kTmdContentHashOffset;
+    if(!std::equal(digest.begin(),digest.end(),
+                   tmd.begin()+static_cast<std::ptrdiff_t>(hash_offset))) {
+        error_="Wii partition: H3 table SHA-1 does not match the TMD content record";
+        return false;
+    }
+    return true;
+}
+
 bool WiiPartitionReader::read_hash_header(u64 index,std::array<u8,kWiiClusterHashSize>& out) {
     if(index>=cluster_count_) return false;
     std::array<u8,kWiiClusterRawSize> raw{};
