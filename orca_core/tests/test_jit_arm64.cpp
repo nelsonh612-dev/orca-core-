@@ -310,6 +310,22 @@ TEST_CASE(jit_arm64_executes_slw_srw_and_zeroes_shift_counts_at_least_32) {
 
 
 
+
+TEST_CASE(jit_arm64_executes_mfcr_and_masked_mtcrf) {
+    Machine reference;
+    Machine candidate;
+    const std::array<u32,2> code{A::mtcrf(0xAAU,4U),A::mfcr(3U)};
+    reference.code(0x1000U,{code[0],code[1]});
+    candidate.code(0x1000U,{code[0],code[1]});
+    reference.s().cr=0xABCDEF01U; candidate.s().cr=0xABCDEF01U;
+    reference.s().gpr[4]=0x12345678U; candidate.s().gpr[4]=0x12345678U;
+    CHECK(reference.cpu->run(2U)==StepResult::Executed);
+    CHECK(candidate.cpu->run_jit(2U)==StepResult::Executed);
+    CHECK(candidate.s()==reference.s());
+    CHECK_EQ(candidate.s().cr,0x1B3D5F71U);
+    CHECK_EQ(candidate.s().gpr[3],0x1B3D5F71U);
+}
+
 TEST_CASE(jit_arm64_executes_signed_unsigned_compare_and_updates_selected_cr_fields) {
     Machine reference;
     Machine candidate;
