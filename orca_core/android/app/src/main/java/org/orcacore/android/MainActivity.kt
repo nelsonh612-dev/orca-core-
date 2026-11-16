@@ -1,6 +1,7 @@
 package org.orcacore.android
 
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.Intent
 import android.media.AudioAttributes
 import android.media.AudioFormat
@@ -37,9 +38,10 @@ class MainActivity : Activity() {
     @Volatile private var audioRunning = false
     @Volatile private var audioTrack: AudioTrack? = null
     private var audioThread: Thread? = null
+    private var pendingConsole = 0 // 0 = GameCube, 1 = Wii
 
     private external fun nativeInit(): String
-    private external fun nativeLoadDisc(path: String): String
+    private external fun nativeLoadDisc(path: String, consoleKind: Int, keyText: String): String
     private external fun nativeSetPadState(buttons: Int, sx: Int, sy: Int, csx: Int, csy: Int, tl: Int, tr: Int)
     private external fun nativeStatus(): String
     private external fun nativeAudioRate(): Int
@@ -50,6 +52,8 @@ class MainActivity : Activity() {
     companion object {
         init { System.loadLibrary("orca_android") }
         private const val OPEN_DISC_REQUEST = 4107
+        private const val OPEN_KEYS_REQUEST = 4108
+        private const val OPEN_DISC_WITH_KEYS_REQUEST = 4109
         private const val EGL_OPENGL_ES3_BIT_KHR = 0x0040
         private const val EGL_CONTEXT_MAJOR_VERSION_KHR = 0x3098
         private const val EGL_CONTEXT_MINOR_VERSION_KHR = 0x30FB
@@ -224,13 +228,19 @@ class MainActivity : Activity() {
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         root.addView(status, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
         val open = Button(this).apply {
-            text = "Abrir disco GameCube (.iso / .gcm)"
+            text = "Abrir disco GameCube / Wii (.iso / .gcm)"
             setOnClickListener {
-                val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-                    addCategory(Intent.CATEGORY_OPENABLE)
-                    type = "*/*"
-                }
-                startActivityForResult(intent, OPEN_DISC_REQUEST)
+                AlertDialog.Builder(this@MainActivity)
+                    .setTitle("Tipo de consola")
+                    .setItems(arrayOf("GameCube", "Wii")) { _, which ->
+                        pendingConsole = which
+                        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                            addCategory(Intent.CATEGORY_OPENABLE)
+                            type = "*/*"
+                        }
+                        startActivityForResult(intent, OPEN_DISC_REQUEST)
+                    }
+                    .show()
             }
         }
         root.addView(open, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
@@ -328,21 +338,72 @@ class MainActivity : Activity() {
     @Deprecated("Deprecated in Android API; retained for broad device compatibility")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode != OPEN_DISC_REQUEST || resultCode != RESULT_OK) return
+        if (resultCode != RESULT_OK) return
         val uri: Uri = data?.data ?: return
+        if (requestCode == OPEN_DISC_REQUEST) {
+            if (pendingConsole == 1) {
+                val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                    addCategory(Intent.CATEGORY_OPENABLE)
+                    type = "text/*"
+                }
+                status.text = "Selecciona tu archivo de claves Wii (claves propias)."
+                startActivityForResult(intent, OPEN_KEYS_REQUEST)
+            } else {
+                loadDisc(uri, 0, "")
+            }
+        } else if (requestCode == OPEN_KEYS_REQUEST) {
+            status.text = "Leyendo claves y preparando disco Wii…"
+            Thread {
+                try {
+                    val keyText = contentResolver.openInputStream(uri).use { input ->
+                        requireNotNull(input) { "No se pudo abrir el archivo de claves." }
+                        input.bufferedReader(Charsets.UTF_8).use { it.readText() }
+                    }
+                    runOnUiThread {
+                        // Ask for the disc again because the key picker is a separate document action.
+                        AlertDialog.Builder(this)
+                            .setMessage("Selecciona ahora la imagen ISO/WBFS sin comprimir del juego Wii.")
+                            .setPositiveButton("Seleccionar disco") { _, _ ->
+                                pendingConsole = 1
+                                pendingKeyText = keyText
+                                val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                                    addCategory(Intent.CATEGORY_OPENABLE)
+                                    type = "*/*"
+                                }
+                                startActivityForResult(intent, OPEN_DISC_WITH_KEYS_REQUEST)
+                            }
+                            .setNegativeButton("Cancelar", null)
+                            .show()
+                    }
+                } catch (t: Throwable) {
+                    runOnUiThread { status.text = "Error al leer claves: ${t.message}" }
+                }
+            }.start()
+        } else if (requestCode == OPEN_DISC_WITH_KEYS_REQUEST) {
+            loadDisc(uri, 1, pendingKeyText)
+            pendingKeyText = ""
+        }
+    }
+
+    private var pendingKeyText = ""
+
+    private fun loadDisc(uri: Uri, consoleKind: Int, keyText: String) {
         stopAudio()
         status.text = "Copiando imagen al almacenamiento privado…"
         Thread {
             try {
-                val cached = File(cacheDir, "selected_gamecube_disc.iso")
+                val cached = File(cacheDir, if (consoleKind == 1) "selected_wii_disc.iso" else "selected_gamecube_disc.iso")
                 contentResolver.openInputStream(uri).use { input ->
                     requireNotNull(input) { "No se pudo abrir el archivo seleccionado." }
                     FileOutputStream(cached).use { output -> input.copyTo(output, 1024 * 1024) }
                 }
                 glView.queueEvent {
-                    val result = try { nativeLoadDisc(cached.absolutePath) }
+                    val result = try { nativeLoadDisc(cached.absolutePath, consoleKind, keyText) }
                     catch (t: Throwable) { "Error al cargar disco: ${t.message}" }
-                    runOnUiThread { status.text = result }
+                    runOnUiThread {
+                        status.text = result
+                        if (result.contains("iniciado")) startAudio()
+                    }
                 }
             } catch (t: Throwable) {
                 runOnUiThread { status.text = "Error al copiar el disco: ${t.message}" }
