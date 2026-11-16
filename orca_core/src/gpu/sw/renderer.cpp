@@ -914,6 +914,7 @@ bool Renderer::sample_mip(s32 s, s32 t, s32 mip, bool linear, u32 texmap, u8 out
     const std::size_t taddr = static_cast<std::size_t>(bits(tl, 0, 10)) << 9;
     const std::span<const u8> tlut = taddr < tex_->tmem.size() ? tex_->tmem.subspan(taddr) : std::span<const u8>{};
     const TlutFormat tf = static_cast<TlutFormat>(bits(tl, 10, 2));
+    std::string e;
     if (tex_format_paletted(f) && bits(tl, 10, 2) > 2U) { err_ = "invalid TLUT format 3"; return false; }
     const u32 ws = bits(m0, 0, 2), wt = bits(m0, 2, 2);
     // Decode each texture mip once per draw. The old per-fragment path
