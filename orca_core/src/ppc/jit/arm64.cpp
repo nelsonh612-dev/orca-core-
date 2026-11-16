@@ -432,6 +432,24 @@ bool translate_one(u32 ins, u32 guest_pc, std::vector<u32>& out, bool& terminate
     if(op==31U) {
         const unsigned xo10=(ins>>1U)&0x3FFU;
 
+
+        if(xo10==512U) { // mcrxr BF: move XER[SO:CA] nibble into CR and clear XER
+            const unsigned bf=(ins>>23U)&7U;
+            const unsigned shift=28U-bf*4U;
+            out.push_back(ldr_w(9,0,static_cast<unsigned>(offsetof(CpuState,xer))));
+            out.push_back(ubfx_w(11,9,28U,4U));
+            if(shift==0U) out.push_back(orr_w(12,11,11));
+            else out.push_back(lsl_w(12,11,shift));
+            load_imm(out,13,~(0xFU<<shift));
+            out.push_back(ldr_w(10,0,static_cast<unsigned>(offsetof(CpuState,cr))));
+            out.push_back(and_w(10,10,13));
+            out.push_back(orr_w(10,10,12));
+            out.push_back(str_w(10,0,static_cast<unsigned>(offsetof(CpuState,cr))));
+            load_imm(out,13,0x0FFFFFFFU);
+            out.push_back(and_w(9,9,13));
+            out.push_back(str_w(9,0,static_cast<unsigned>(offsetof(CpuState,xer))));
+            return true;
+        }
         if(xo10==19U) { // mfcr RT
             out.push_back(ldr_w(9,0,static_cast<unsigned>(offsetof(CpuState,cr))));
             out.push_back(str_w(9,0,static_cast<unsigned>(offsetof(CpuState,gpr)+rt*4U)));
