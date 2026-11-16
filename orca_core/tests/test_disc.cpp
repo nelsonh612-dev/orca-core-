@@ -160,7 +160,7 @@ TEST_CASE(wii_decrypted_partition_header_and_fst) {
 TEST_CASE(wii_common_key_file_provider_parses_user_supplied_slots_and_rejects_bad_input) {
     disc::WiiCommonKeyFileProvider provider;
     std::string error;
-    CHECK(provider.load_text("# user-owned keys\\n0 = 000102030405060708090a0b0c0d0e0f\\n  1=FFEEDDCCBBAA99887766554433221100  \\n", error));
+    CHECK(provider.load_text("# user-owned keys\n0 = 000102030405060708090a0b0c0d0e0f\n  1=FFEEDDCCBBAA99887766554433221100  \n", error));
     crypto::Aes128Key key{};
     CHECK(provider.get_common_key(0, key));
     CHECK_EQ(key[0], 0x00U);
@@ -168,7 +168,7 @@ TEST_CASE(wii_common_key_file_provider_parses_user_supplied_slots_and_rejects_ba
     CHECK(provider.get_common_key(1, key));
     CHECK_EQ(key[0], 0xFFU);
     CHECK(!provider.get_common_key(2, key));
-    CHECK(!provider.load_text("0=1234\\n", error));
+    CHECK(!provider.load_text("0=1234\n", error));
     CHECK(error.find("line 1") != std::string::npos);
     CHECK(!provider.get_common_key(0, key)); // failed reload never leaves stale keys installed
     CHECK(provider.load_text("255=00112233445566778899aabbccddeeff", error));
