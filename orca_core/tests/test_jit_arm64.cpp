@@ -20,6 +20,31 @@ TEST_CASE(jit_arm64_translates_supported_integer_prefix_and_stops_at_branch) {
     CHECK_EQ(b.host_words.back(), 0xD65F03C0U); // RET
 }
 
+TEST_CASE(jit_arm64_keeps_data_memory_ops_out_of_native_blocks_until_context_abi_exists) {
+    // D-form integer loads/stores must not be partially translated: the
+    // current native ABI only receives CpuState*, while data accesses require
+    // Cpu translation, locked-cache and MMIO semantics.
+    const std::array<u32, 6> memory_ops{
+        (32U << 26U) | (3U << 21U) | (4U << 16U), // lwz r3,0(r4)
+        (34U << 26U) | (3U << 21U) | (4U << 16U), // lbz r3,0(r4)
+        (40U << 26U) | (3U << 21U) | (4U << 16U), // lhz r3,0(r4)
+        (36U << 26U) | (3U << 21U) | (4U << 16U), // stw r3,0(r4)
+        (38U << 26U) | (3U << 21U) | (4U << 16U), // stb r3,0(r4)
+        (44U << 26U) | (3U << 21U) | (4U << 16U)  // sth r3,0(r4)
+    };
+    for (u32 ins : memory_ops) {
+        const std::array<u32, 1> code{ins};
+        const Block block = compile_arm64(code, 0x1000U);
+        CHECK_EQ(block.guest_instructions, 0U);
+        CHECK(block.host_words.empty());
+    }
+
+    const std::array<u32, 2> mixed{A::addi(3U, 0U, 7), memory_ops[0]};
+    const Block prefix = compile_arm64(mixed, 0x1000U);
+    CHECK_EQ(prefix.guest_instructions, 1U);
+    CHECK_EQ(prefix.end_pc, 0x1004U);
+}
+
 TEST_CASE(jit_arm64_translates_mulli_and_preserves_gpr_zero_as_source) {
     const std::array<u32, 2> code{A::mulli(4, 0, -3), A::mulli(0, 4, 7)};
     const Block b = compile_arm64(code, 0x1000U);
