@@ -181,7 +181,10 @@ bool System::boot_disc(std::string& error) {
     // apploader/DOL address space as a GameCube disc.
     std::array<u8,0x20> id{};
     if(!boot_reader->read(0,id)) { error="boot_disc: cannot read logical disc ID"; return false; }
-    (void)bus_.dma_write(0,id);
+    if (bus_.dma_write(0,id) != mem::BusStatus::Ok) {
+        error="boot_disc: cannot copy the logical disc ID into guest memory";
+        return false;
+    }
     const bool gc=config_.console==Console::GameCube;
     (void)bus_.write32(0x20,0x0D15EA5EU);
     (void)bus_.write32(0x28,mem::kMem1Size);
@@ -189,7 +192,10 @@ bool System::boot_disc(std::string& error) {
     (void)bus_.write32(0xFC,static_cast<u32>(clocks_.cpu_hz));
     std::vector<u8> bi2(0x2000);
     if(!boot_reader->read(0x440,bi2)) { error="boot_disc: cannot read bi2.bin"; return false; }
-    (void)bus_.dma_write(loader::virtual_to_physical(kBi2Address),bi2);
+    if (bus_.dma_write(loader::virtual_to_physical(kBi2Address),bi2) != mem::BusStatus::Ok) {
+        error="boot_disc: cannot copy bi2.bin into guest memory";
+        return false;
+    }
     (void)bus_.write32(0xF4,kBi2Address);
 
     std::vector<u8> code(app_bytes);
@@ -197,10 +203,16 @@ bool System::boot_disc(std::string& error) {
         error="boot_disc: cannot read the apploader";
         return false;
     }
-    (void)bus_.dma_write(loader::virtual_to_physical(disc::kApploaderLoadAddress),code);
+    if (bus_.dma_write(loader::virtual_to_physical(disc::kApploaderLoadAddress),code) != mem::BusStatus::Ok) {
+        error="boot_disc: cannot copy the apploader into guest memory";
+        return false;
+    }
     const u32 stub_pa=loader::virtual_to_physical(kGuestReturn);
-    (void)bus_.write32(stub_pa,0x4E800020U);
-    (void)bus_.write32(stub_pa+4U,0x4E800020U);
+    if (bus_.write32(stub_pa,0x4E800020U) != mem::BusStatus::Ok ||
+        bus_.write32(stub_pa+4U,0x4E800020U) != mem::BusStatus::Ok) {
+        error="boot_disc: cannot install the apploader return stubs";
+        return false;
+    }
     hle_boot(0);
     cpu_->state().gpr[1]=kApploaderStack;
 
@@ -208,9 +220,12 @@ bool System::boot_disc(std::string& error) {
     const u32 slots=kGuestReturn+0x10U,args=kGuestReturn+0x20U;
     if(!call_guest(app->entry,{slots,slots+4U,slots+8U},kBudget,error)) return false;
     u32 init=0,main_fn=0,close=0;
-    bus_.read32(loader::virtual_to_physical(slots),init);
-    bus_.read32(loader::virtual_to_physical(slots+4U),main_fn);
-    bus_.read32(loader::virtual_to_physical(slots+8U),close);
+    if (bus_.read32(loader::virtual_to_physical(slots),init) != mem::BusStatus::Ok ||
+        bus_.read32(loader::virtual_to_physical(slots+4U),main_fn) != mem::BusStatus::Ok ||
+        bus_.read32(loader::virtual_to_physical(slots+8U),close) != mem::BusStatus::Ok) {
+        error="boot_disc: apploader did not return valid entry points";
+        return false;
+    }
     if(!call_guest(init,{kReportStub},kBudget,error)) return false;
     for(int i=0;;++i) {
         if(i>100000) { error="boot_disc: apploader main() never finished"; return false; }
@@ -228,7 +243,10 @@ bool System::boot_disc(std::string& error) {
                 error="boot_disc: apploader requested a read outside the logical disc/partition";
                 return false;
             }
-            (void)bus_.dma_write(pa,chunk);
+            if (bus_.dma_write(pa,chunk) != mem::BusStatus::Ok) {
+                error="boot_disc: apploader data could not be copied into guest memory";
+                return false;
+            }
             (void)bus_.write32(loader::virtual_to_physical(args+4U),0);
         }
         if(*more==0U) break;
