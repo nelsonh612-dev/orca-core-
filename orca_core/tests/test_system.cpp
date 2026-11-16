@@ -282,6 +282,20 @@ TEST_CASE(wii_hle_boot_maps_cached_mem2_for_code_and_data) {
     CHECK_EQ(wii.cpu().state().gpr[5], 0x12345678U);
 }
 
+TEST_CASE(wii_hle_boot_maps_uncached_mem2_data_alias) {
+    system::System wii({system::Console::Wii, 0, 1});
+    CHECK(wii.bus().write32(mem::kMem2Base + 0x20U, 0x89ABCDEFU) == mem::BusStatus::Ok);
+    // Execute from MEM1, then access physical MEM2 through Wii's 0xD0000000
+    // uncached alias installed by DBAT1 during HLE boot.
+    code(wii, 0x3000U, {A::addis(4U, 0U, 0xD000), 0x80A40020U}); // lwz r5,0x20(r4)
+    wii.hle_boot(0x80003000U);
+    const auto result = wii.run(2U);
+    CHECK(result.stop == StepResult::Executed);
+    CHECK_EQ(result.instructions, 2U);
+    CHECK_EQ(wii.cpu().state().gpr[4], 0xD0000000U);
+    CHECK_EQ(wii.cpu().state().gpr[5], 0x89ABCDEFU);
+}
+
 TEST_CASE(decrementer_interrupt_through_system_loop) {
     system::System sys({});
     auto& s = sys.cpu().state();
