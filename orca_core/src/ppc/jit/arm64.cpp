@@ -22,6 +22,9 @@ constexpr u32 orr_w(unsigned rd, unsigned rn, unsigned rm) { return 0x2A000000U 
 constexpr u32 eor_w(unsigned rd, unsigned rn, unsigned rm) { return 0x4A000000U | (rm << 16U) | (rn << 5U) | rd; }
 constexpr u32 and_w(unsigned rd, unsigned rn, unsigned rm) { return 0x0A000000U | (rm << 16U) | (rn << 5U) | rd; }
 constexpr u32 mul_w(unsigned rd, unsigned rn, unsigned rm) { return 0x1B007C00U | (rm << 16U) | (rn << 5U) | rd; }
+constexpr u32 smull_x(unsigned rd,unsigned rn,unsigned rm) { return 0x9B207C00U | (rm << 16U) | (rn << 5U) | rd; }
+constexpr u32 umull_x(unsigned rd,unsigned rn,unsigned rm) { return 0x9BA07C00U | (rm << 16U) | (rn << 5U) | rd; }
+constexpr u32 lsr_x(unsigned rd,unsigned rn,unsigned shift) { return 0xD3400000U | (shift << 16U) | (63U << 10U) | (rn << 5U) | rd; }
 constexpr u32 adds_w(unsigned rd, unsigned rn, unsigned rm) { return 0x2B000000U | (rm << 16U) | (rn << 5U) | rd; }
 constexpr u32 sub_w(unsigned rd,unsigned rn,unsigned rm) { return 0x4B000000U | (rm << 16U) | (rn << 5U) | rd; }
 constexpr u32 rorv_w(unsigned rd,unsigned rn,unsigned rm) { return 0x1AC02C00U | (rm << 16U) | (rn << 5U) | rd; }
@@ -396,6 +399,16 @@ bool translate_one(u32 ins, u32 guest_pc, std::vector<u32>& out, bool& terminate
 
 
 
+
+        if(xo10==75U || xo10==11U) { // mulhw / mulhwu
+            out.push_back(ldr_w(9,0,static_cast<unsigned>(offsetof(CpuState,gpr)+rt*4U)));
+            out.push_back(ldr_w(10,0,static_cast<unsigned>(offsetof(CpuState,gpr)+rb*4U)));
+            out.push_back(xo10==75U ? smull_x(12,9,10) : umull_x(12,9,10));
+            out.push_back(lsr_x(12,12,32U));
+            out.push_back(str_w(12,0,static_cast<unsigned>(offsetof(CpuState,gpr)+ra*4U)));
+            if(rc) emit_cr0(out,12);
+            return true;
+        }
         if(xo10==235U) { // mullw, OE=0
             out.push_back(ldr_w(9,0,static_cast<unsigned>(offsetof(CpuState,gpr)+rt*4U)));
             out.push_back(ldr_w(10,0,static_cast<unsigned>(offsetof(CpuState,gpr)+rb*4U)));
