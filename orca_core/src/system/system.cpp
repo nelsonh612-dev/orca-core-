@@ -58,8 +58,12 @@ void System::hle_boot(u32 entry) {
     ppc::CpuState& s = cpu_->state();
     s.ibat[0] = {0x80001FFFU, 0x00000002U};
     s.dbat[0] = {0x80001FFFU, 0x00000002U};
-    s.dbat[1] = {0xC0001FFFU, 0x0000002AU}; // WIMG = 0101 (I, G), PP = 10
+    s.dbat[1] = {0xC0001FFFU, 0x0000002AU}; // MEM1 uncached alias, WIMG = 0101, PP = 10
     if (config_.console == Console::Wii) {
+        // The Wii's uncached MEM2 alias is a separate 256 MiB BAT window:
+        // 0xD0000000 -> physical 0x10000000. DBAT1 above maps 0xC0000000
+        // to physical zero and therefore cannot serve this alias.
+        s.dbat[3] = {0xD0001FFFU, 0x1000002AU};
         // Wii MEM2 is a distinct 64 MiB region at physical 0x10000000.
         // Install its cached 0x90000000 alias for instruction fetches and
         // data accesses; DBAT1 already provides the uncached 0xD0000000 alias.
