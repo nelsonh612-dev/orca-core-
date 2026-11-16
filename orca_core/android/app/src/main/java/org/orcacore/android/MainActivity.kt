@@ -1,0 +1,247 @@
+package org.orcacore.android
+
+import android.app.Activity
+import android.content.Intent
+import android.net.Uri
+import android.opengl.GLSurfaceView
+import android.os.Bundle
+import android.view.Gravity
+import android.view.KeyEvent
+import android.view.MotionEvent
+import android.view.View
+import android.widget.Button
+import android.widget.LinearLayout
+import android.widget.TextView
+import java.io.File
+import java.io.FileOutputStream
+import javax.microedition.khronos.egl.EGL10
+import javax.microedition.khronos.egl.EGLConfig
+import javax.microedition.khronos.egl.EGLContext
+import javax.microedition.khronos.egl.EGLDisplay
+import javax.microedition.khronos.opengles.GL10
+
+class MainActivity : Activity() {
+    private lateinit var status: TextView
+    private lateinit var glView: GLSurfaceView
+    private var padButtons = 0
+    private var stickX = 128
+    private var stickY = 128
+    private var cStickX = 128
+    private var cStickY = 128
+    private var triggerL = 0
+    private var triggerR = 0
+
+    private external fun nativeInit(): String
+    private external fun nativeLoadDisc(path: String): String
+    private external fun nativeSetPadState(buttons: Int, sx: Int, sy: Int, csx: Int, csy: Int, tl: Int, tr: Int)
+    private external fun nativeStatus(): String
+    private external fun nativeDrawFrame()
+    private external fun nativeShutdown()
+
+    companion object {
+        init { System.loadLibrary("orca_android") }
+        private const val OPEN_DISC_REQUEST = 4107
+        private const val EGL_OPENGL_ES3_BIT_KHR = 0x0040
+        private const val EGL_CONTEXT_MAJOR_VERSION_KHR = 0x3098
+        private const val EGL_CONTEXT_MINOR_VERSION_KHR = 0x30FB
+        private const val PAD_A = 0x0100
+        private const val PAD_B = 0x0200
+        private const val PAD_X = 0x0400
+        private const val PAD_Y = 0x0800
+        private const val PAD_START = 0x1000
+        private const val PAD_LEFT = 0x0001
+        private const val PAD_RIGHT = 0x0002
+        private const val PAD_DOWN = 0x0004
+        private const val PAD_UP = 0x0008
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        status = TextView(this).apply {
+            text = "Iniciando Orca Core…"
+            textSize = 13f
+            setPadding(14, 10, 14, 10)
+            gravity = Gravity.CENTER_VERTICAL
+            setTextIsSelectable(true)
+        }
+        glView = GLSurfaceView(this).apply {
+            setEGLConfigChooser { egl, display ->
+                val attrs = intArrayOf(EGL10.EGL_RED_SIZE, 8, EGL10.EGL_GREEN_SIZE, 8,
+                    EGL10.EGL_BLUE_SIZE, 8, EGL10.EGL_ALPHA_SIZE, 8, EGL10.EGL_DEPTH_SIZE, 16,
+                    0x3040, EGL_OPENGL_ES3_BIT_KHR, EGL10.EGL_NONE)
+                val configs = arrayOfNulls<EGLConfig>(1)
+                val count = IntArray(1)
+                check(egl.eglChooseConfig(display, attrs, configs, 1, count) && count[0] > 0) {
+                    "No hay EGLConfig para OpenGL ES 3.x"
+                }
+                configs[0]!!
+            }
+            setEGLContextFactory(object : GLSurfaceView.EGLContextFactory {
+                override fun createContext(egl: EGL10, display: EGLDisplay, config: EGLConfig): EGLContext {
+                    val attrs32 = intArrayOf(EGL_CONTEXT_MAJOR_VERSION_KHR, 3, EGL_CONTEXT_MINOR_VERSION_KHR, 2, EGL10.EGL_NONE)
+                    val context32 = egl.eglCreateContext(display, config, EGL10.EGL_NO_CONTEXT, attrs32)
+                    if (context32 != EGL10.EGL_NO_CONTEXT) return context32
+                    val err = egl.eglGetError()
+                    val attrs30 = intArrayOf(EGL_CONTEXT_MAJOR_VERSION_KHR, 3, EGL_CONTEXT_MINOR_VERSION_KHR, 0, EGL10.EGL_NONE)
+                    val context30 = egl.eglCreateContext(display, config, EGL10.EGL_NO_CONTEXT, attrs30)
+                    check(context30 != EGL10.EGL_NO_CONTEXT) {
+                        "No se pudo crear GLES 3.2 ni 3.0 (0x${Integer.toHexString(err)})"
+                    }
+                    return context30
+                }
+                override fun destroyContext(egl: EGL10, display: EGLDisplay, context: EGLContext) {
+                    egl.eglDestroyContext(display, context)
+                }
+            })
+            setRenderer(object : GLSurfaceView.Renderer {
+                override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
+                    val result = try { nativeInit() } catch (t: Throwable) { "Error GLES: ${t.message}" }
+                    runOnUiThread { status.text = result }
+                }
+                override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) {
+                    android.opengl.GLES20.glViewport(0, 0, width, height)
+                }
+                override fun onDrawFrame(gl: GL10?) {
+                    android.opengl.GLES20.glClearColor(0.02f, 0.025f, 0.035f, 1f)
+                    android.opengl.GLES20.glClear(android.opengl.GLES20.GL_COLOR_BUFFER_BIT or android.opengl.GLES20.GL_DEPTH_BUFFER_BIT)
+                    nativeDrawFrame()
+                }
+            })
+            renderMode = GLSurfaceView.RENDERMODE_CONTINUOUSLY
+        }
+
+        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        root.addView(status, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        val open = Button(this).apply {
+            text = "Abrir disco GameCube (.iso / .gcm)"
+            setOnClickListener {
+                val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                    addCategory(Intent.CATEGORY_OPENABLE)
+                    type = "*/*"
+                }
+                startActivityForResult(intent, OPEN_DISC_REQUEST)
+            }
+        }
+        root.addView(open, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        root.addView(glView, LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
+        root.addView(buildControls(), LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        setContentView(root)
+    }
+
+    private fun buildControls(): View {
+        val panel = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER }
+        val directions = LinearLayout(this).apply { gravity = Gravity.CENTER }
+        addPadButton(directions, "◀", PAD_LEFT)
+        addPadButton(directions, "▲", PAD_UP)
+        addPadButton(directions, "▼", PAD_DOWN)
+        addPadButton(directions, "▶", PAD_RIGHT)
+        panel.addView(directions)
+        val actions = LinearLayout(this).apply { gravity = Gravity.CENTER }
+        addPadButton(actions, "A", PAD_A)
+        addPadButton(actions, "B", PAD_B)
+        addPadButton(actions, "X", PAD_X)
+        addPadButton(actions, "Y", PAD_Y)
+        addPadButton(actions, "START", PAD_START)
+        panel.addView(actions)
+        return panel
+    }
+
+    private fun addPadButton(row: LinearLayout, label: String, bit: Int) {
+        val button = Button(this).apply {
+            text = label
+            isAllCaps = false
+            setPadding(4, 2, 4, 2)
+            minWidth = 48
+            setOnTouchListener { _, event ->
+                when (event.actionMasked) {
+                    MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> padButtons = padButtons or bit
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_POINTER_UP, MotionEvent.ACTION_CANCEL -> padButtons = padButtons and bit.inv()
+                    else -> return@setOnTouchListener true
+                }
+                publishPadState()
+                true
+            }
+        }
+        row.addView(button, LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+    }
+
+    private fun publishPadState() {
+        val buttons = padButtons
+        val sx = stickX; val sy = stickY; val csx = cStickX; val csy = cStickY
+        val tl = triggerL; val tr = triggerR
+        glView.queueEvent { nativeSetPadState(buttons, sx, sy, csx, csy, tl, tr) }
+    }
+
+    private fun keyBit(keyCode: Int): Int = when (keyCode) {
+        KeyEvent.KEYCODE_BUTTON_A -> PAD_A
+        KeyEvent.KEYCODE_BUTTON_B -> PAD_B
+        KeyEvent.KEYCODE_BUTTON_X -> PAD_X
+        KeyEvent.KEYCODE_BUTTON_Y -> PAD_Y
+        KeyEvent.KEYCODE_BUTTON_START, KeyEvent.KEYCODE_ENTER -> PAD_START
+        KeyEvent.KEYCODE_DPAD_LEFT -> PAD_LEFT
+        KeyEvent.KEYCODE_DPAD_RIGHT -> PAD_RIGHT
+        KeyEvent.KEYCODE_DPAD_UP -> PAD_UP
+        KeyEvent.KEYCODE_DPAD_DOWN -> PAD_DOWN
+        else -> 0
+    }
+
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        val bit = keyBit(event.keyCode)
+        if (bit != 0 && (event.isFromSource(android.view.InputDevice.SOURCE_GAMEPAD) ||
+                    event.isFromSource(android.view.InputDevice.SOURCE_DPAD) ||
+                    event.isFromSource(android.view.InputDevice.SOURCE_JOYSTICK))) {
+            if (event.action == KeyEvent.ACTION_DOWN) padButtons = padButtons or bit
+            else if (event.action == KeyEvent.ACTION_UP) padButtons = padButtons and bit.inv()
+            publishPadState()
+            return true
+        }
+        return super.dispatchKeyEvent(event)
+    }
+
+    override fun onGenericMotionEvent(event: MotionEvent): Boolean {
+        if ((event.source and android.view.InputDevice.SOURCE_JOYSTICK) == android.view.InputDevice.SOURCE_JOYSTICK &&
+            event.action == MotionEvent.ACTION_MOVE) {
+            fun axis(value: Float): Int = (128f + value.coerceIn(-1f, 1f) * 127f).toInt().coerceIn(0, 255)
+            stickX = axis(event.getAxisValue(MotionEvent.AXIS_X))
+            stickY = axis(-event.getAxisValue(MotionEvent.AXIS_Y))
+            cStickX = axis(event.getAxisValue(MotionEvent.AXIS_Z))
+            cStickY = axis(-event.getAxisValue(MotionEvent.AXIS_RZ))
+            triggerL = (event.getAxisValue(MotionEvent.AXIS_LTRIGGER).coerceIn(0f, 1f) * 255f).toInt()
+            triggerR = (event.getAxisValue(MotionEvent.AXIS_RTRIGGER).coerceIn(0f, 1f) * 255f).toInt()
+            publishPadState()
+            return true
+        }
+        return super.onGenericMotionEvent(event)
+    }
+
+    @Deprecated("Deprecated in Android API; retained for broad device compatibility")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != OPEN_DISC_REQUEST || resultCode != RESULT_OK) return
+        val uri: Uri = data?.data ?: return
+        status.text = "Copiando imagen al almacenamiento privado…"
+        Thread {
+            try {
+                val cached = File(cacheDir, "selected_gamecube_disc.iso")
+                contentResolver.openInputStream(uri).use { input ->
+                    requireNotNull(input) { "No se pudo abrir el archivo seleccionado." }
+                    FileOutputStream(cached).use { output -> input.copyTo(output, 1024 * 1024) }
+                }
+                glView.queueEvent {
+                    val result = try { nativeLoadDisc(cached.absolutePath) }
+                    catch (t: Throwable) { "Error al cargar disco: ${t.message}" }
+                    runOnUiThread { status.text = result }
+                }
+            } catch (t: Throwable) {
+                runOnUiThread { status.text = "Error al copiar el disco: ${t.message}" }
+            }
+        }.start()
+    }
+
+    override fun onResume() { super.onResume(); glView.onResume() }
+    override fun onPause() {
+        glView.queueEvent { nativeShutdown() }
+        glView.onPause()
+        super.onPause()
+    }
+}

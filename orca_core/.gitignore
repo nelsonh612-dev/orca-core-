@@ -1,0 +1,11 @@
+/build*/
+.gradle/
+.idea/
+local.properties
+*.iml
+*.apk
+*.aab
+*.so
+*.o
+*.a
+*.dSYM/

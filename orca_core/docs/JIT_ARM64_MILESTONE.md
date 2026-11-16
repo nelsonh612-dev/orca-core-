@@ -1,0 +1,42 @@
+# Orca Core — primera cobertura del traductor JIT ARM64
+
+## Punto de partida inspeccionado
+
+M018 usa `CpuState` como estado arquitectónico: `gpr[32]`, `fpr[32]` (dos slots de 64 bits), `fpscr`, `pc`, `lr`, `ctr`, `cr`, `xer`, `msr`, registros de excepción/MMU, time base, decrementer y estado de reserva/cache. La memoria física está detrás de `mem::Bus`, con accesores big-endian, RAM/MMIO, observadores de escritura y seguimiento de páginas de código.
+
+El intérprete está en `src/ppc/cpu.cpp` y `src/ppc/cpu_fpu.cpp`. `Cpu::step()` comprueba interrupciones, modo, alineación y MMU; obtiene una instrucción big-endian, la envía a `Cpu::execute()` y actualiza PC/retirement o entrega excepciones/host-stops. `Cpu::run()` repite `step()`. El intérprete no expone actualmente un API público para extraer un bloque traducible ni un dispatcher JIT.
+
+## Cobertura del intérprete identificada
+
+La cobertura es mucho mayor que la del JIT. `Cpu::execute()` contiene primarios 3, 7, 8, 10–18, 19, 20/21/23, 24–29, 31, 32–48, 50–57, 59–63, incluyendo subdecodificadores para integer XO/X, load/store, sistema, caché, FP, paired-single, MMU y periféricos. La cobertura real depende de los subdecodificadores y de sus restricciones; los opcodes primarios por sí solos no significan que cada forma esté implementada.
+
+## JIT implementado en este cambio
+
+`include/orca/ppc/jit/arm64.hpp` y `src/ppc/jit/arm64.cpp` introducen un emisor de instrucciones AArch64 nativas. El bloque opera directamente sobre el layout real de `CpuState` y termina con `RET`. Primera cobertura:
+
+- `addi`, `addis`
+- `ori`, `oris`, `xori`, `xoris`
+- `and`, `or`, `xor` con `Rc=0`
+
+El compilador produce el prefijo lineal máximo, deteniéndose ante instrucciones no admitidas (incluidos saltos), entradas desalineadas o cambio de página de código de 4 KiB. El PC arquitectónico se actualiza al final del bloque. En AArch64, `execute_arm64()` copia el código a memoria RW, limpia I-cache, cambia a RX, ejecuta y libera; fuera de AArch64 devuelve `false` sin alterar el estado. La ejecución mantiene una política W^X.
+
+## Límites importantes
+
+- **No está conectado aún a `Cpu::run()` ni al scheduler**: el caller debe proporcionar las palabras guest y decidir cuándo ejecutar el bloque. El motor de bloques/cache y el dispatcher siguen pendientes.
+- No se emiten ramas, cargas/almacenamientos, instrucciones que actualizan CR/XER, excepciones, MMU ni operaciones con efectos laterales.
+- El callback de invalidación de `mem::Bus`, `mark_code_page()` y `icbi` aún no están enlazados a una caché JIT; no existe caché de bloques que invalidar todavía.
+- El código no cambia la semántica del intérprete ni sustituye su fallback.
+- La prueba diferencial que ejecuta código generado está condicionada a `__aarch64__`; en esta máquina x86_64 solo se prueban decodificación, límites y estructura del bloque. No se afirma ejecución ARM64.
+
+## Verificación de este cambio
+
+Configuración host: CMake + Ninja, GCC 14.2, C++20, `ORCA_WERROR=ON`, `ORCA_GLES=OFF`.
+
+Resultado: compilación host completa correcta. CTest: 19 pruebas totales, 18 aprobadas y 1 omitida (`encodings`, falta `llvm-mc`). El conjunto `jit_arm64` ejecuta pruebas de prefijo soportado, parada ante branch, límite de página y PC desalineado. En x86_64 `execute_arm64()` no ejecuta código generado, por lo que no hay prueba diferencial JIT real en este host.
+
+Android SDK/NDK/Gradle no están disponibles; no se compiló APK. No hay prueba en ARM64 ni en dispositivo Redmi/Mali. No hay benchmarks de JIT y no se hacen afirmaciones de rendimiento o compatibilidad con juegos.
+
+
+## M020 — dispatcher, caché e invalidación
+
+El trabajo posterior está documentado en [`JIT_ARM64_M020.md`](JIT_ARM64_M020.md). Añade `Cpu::run_jit()`, caché de bloques con páginas nativas persistentes RW→RX, traducción de fetch MMU/BAT, revalidación de mapeos, invalidación por escrituras del bus e `icbi`, y fallback al intérprete. La ejecución nativa sigue pendiente de probar en ARM64; `System::run()` conserva `step()` para no alterar la temporización del scheduler/decrementer.
