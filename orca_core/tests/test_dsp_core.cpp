@@ -3,6 +3,7 @@
 // the operations and flag rules written in that manual.
 #include "orca/dsp/dsp_core.hpp"
 #include "orca/hw/dsp_interface.hpp"
+#include "orca/memory/console_maps.hpp"
 #include "orca/system/system.hpp"
 #include "test_framework.hpp"
 #include "test_port.hpp"
@@ -70,6 +71,25 @@ constexpr unsigned AR0 = 0, AR3 = 3, IX0 = 4, WR0 = 8, ST0 = 12, AC0H = 16, AC1H
                    AX0L = 24, AX1L = 25, AX0H = 26, AX1H = 27, AC0L = 28, AC1L = 29, AC0M = 30, AC1M = 31;
 constexpr u16 SET16 = 0x8E00, SET40 = 0x8F00, SET15 = 0x8D00, CLR15 = 0x8C00, M0 = 0x8B00, M2 = 0x8A00;
 } // namespace
+
+TEST_CASE(dsp_reset_discards_pre_reset_scheduled_execution_slice) {
+    mem::Bus bus;
+    mem::map_gamecube_ram(bus);
+    core::Scheduler scheduler;
+    hw::ProcessorInterface pi(bus, [](bool) {});
+    hw::DspInterface interface(bus, scheduler, pi, true);
+
+    // Start a slice, then reset before its scheduled deadline. The reset
+    // schedules a fresh slice at the same deadline; the stale pre-reset event
+    // must be ignored rather than executing the new DSP state a second time.
+    CHECK(interface.mmio_write(hw::dsp::CSR, 2U, 0U)); // release HALT
+    CHECK(interface.mmio_write(hw::dsp::CSR, 2U,
+          hw::dsp::CSR_RES | hw::dsp::CSR_BIT11)); // reset and boot zeroed IRAM
+    scheduler.advance_to(hw::DspInterface::kSliceInstructions *
+                         hw::DspInterface::kCpuCyclesPerDspCycle);
+    CHECK_EQ(interface.core().cycles(), hw::DspInterface::kSliceInstructions);
+    CHECK(!interface.dsp_failed());
+}
 
 // ------------------------------------------------------------------ registers / memory
 TEST_CASE(dsp_lri_lr_sr_mrr_and_register_widths) {
