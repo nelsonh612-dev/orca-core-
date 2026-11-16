@@ -277,6 +277,55 @@ TEST_CASE(jit_arm64_executes_andi_and_andis_with_cr0_updates) {
     CHECK_EQ(candidate.s().gpr[5],0xF0F00000U);
 }
 
+
+TEST_CASE(jit_arm64_executes_sign_extend_clz_and_logical_xo_operations) {
+    Machine reference;
+    Machine candidate;
+    const std::array<u32,7> code{
+        A::extsb(3U,4U,true), A::extsh(5U,6U,true), A::cntlzw(7U,8U,true),
+        A::nand(9U,10U,11U,true), A::nor(12U,13U,14U,true),
+        A::eqv(15U,16U,17U,true), A::andc(18U,19U,20U,true)
+    };
+    reference.code(0x1000U,{code[0],code[1],code[2],code[3],code[4],code[5],code[6]});
+    candidate.code(0x1000U,{code[0],code[1],code[2],code[3],code[4],code[5],code[6]});
+    reference.s().gpr[4]=0x00000080U; candidate.s().gpr[4]=0x00000080U;
+    reference.s().gpr[6]=0x00008001U; candidate.s().gpr[6]=0x00008001U;
+    reference.s().gpr[8]=1U; candidate.s().gpr[8]=1U;
+    reference.s().gpr[10]=0x12345678U; candidate.s().gpr[10]=0x12345678U;
+    reference.s().gpr[11]=0xFFFF0000U; candidate.s().gpr[11]=0xFFFF0000U;
+    reference.s().gpr[13]=0xAAAA5555U; candidate.s().gpr[13]=0xAAAA5555U;
+    reference.s().gpr[14]=0x0F0F0F0FU; candidate.s().gpr[14]=0x0F0F0F0FU;
+    reference.s().gpr[16]=0x12345678U; candidate.s().gpr[16]=0x12345678U;
+    reference.s().gpr[17]=0xFFFF0000U; candidate.s().gpr[17]=0xFFFF0000U;
+    reference.s().gpr[19]=0xFF00FF00U; candidate.s().gpr[19]=0xFF00FF00U;
+    reference.s().gpr[20]=0x0F0F0F0FU; candidate.s().gpr[20]=0x0F0F0F0FU;
+    CHECK(reference.cpu->run(code.size())==StepResult::Executed);
+    CHECK(candidate.cpu->run_jit(code.size())==StepResult::Executed);
+    CHECK(candidate.s()==reference.s());
+    CHECK_EQ(candidate.s().gpr[3],0xFFFFFF80U);
+    CHECK_EQ(candidate.s().gpr[5],0xFFFF8001U);
+    CHECK_EQ(candidate.s().gpr[7],31U);
+}
+
+TEST_CASE(jit_arm64_executes_rlwinm_and_rlwimi_against_interpreter) {
+    Machine reference;
+    Machine candidate;
+    const std::array<u32,2> code{
+        A::rlwinm(3U,4U,8U,0U,23U,true),
+        A::rlwimi(5U,6U,8U,8U,15U,true)
+    };
+    reference.code(0x1000U,{code[0],code[1]});
+    candidate.code(0x1000U,{code[0],code[1]});
+    reference.s().gpr[4]=0x12345678U; candidate.s().gpr[4]=0x12345678U;
+    reference.s().gpr[5]=0xAABBCCDDU; candidate.s().gpr[5]=0xAABBCCDDU;
+    reference.s().gpr[6]=0x11223344U; candidate.s().gpr[6]=0x11223344U;
+    CHECK(reference.cpu->run(2U)==StepResult::Executed);
+    CHECK(candidate.cpu->run_jit(2U)==StepResult::Executed);
+    CHECK(candidate.s()==reference.s());
+    CHECK_EQ(candidate.s().gpr[3],0x34567800U);
+    CHECK_EQ(candidate.s().gpr[5],0xAA33CCDDU);
+}
+
 TEST_CASE(jit_arm64_differential_integer_state_matches_reference_interpreter) {
     Machine reference;
     const std::array<u32, 17> code{A::addi(3, 0, -7), A::addis(4, 3, 2), A::ori(4, 4, 0x1234), A::xori(5, 4, 0x55AA), A::and_(6, 4, 5), A::xor_(7, 6, 3), A::mulli(0, 7, -17), A::mulli(9, 0, 13), A::addic(10, 9, 1), A::subfic(11, 10, -5), A::addic_(12, 11, -1), A::add(13, 12, 9, false, true), A::addc(14, 13, 10, false, true), A::subf(15, 14, 11, false, true), A::subfc(16, 15, 12, false, true), A::adde(17, 16, 13, false, true), A::subfe(18, 17, 14, false, true)};
