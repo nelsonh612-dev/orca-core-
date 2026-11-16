@@ -1,6 +1,7 @@
 // Disc images, MMIO page splitter, Disc Interface, and HLE disc boot through a
 // real apploader (compiled with clang) on synthetic GameCube discs.
 #include "orca/disc/disc_image.hpp"
+#include "orca/disc/wii_partition.hpp"
 #include "orca/hw/disc_interface.hpp"
 #include "orca/hw/mmio_splitter.hpp"
 #include "orca/system/system.hpp"
@@ -75,6 +76,61 @@ TEST_CASE(disc_header_and_apploader_parsing) {
     std::vector<u8> out(16);
     CHECK(d.read(0x1FFFF0, out));
     CHECK(!d.read(0x1FFFF1, out));
+}
+
+TEST_CASE(wii_partition_table_metadata_parsing) {
+    std::vector<u8> image(0x90000, 0);
+    put32(image, 0x18, disc::kWiiMagic);
+    // Group 0: one partition; the entry list is at 0x40040.
+    put32(image, 0x40000, 1);
+    put32(image, 0x40004, 0x10010);
+    // Partition entry: partition starts at 0x50000, type 0 (game).
+    put32(image, 0x40040, 0x14000);
+    put32(image, 0x40044, 0);
+    // Partition metadata: TMD/cert/H3/data offsets are relative to partition.
+    put32(image, 0x50000 + 0x2A4, 0x100);
+    put32(image, 0x50000 + 0x2A8, 0x100);
+    put32(image, 0x50000 + 0x2AC, 0x80);
+    put32(image, 0x50000 + 0x2B0, 0x200);
+    put32(image, 0x50000 + 0x2B4, 0x3000);
+    put32(image, 0x50000 + 0x2B8, 0x8000);
+    put32(image, 0x50000 + 0x2BC, 0x1000);
+    for (u32 i = 0; i < 8; ++i) image[0x50000 + 0x1DC + i] = static_cast<u8>(0xA0U + i);
+    image[0x50000 + 0x1F1] = 1;
+
+    disc::MemoryDisc disc_image(std::move(image));
+    std::string error;
+    const auto parsed = disc::parse_wii_partition_table(disc_image, error);
+    CHECK(parsed.has_value());
+    if (!parsed) return;
+    CHECK_EQ(parsed->partitions.size(), 1U);
+    const auto& part = parsed->partitions[0];
+    CHECK_EQ(part.offset, 0x50000U);
+    CHECK_EQ(part.type, 0U);
+    CHECK_EQ(part.tmd_offset, 0x50400U);
+    CHECK_EQ(part.tmd_size, 0x100U);
+    CHECK_EQ(part.cert_offset, 0x50800U);
+    CHECK_EQ(part.cert_size, 0x80U);
+    CHECK_EQ(part.h3_offset, 0x5C000U);
+    CHECK_EQ(part.data_offset, 0x70000U);
+    CHECK_EQ(part.data_size, 0x4000U);
+    CHECK_EQ(part.title_id[0], 0xA0U);
+    CHECK_EQ(part.title_id[7], 0xA7U);
+    CHECK_EQ(part.common_key_index, 1U);
+}
+
+TEST_CASE(wii_partition_table_rejects_corrupt_ranges) {
+    std::vector<u8> image(0x90000, 0);
+    put32(image, 0x18, disc::kWiiMagic);
+    put32(image, 0x40000, 1);
+    put32(image, 0x40004, 0x10010);
+    put32(image, 0x40040, 0x14000);
+    put32(image, 0x50000 + 0x2B8, 0xFFFFFFF0U);
+    disc::MemoryDisc disc_image(std::move(image));
+    std::string error;
+    CHECK(!disc::parse_wii_partition_table(disc_image, error).has_value());
+    CHECK(error.find("out-of-range") != std::string::npos ||
+          error.find("extends past") != std::string::npos);
 }
 
 TEST_CASE(disc_rejections) {
