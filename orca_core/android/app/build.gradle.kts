@@ -8,6 +8,15 @@ android {
     compileSdk = 35
     ndkVersion = "27.2.12479018"
 
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_21
+        targetCompatibility = JavaVersion.VERSION_21
+    }
+
+    kotlinOptions {
+        jvmTarget = "21"
+    }
+
     defaultConfig {
         applicationId = "org.orcacore.android"
         minSdk = 24
