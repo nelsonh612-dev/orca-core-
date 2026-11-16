@@ -23,6 +23,8 @@ constexpr u32 eor_w(unsigned rd, unsigned rn, unsigned rm) { return 0x4A000000U 
 constexpr u32 and_w(unsigned rd, unsigned rn, unsigned rm) { return 0x0A000000U | (rm << 16U) | (rn << 5U) | rd; }
 constexpr u32 mul_w(unsigned rd, unsigned rn, unsigned rm) { return 0x1B007C00U | (rm << 16U) | (rn << 5U) | rd; }
 constexpr u32 adds_w(unsigned rd, unsigned rn, unsigned rm) { return 0x2B000000U | (rm << 16U) | (rn << 5U) | rd; }
+constexpr u32 sub_w(unsigned rd,unsigned rn,unsigned rm) { return 0x4B000000U | (rm << 16U) | (rn << 5U) | rd; }
+constexpr u32 rorv_w(unsigned rd,unsigned rn,unsigned rm) { return 0x1AC02C00U | (rm << 16U) | (rn << 5U) | rd; }
 constexpr u32 mvn_w(unsigned rd, unsigned rm) { return 0x2A2003E0U | (rm << 16U) | rd; }
 constexpr u32 subs_w(unsigned rd, unsigned rn, unsigned rm) { return 0x6B000000U | (rm << 16U) | (rn << 5U) | rd; }
 constexpr u32 mrs_nzcv_x(unsigned rt) { return 0xD53B4200U | rt; }
@@ -223,6 +225,27 @@ bool translate_one(u32 ins, u32 guest_pc, std::vector<u32>& out, bool& terminate
     }
 
 
+
+    if(op==23U) { // rlwnm: rotate by GPR[RB] & 31, then mask
+        const unsigned mb=(ins>>6U)&31U;
+        const unsigned me=(ins>>1U)&31U;
+        u32 mask=0U;
+        for(unsigned bit=mb;;bit=(bit+1U)&31U) {
+            mask|=u32{1}<<(31U-bit);
+            if(bit==me) break;
+        }
+        out.push_back(ldr_w(9,0,static_cast<unsigned>(offsetof(CpuState,gpr)+rt*4U)));
+        out.push_back(ldr_w(10,0,static_cast<unsigned>(offsetof(CpuState,gpr)+rb*4U)));
+        load_imm(out,13,31U);
+        out.push_back(and_w(10,10,13));
+        out.push_back(sub_w(10,31U,10)); // negative shift = 32 - (RB & 31)
+        out.push_back(rorv_w(11,9,10));
+        load_imm(out,12,mask);
+        out.push_back(and_w(11,11,12));
+        out.push_back(str_w(11,0,static_cast<unsigned>(offsetof(CpuState,gpr)+ra*4U)));
+        if((ins&1U)!=0U) emit_cr0(out,11);
+        return true;
+    }
     if(op==20U || op==21U) { // rlwimi / rlwinm (immediate rotate and mask)
         const unsigned shift=(ins>>11U)&31U;
         const unsigned mb=(ins>>6U)&31U;
