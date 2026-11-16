@@ -35,6 +35,33 @@ void inv_mix(Block& s) noexcept {
   s[i+3]=static_cast<u8>(mul(a,11)^mul(b,13)^mul(d,9)^mul(e,14));
  }
 }
+
+void sub_bytes(Block& s) noexcept { for(auto& x:s) x=sbox(x); }
+void shift_rows(Block& s) noexcept {
+    Block t=s;
+    for(unsigned r=0;r<4;++r) for(unsigned c=0;c<4;++c)
+        s[r+4*c]=t[r+4*((c+r)%4)];
+}
+void mix_columns(Block& s) noexcept {
+    for(unsigned c=0;c<4;++c) {
+        const unsigned i=4*c;
+        const u8 a=s[i],b=s[i+1],d=s[i+2],e=s[i+3];
+        const u8 all=static_cast<u8>(a^b^d^e);
+        s[i]=static_cast<u8>(a^all^xtime(static_cast<u8>(a^b)));
+        s[i+1]=static_cast<u8>(b^all^xtime(static_cast<u8>(b^d)));
+        s[i+2]=static_cast<u8>(d^all^xtime(static_cast<u8>(d^e)));
+        s[i+3]=static_cast<u8>(e^all^xtime(static_cast<u8>(e^a)));
+    }
+}
+Block encrypt_block(const Block& in,const RoundKeys& k) noexcept {
+    Block s=in; add_key(s,k,0);
+    for(unsigned round=1;round<10;++round) {
+        sub_bytes(s); shift_rows(s); mix_columns(s); add_key(s,k,round);
+    }
+    sub_bytes(s); shift_rows(s); add_key(s,k,10);
+    return s;
+}
+
 Block decrypt_block(const Block& in,const RoundKeys& k) noexcept {
  Block s=in; add_key(s,k,10);
  for(unsigned round=9;round>0;--round){inv_shift(s);inv_sub(s);add_key(s,k,round);inv_mix(s);}
@@ -52,4 +79,18 @@ bool aes128_cbc_decrypt(const Aes128Key& key,Aes128Iv& iv,std::span<u8> data) no
  }
  return true;
 }
+
+bool aes128_cbc_encrypt(const Aes128Key& key,Aes128Iv& iv,std::span<u8> data) noexcept {
+    if(data.size()%16U) return false;
+    const RoundKeys keys=expand(key);
+    for(std::size_t off=0;off<data.size();off+=16) {
+        Block plain{};
+        for(unsigned i=0;i<16;++i) plain[i]=static_cast<u8>(data[off+i]^iv[i]);
+        const Block cipher=encrypt_block(plain,keys);
+        for(unsigned i=0;i<16;++i) data[off+i]=cipher[i];
+        iv=cipher;
+    }
+    return true;
+}
+
 } // namespace orca::crypto
