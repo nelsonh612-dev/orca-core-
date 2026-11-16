@@ -28,6 +28,7 @@ constexpr u32 rorv_w(unsigned rd,unsigned rn,unsigned rm) { return 0x1AC02C00U |
 constexpr u32 lslv_w(unsigned rd,unsigned rn,unsigned rm) { return 0x1AC02000U | (rm << 16U) | (rn << 5U) | rd; }
 constexpr u32 lsrv_w(unsigned rd,unsigned rn,unsigned rm) { return 0x1AC02400U | (rm << 16U) | (rn << 5U) | rd; }
 constexpr u32 asrv_w(unsigned rd,unsigned rn,unsigned rm) { return 0x1AC02800U | (rm << 16U) | (rn << 5U) | rd; }
+constexpr u32 mul_w(unsigned rd,unsigned rn,unsigned rm) { return 0x1B007C00U | (rm << 16U) | (rn << 5U) | rd; }
 constexpr u32 mvn_w(unsigned rd, unsigned rm) { return 0x2A2003E0U | (rm << 16U) | rd; }
 constexpr u32 subs_w(unsigned rd, unsigned rn, unsigned rm) { return 0x6B000000U | (rm << 16U) | (rn << 5U) | rd; }
 constexpr u32 mrs_nzcv_x(unsigned rt) { return 0xD53B4200U | rt; }
@@ -395,6 +396,15 @@ bool translate_one(u32 ins, u32 guest_pc, std::vector<u32>& out, bool& terminate
 
 
 
+
+        if(xo10==235U) { // mullw, OE=0
+            out.push_back(ldr_w(9,0,static_cast<unsigned>(offsetof(CpuState,gpr)+rt*4U)));
+            out.push_back(ldr_w(10,0,static_cast<unsigned>(offsetof(CpuState,gpr)+rb*4U)));
+            out.push_back(mul_w(11,9,10));
+            out.push_back(str_w(11,0,static_cast<unsigned>(offsetof(CpuState,gpr)+ra*4U)));
+            if(rc) emit_cr0(out,11);
+            return true;
+        }
         if(xo10==792U) { // sraw: variable arithmetic shift with XER[CA]
             out.push_back(ldr_w(9,0,static_cast<unsigned>(offsetof(CpuState,gpr)+rt*4U)));
             out.push_back(ldr_w(10,0,static_cast<unsigned>(offsetof(CpuState,gpr)+rb*4U)));
