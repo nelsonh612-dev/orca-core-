@@ -610,3 +610,26 @@ TEST_CASE(jit_arm64_differential_integer_state_matches_reference_interpreter) {
 #endif
 
 TEST_MAIN("jit_arm64")
+
+TEST_CASE(jit_arm64_dispatcher_falls_back_to_reference_for_memory_and_resumes_native_code) {
+    Machine reference;
+    Machine candidate;
+    const std::array<u32, 4> code{
+        A::addi(4U, 0U, 0x2000),
+        A::lwz(3U, 0, 4U),
+        A::addi(5U, 3U, 1),
+        A::stw(5U, 4, 4U)
+    };
+    reference.code(0x1000U, {code[0], code[1], code[2], code[3]});
+    candidate.code(0x1000U, {code[0], code[1], code[2], code[3]});
+    CHECK(reference.bus.write32(0x2000U, 0x12345678U) == mem::BusStatus::Ok);
+    CHECK(candidate.bus.write32(0x2000U, 0x12345678U) == mem::BusStatus::Ok);
+
+    CHECK(reference.cpu->run(code.size()) == StepResult::Executed);
+    u64 completed = 0;
+    CHECK(candidate.cpu->run_jit(code.size(), &completed) == StepResult::Executed);
+    CHECK_EQ(completed, code.size());
+    CHECK(candidate.s() == reference.s());
+    CHECK_EQ(candidate.r32(0x2004U), reference.r32(0x2004U));
+    CHECK_EQ(candidate.cpu->instructions_retired(), reference.cpu->instructions_retired());
+}
