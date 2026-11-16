@@ -314,8 +314,8 @@ TEST_CASE(jit_arm64_executes_signed_unsigned_compare_and_updates_selected_cr_fie
     Machine reference;
     Machine candidate;
     const std::array<u32,4> code{
-        A::cmpi(2U,4U,-1), A::cmpli(3U,5U,0xFFFFU),
-        A::cmp(1U,6U,7U), A::cmpl(4U,8U,9U)
+        A::cmpwi(2U,4U,-1), A::cmplwi(3U,5U,0xFFFFU),
+        A::cmpw(1U,6U,7U), A::cmplw(4U,8U,9U)
     };
     reference.code(0x1000U,{code[0],code[1],code[2],code[3]});
     candidate.code(0x1000U,{code[0],code[1],code[2],code[3]});
