@@ -105,7 +105,7 @@ class MainActivity : Activity() {
         audioRunning = true
         audioThread = Thread({
             Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
-            var track = initialTrack
+            var track: AudioTrack = initialTrack!!
             var activeRate = initialRate
             val samples = ShortArray(1024)
             try {
