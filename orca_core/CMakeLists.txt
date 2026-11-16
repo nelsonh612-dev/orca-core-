@@ -22,6 +22,7 @@ endif()
 add_library(orca_core
     src/core/scheduler.cpp
     src/crypto/aes128.cpp
+    src/crypto/sha1.cpp
     src/disc/disc_image.cpp
     src/disc/wii_partition.cpp
     src/disc/wii_partition_reader.cpp
