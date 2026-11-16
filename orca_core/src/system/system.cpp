@@ -59,6 +59,13 @@ void System::hle_boot(u32 entry) {
     s.ibat[0] = {0x80001FFFU, 0x00000002U};
     s.dbat[0] = {0x80001FFFU, 0x00000002U};
     s.dbat[1] = {0xC0001FFFU, 0x0000002AU}; // WIMG = 0101 (I, G), PP = 10
+    if (config_.console == Console::Wii) {
+        // Wii MEM2 is a distinct 64 MiB region at physical 0x10000000.
+        // Install its cached 0x90000000 alias for instruction fetches and
+        // data accesses; DBAT1 already provides the uncached 0xD0000000 alias.
+        s.ibat[1] = {0x900007FFU, 0x10000002U};
+        s.dbat[2] = {0x900007FFU, 0x10000002U};
+    }
     s.msr = ppc::MSR_FP | ppc::MSR_IR | ppc::MSR_DR;
     s.pc = entry;
     (void)bus_.write32(0x20, 0x0D15EA5EU);
