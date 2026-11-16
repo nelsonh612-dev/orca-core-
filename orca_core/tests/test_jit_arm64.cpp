@@ -328,20 +328,24 @@ TEST_CASE(jit_arm64_executes_sign_extend_clz_and_logical_xo_operations) {
 TEST_CASE(jit_arm64_executes_rlwinm_and_rlwimi_against_interpreter) {
     Machine reference;
     Machine candidate;
-    const std::array<u32,2> code{
+    const std::array<u32,3> code{
         A::rlwinm(3U,4U,8U,0U,23U,true),
-        A::rlwimi(5U,6U,8U,8U,15U,true)
+        A::rlwimi(5U,6U,8U,8U,15U,true),
+        A::rlwnm(7U,8U,9U,0U,23U,true)
     };
-    reference.code(0x1000U,{code[0],code[1]});
-    candidate.code(0x1000U,{code[0],code[1]});
+    reference.code(0x1000U,{code[0],code[1],code[2]});
+    candidate.code(0x1000U,{code[0],code[1],code[2]});
     reference.s().gpr[4]=0x12345678U; candidate.s().gpr[4]=0x12345678U;
     reference.s().gpr[5]=0xAABBCCDDU; candidate.s().gpr[5]=0xAABBCCDDU;
     reference.s().gpr[6]=0x11223344U; candidate.s().gpr[6]=0x11223344U;
-    CHECK(reference.cpu->run(2U)==StepResult::Executed);
-    CHECK(candidate.cpu->run_jit(2U)==StepResult::Executed);
+    reference.s().gpr[8]=0x12345678U; candidate.s().gpr[8]=0x12345678U;
+    reference.s().gpr[9]=8U; candidate.s().gpr[9]=8U;
+    CHECK(reference.cpu->run(3U)==StepResult::Executed);
+    CHECK(candidate.cpu->run_jit(3U)==StepResult::Executed);
     CHECK(candidate.s()==reference.s());
     CHECK_EQ(candidate.s().gpr[3],0x34567800U);
     CHECK_EQ(candidate.s().gpr[5],0xAA33CCDDU);
+    CHECK_EQ(candidate.s().gpr[7],0x34567800U);
 }
 
 TEST_CASE(jit_arm64_differential_integer_state_matches_reference_interpreter) {
