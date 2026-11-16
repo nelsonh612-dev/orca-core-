@@ -45,6 +45,7 @@ constexpr u32 cmp_zero_w(unsigned rn) { return 0x7100001FU | (rn << 5U); }
 constexpr u32 sxtb_w(unsigned rd,unsigned rn) { return 0x13001C00U | (rn << 5U) | rd; }
 constexpr u32 sxth_w(unsigned rd,unsigned rn) { return 0x13003C00U | (rn << 5U) | rd; }
 constexpr u32 clz_w(unsigned rd,unsigned rn) { return 0x5AC01000U | (rn << 5U) | rd; }
+constexpr u32 asr_w(unsigned rd,unsigned rn,unsigned shift) { return 0x13000000U | (shift << 16U) | (31U << 10U) | (rn << 5U) | rd; }
 constexpr u32 csel_w(unsigned rd,unsigned rn,unsigned rm,unsigned condition) {
     return 0x1A800000U | (rm << 16U) | (condition << 12U) | (rn << 5U) | rd;
 }
@@ -365,6 +366,32 @@ bool translate_one(u32 ins, u32 guest_pc, std::vector<u32>& out, bool& terminate
     if(op==31U) {
         const unsigned xo10=(ins>>1U)&0x3FFU;
         const bool rc=(ins&1U)!=0U;
+
+        if(xo10==824U) { // srawi: arithmetic shift with XER[CA] update
+            const unsigned shift=rb&31U;
+            out.push_back(ldr_w(9,0,static_cast<unsigned>(offsetof(CpuState,gpr)+rt*4U)));
+            out.push_back(asr_w(11,9,shift));
+            out.push_back(str_w(11,0,static_cast<unsigned>(offsetof(CpuState,gpr)+ra*4U)));
+            if(shift==0U) {
+                load_imm(out,13,0U);
+            } else {
+                const u32 discarded_mask=(u32{1}<<shift)-1U;
+                load_imm(out,10,discarded_mask);
+                out.push_back(and_w(12,9,10));
+                out.push_back(cmp_zero_w(12));
+                out.push_back(cset_w(13,1U)); // any discarded bit
+                out.push_back(ubfx_w(14,9,31U,1U)); // source sign
+                out.push_back(and_w(13,13,14));
+            }
+            out.push_back(lsl_w(13,13,29U));
+            load_imm(out,14,XER_CA);
+            out.push_back(ldr_w(9,0,static_cast<unsigned>(offsetof(CpuState,xer))));
+            out.push_back(bic_w(9,9,14));
+            out.push_back(orr_w(9,9,13));
+            out.push_back(str_w(9,0,static_cast<unsigned>(offsetof(CpuState,xer))));
+            if(rc) emit_cr0(out,11);
+            return true;
+        }
         if(xo10==954U || xo10==922U || xo10==26U) { // extsb/extsh/cntlzw
             out.push_back(ldr_w(9,0,static_cast<unsigned>(offsetof(CpuState,gpr)+rt*4U)));
             if(xo10==954U) out.push_back(sxtb_w(11,9));
