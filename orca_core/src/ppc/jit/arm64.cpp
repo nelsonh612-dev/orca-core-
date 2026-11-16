@@ -428,7 +428,7 @@ bool translate_one(u32 ins, u32 guest_pc, std::vector<u32>& out, bool& terminate
             out.push_back(ubfx_w(14,9,31U,1U)); // source sign
             out.push_back(and_w(15,15,14)); // CA for shift <32
             out.push_back(cmp_zero_w(12));
-            out.push_back(csel_w(15,15,14,1U)); // NE: shift >=32 -> sign bit
+            out.push_back(csel_w(15,14,15,1U)); // NE: shift >=32 -> sign bit
             out.push_back(lsl_w(15,15,29U));
             load_imm(out,14,XER_CA);
             out.push_back(ldr_w(9,0,static_cast<unsigned>(offsetof(CpuState,xer))));
