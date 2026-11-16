@@ -348,7 +348,7 @@ TEST_CASE(di_dma_reads_from_decrypted_partition_view) {
     t.w(0x1C,3);
     t.sched.advance_to(1);
     u32 value=0;
-    CHECK(t.bus.read32(0x4000,value));
+    CHECK(t.bus.read32(0x4000,value)==mem::BusStatus::Ok);
     CHECK_EQ(value,0x57494921U);
 }
 
