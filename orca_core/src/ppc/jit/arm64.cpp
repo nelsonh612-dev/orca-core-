@@ -401,19 +401,19 @@ bool translate_one(u32 ins, u32 guest_pc, std::vector<u32>& out, bool& terminate
 
 
         if(xo10==75U || xo10==11U) { // mulhw / mulhwu
-            out.push_back(ldr_w(9,0,static_cast<unsigned>(offsetof(CpuState,gpr)+rt*4U)));
+            out.push_back(ldr_w(9,0,static_cast<unsigned>(offsetof(CpuState,gpr)+ra*4U)));
             out.push_back(ldr_w(10,0,static_cast<unsigned>(offsetof(CpuState,gpr)+rb*4U)));
             out.push_back(xo10==75U ? smull_x(12,9,10) : umull_x(12,9,10));
             out.push_back(lsr_x(12,12,32U));
-            out.push_back(str_w(12,0,static_cast<unsigned>(offsetof(CpuState,gpr)+ra*4U)));
+            out.push_back(str_w(12,0,static_cast<unsigned>(offsetof(CpuState,gpr)+rt*4U)));
             if(rc) emit_cr0(out,12);
             return true;
         }
         if(xo10==235U) { // mullw, OE=0
-            out.push_back(ldr_w(9,0,static_cast<unsigned>(offsetof(CpuState,gpr)+rt*4U)));
+            out.push_back(ldr_w(9,0,static_cast<unsigned>(offsetof(CpuState,gpr)+ra*4U)));
             out.push_back(ldr_w(10,0,static_cast<unsigned>(offsetof(CpuState,gpr)+rb*4U)));
             out.push_back(mul_w(11,9,10));
-            out.push_back(str_w(11,0,static_cast<unsigned>(offsetof(CpuState,gpr)+ra*4U)));
+            out.push_back(str_w(11,0,static_cast<unsigned>(offsetof(CpuState,gpr)+rt*4U)));
             if(rc) emit_cr0(out,11);
             return true;
         }
