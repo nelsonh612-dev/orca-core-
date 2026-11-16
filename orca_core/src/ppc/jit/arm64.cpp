@@ -35,6 +35,9 @@ constexpr u32 ubfx_w(unsigned rd, unsigned rn, unsigned lsb, unsigned width) {
 constexpr u32 lsl_w(unsigned rd, unsigned rn, unsigned shift) {
     return 0x53000000U | ((32U - shift) << 16U) | ((31U - shift) << 10U) | (rn << 5U) | rd;
 }
+constexpr u32 lsr_w(unsigned rd,unsigned rn,unsigned shift) {
+    return 0x53000000U | (shift << 16U) | (31U << 10U) | (rn << 5U) | rd;
+}
 constexpr u32 bic_w(unsigned rd, unsigned rn, unsigned rm) {
     return 0x0A200000U | (rm << 16U) | (rn << 5U) | rd;
 }
@@ -218,6 +221,35 @@ bool translate_one(u32 ins, u32 guest_pc, std::vector<u32>& out, bool& terminate
         return true;
     }
 
+
+    if(op==20U || op==21U) { // rlwimi / rlwinm (immediate rotate and mask)
+        const unsigned shift=(ins>>11U)&31U;
+        const unsigned mb=(ins>>6U)&31U;
+        const unsigned me=(ins>>1U)&31U;
+        u32 mask=0U;
+        for(unsigned bit=mb;;bit=(bit+1U)&31U) {
+            mask|=u32{1}<<(31U-bit);
+            if(bit==me) break;
+        }
+        out.push_back(ldr_w(9,0,static_cast<unsigned>(offsetof(CpuState,gpr)+rt*4U)));
+        if(shift==0U) out.push_back(orr_w(11,9,9));
+        else {
+            out.push_back(lsl_w(12,9,shift));
+            out.push_back(lsr_w(13,9,32U-shift));
+            out.push_back(orr_w(11,12,13));
+        }
+        load_imm(out,10,mask);
+        out.push_back(and_w(11,11,10));
+        if(op==20U) {
+            out.push_back(ldr_w(12,0,static_cast<unsigned>(offsetof(CpuState,gpr)+ra*4U)));
+            load_imm(out,13,~mask);
+            out.push_back(and_w(12,12,13));
+            out.push_back(orr_w(11,11,12));
+        }
+        out.push_back(str_w(11,0,static_cast<unsigned>(offsetof(CpuState,gpr)+ra*4U)));
+        if((ins&1U)!=0U) emit_cr0(out,11);
+        return true;
+    }
     if(op==28U || op==29U) { // andi./andis.
         out.push_back(ldr_w(9,0,static_cast<unsigned>(offsetof(CpuState,gpr)+rt*4U)));
         load_imm(out,10,op==29U ? (imm<<16U) : imm);
