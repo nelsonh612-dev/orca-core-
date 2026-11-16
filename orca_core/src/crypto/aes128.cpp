@@ -5,7 +5,7 @@
 namespace orca::crypto {
 namespace {
 using Block = std::array<u8,16>;
-u8 xtime(u8 x) noexcept { return static_cast<u8>((x << 1U) ^ ((x & 0x80U) ? 0x1BU : 0U)); }
+u8 xtime(u8 x) noexcept { const u32 v=x; return static_cast<u8>((v << 1U) ^ ((v & 0x80U) != 0U ? 0x1BU : 0U)); }
 u8 mul(u8 a,u8 b) noexcept { u8 r=0; for(int i=0;i<8;++i){ if(b&1U) r^=a; a=xtime(a); b>>=1U; } return r; }
 u8 rotl8(u8 x,unsigned n) noexcept { return static_cast<u8>((x<<n)|(x>>(8U-n))); }
 u8 gf_pow(u8 a,unsigned n) noexcept { u8 r=1; while(n){ if(n&1U) r=mul(r,a); a=mul(a,a); n>>=1U; } return r; }
