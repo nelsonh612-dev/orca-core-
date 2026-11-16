@@ -304,7 +304,7 @@ StepResult Cpu::run_jit(u64 budget, u64* completed, const u32* stop_pc) {
             ++done;
             continue;
         }
-        if (!it->second->executable.execute(state_)) {
+        if (!it->second->executable.execute(state_, this)) {
             const StepResult r = step();
             if (r != StepResult::Executed && r != StepResult::ExceptionTaken) { if (completed != nullptr) *completed = done; return r; }
             ++done;
