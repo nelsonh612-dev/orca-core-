@@ -22,6 +22,7 @@ endif()
 add_library(orca_core
     src/core/scheduler.cpp
     src/disc/disc_image.cpp
+    src/disc/wii_partition.cpp
     src/disc/fst.cpp
     src/dsp/dsp_core.cpp
     src/hw/audio_interface.cpp
