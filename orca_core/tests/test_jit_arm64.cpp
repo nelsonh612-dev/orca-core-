@@ -14,8 +14,8 @@ TEST_CASE(jit_arm64_translates_supported_integer_prefix_and_stops_at_branch) {
     const std::array<u32, 5> code{A::addi(3, 0, -7), A::addis(4, 3, 2), A::ori(4, 4, 0x1234), A::b(8), A::addi(5, 0, 1)};
     const Block b = compile_arm64(code, 0x1000);
     CHECK_EQ(b.start_pc, 0x1000U);
-    CHECK_EQ(b.guest_instructions, 3U);
-    CHECK_EQ(b.end_pc, 0x100CU);
+    CHECK_EQ(b.guest_instructions, 4U);
+    CHECK_EQ(b.end_pc, 0x1010U);
     CHECK(!b.host_words.empty());
     CHECK_EQ(b.host_words.back(), 0xD65F03C0U); // RET
 }
@@ -97,7 +97,7 @@ TEST_CASE(jit_arm64_does_not_translate_overflow_enabled_xo_arithmetic_yet) {
 }
 
 TEST_CASE(jit_arm64_unsupported_first_instruction_produces_no_executable_block) {
-    const std::array<u32, 1> code{A::b(4)};
+    const std::array<u32, 1> code{0xFFFFFFFFU};
     const Block b = compile_arm64(code, 0x1000);
     CHECK_EQ(b.guest_instructions, 0U);
     CHECK(b.host_words.empty());
@@ -165,7 +165,7 @@ TEST_CASE(jit_arm64_cpu_run_jit_respects_bat_instruction_translation) {
     CHECK(candidate.s() == reference.s());
 }
 
-TEST_CASE(jit_arm64_run_honors_stop_pc_after_interpreted_branch) {
+TEST_CASE(jit_arm64_run_honors_stop_pc_after_native_branch) {
     Machine m;
     m.code(0x1000U, {A::b(8), A::addi(3, 0, 77)});
     const u32 stop_pc = 0x1008U;
@@ -176,7 +176,7 @@ TEST_CASE(jit_arm64_run_honors_stop_pc_after_interpreted_branch) {
     CHECK_EQ(m.s().gpr[3], 0U);
 }
 
-TEST_CASE(jit_arm64_branch_uses_interpreter_fallback_at_block_boundary) {
+TEST_CASE(jit_arm64_native_branch_exits_block_and_continues_at_target) {
     Machine m;
     m.code(0x1000U, {A::addi(3, 0, 5), A::b(8), A::addi(4, 0, 99), A::addi(5, 0, 7)});
     CHECK(m.cpu->run_jit(3U) == StepResult::Executed);
@@ -185,6 +185,52 @@ TEST_CASE(jit_arm64_branch_uses_interpreter_fallback_at_block_boundary) {
     CHECK_EQ(m.s().gpr[5], 7U);
     CHECK_EQ(m.s().pc, 0x1010U);
 }
+
+
+#if defined(__aarch64__)
+TEST_CASE(jit_arm64_executes_direct_branch_and_link) {
+    const std::array<u32,1> code{A::b(0x20,false,true)};
+    const Block block=compile_arm64(code,0x1000U);
+    CHECK_EQ(block.guest_instructions,1U);
+    CpuState state{};
+    state.pc=0x1000U;
+    CHECK(execute_arm64(block,state));
+    CHECK_EQ(state.pc,0x1020U);
+    CHECK_EQ(state.lr,0x1004U);
+}
+
+TEST_CASE(jit_arm64_executes_conditional_branch_on_cr_bit) {
+    const std::array<u32,1> code{A::bc(12U,0U,8)};
+    const Block block=compile_arm64(code,0x1000U);
+    CHECK_EQ(block.guest_instructions,1U);
+    CpuState taken{};
+    taken.pc=0x1000U;
+    taken.cr=0x80000000U;
+    CHECK(execute_arm64(block,taken));
+    CHECK_EQ(taken.pc,0x1008U);
+    CpuState not_taken{};
+    not_taken.pc=0x1000U;
+    CHECK(execute_arm64(block,not_taken));
+    CHECK_EQ(not_taken.pc,0x1004U);
+}
+
+TEST_CASE(jit_arm64_executes_conditional_branch_with_ctr_decrement) {
+    const std::array<u32,1> code{A::bc(16U,0U,8)};
+    const Block block=compile_arm64(code,0x1000U);
+    CpuState state{};
+    state.pc=0x1000U;
+    state.ctr=2U;
+    CHECK(execute_arm64(block,state));
+    CHECK_EQ(state.ctr,1U);
+    CHECK_EQ(state.pc,0x1008U);
+    CpuState zero{};
+    zero.pc=0x1000U;
+    zero.ctr=1U;
+    CHECK(execute_arm64(block,zero));
+    CHECK_EQ(zero.ctr,0U);
+    CHECK_EQ(zero.pc,0x1004U);
+}
+#endif
 
 #if defined(__aarch64__)
 TEST_CASE(jit_arm64_differential_integer_state_matches_reference_interpreter) {
