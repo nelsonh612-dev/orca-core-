@@ -39,6 +39,11 @@ constexpr u32 bic_w(unsigned rd, unsigned rn, unsigned rm) {
     return 0x0A200000U | (rm << 16U) | (rn << 5U) | rd;
 }
 constexpr u32 cmp_zero_w(unsigned rn) { return 0x7100001FU | (rn << 5U); }
+
+constexpr u32 cmp_w(unsigned rn, unsigned rm) {
+    return 0x6B00001FU | (rm << 16U) | (rn << 5U);
+}
+
 constexpr u32 cset_w(unsigned rd, unsigned condition) {
     return 0x1A9F07E0U | ((condition ^ 1U) << 12U) | rd;
 }
@@ -102,6 +107,30 @@ void emit_cr0(std::vector<u32>& out, unsigned result_reg) {
     out.push_back(str_w(9, 0, static_cast<unsigned>(offsetof(CpuState, cr))));
 }
 
+
+void emit_cr_field(std::vector<u32>& out, unsigned field, bool is_signed) {
+    const unsigned lt_cond = is_signed ? 0xBU : 0x3U; // LT / LO
+    const unsigned gt_cond = is_signed ? 0xCU : 0x8U; // GT / HI
+    const unsigned shift = 28U - (field & 7U) * 4U;
+    out.push_back(cset_w(12, lt_cond));
+    out.push_back(lsl_w(12, 12, 3));
+    out.push_back(cset_w(14, gt_cond));
+    out.push_back(lsl_w(14, 14, 2));
+    out.push_back(cset_w(15, 0x0U)); // EQ
+    out.push_back(lsl_w(15, 15, 1));
+    out.push_back(ldr_w(9, 0, static_cast<unsigned>(offsetof(CpuState, xer))));
+    out.push_back(ubfx_w(13, 9, 31, 1)); // XER[SO]
+    out.push_back(orr_w(12, 12, 14));
+    out.push_back(orr_w(12, 12, 15));
+    out.push_back(orr_w(12, 12, 13));
+    if (shift != 0U) out.push_back(lsl_w(12, 12, shift));
+    out.push_back(ldr_w(9, 0, static_cast<unsigned>(offsetof(CpuState, cr))));
+    load_imm(out, 14, ~(0xFU << shift));
+    out.push_back(and_w(9, 9, 14));
+    out.push_back(orr_w(9, 9, 12));
+    out.push_back(str_w(9, 0, static_cast<unsigned>(offsetof(CpuState, cr))));
+}
+
 bool translate_one(u32 ins, std::vector<u32>& out) {
     const unsigned op = ins >> 26U;
     const unsigned rt = (ins >> 21U) & 31U;
@@ -146,6 +175,16 @@ bool translate_one(u32 ins, std::vector<u32>& out) {
             out.push_back(orr_w(9, 9, 12));
             out.push_back(str_w(9, 0, static_cast<unsigned>(offsetof(CpuState, cr))));
         }
+        return true;
+    }
+
+    if (op == 10U || op == 11U) { // cmplwi / cmpwi
+        const unsigned bf = (rt >> 2U) & 7U;
+        out.push_back(ldr_w(9, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + ra * 4U)));
+        const u32 value = op == 11U ? static_cast<u32>(static_cast<s32>(static_cast<s16>(imm))) : imm;
+        load_imm(out, 10, value);
+        out.push_back(cmp_w(9, 10));
+        emit_cr_field(out, bf, op == 11U);
         return true;
     }
     if (op == 7U) { // mulli: low 32 bits of signed product
@@ -311,6 +350,15 @@ bool translate_one(u32 ins, std::vector<u32>& out) {
         const unsigned xo = (ins >> 1U) & 0x3FFU;
         const bool rc = (ins & 1U) != 0U;
 
+
+        if ((xo == 0U || xo == 32U) && (ins & 0x80000000U) == 0U) { // cmpw / cmplw
+            const unsigned bf = (rt >> 2U) & 7U;
+            out.push_back(ldr_w(9, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + ra * 4U)));
+            out.push_back(ldr_w(10, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + rb * 4U)));
+            out.push_back(cmp_w(9, 10));
+            emit_cr_field(out, bf, xo == 0U);
+            return true;
+        }
         if (xo == 24U || xo == 536U || xo == 26U || xo == 954U || xo == 922U) {
             out.push_back(ldr_w(9, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + rt * 4U)));
             if (xo == 24U || xo == 536U) {
