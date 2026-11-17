@@ -1,7 +1,7 @@
 // Orca Core: first native AArch64 PowerPC block translator.
-// Only straight-line, side-effect-free integer instructions are emitted.
-// Unsupported/control-flow instructions terminate a block and remain in the
-// reference interpreter. The generated function ABI is void(CpuState*).
+// Supported integer, control-flow, and raw FPR/paired-single operations are
+// emitted as native AArch64. Unsupported instructions remain in the reference
+// interpreter. The generated function ABI is void(CpuState*).
 #pragma once
 #include "orca/ppc/state.hpp"
 #include <cstddef>
