@@ -43,6 +43,23 @@ constexpr u32 cset_w(unsigned rd, unsigned condition) {
     return 0x1A9F07E0U | ((condition ^ 1U) << 12U) | rd;
 }
 constexpr u32 ret() { return 0xD65F03C0U; }
+
+constexpr u32 rorv_w(unsigned rd, unsigned rn, unsigned rm) {
+    return 0x1AC02C00U | (rm << 16U) | (rn << 5U) | rd;
+}
+constexpr u32 sub_w(unsigned rd, unsigned rn, unsigned rm) {
+    return 0x4B000000U | (rm << 16U) | (rn << 5U) | rd;
+}
+constexpr u32 mask_mb_me(unsigned mb, unsigned me) {
+    u32 mask = 0;
+    for (unsigned bit = 0; bit < 32U; ++bit) {
+        const bool selected = mb <= me ? (bit >= mb && bit <= me)
+                                       : (bit >= mb || bit <= me);
+        if (selected) mask |= (1U << (31U - bit));
+    }
+    return mask;
+}
+
 void load_imm(std::vector<u32>& out, unsigned reg, u32 value) {
     out.push_back(movz_w(reg, value & 0xFFFFU));
     if ((value >> 16U) != 0U) out.push_back(movk_w(reg, value >> 16U));
@@ -129,6 +146,38 @@ bool translate_one(u32 ins, std::vector<u32>& out) {
         load_imm(out, 10, addend);
         out.push_back(add_w(11, 9, 10));
         out.push_back(str_w(11, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + rt * 4U)));
+        return true;
+    }
+
+    if (op == 20U || op == 21U || op == 23U) { // rlwimi / rlwinm / rlwnm
+        const unsigned shift = op == 23U ? rb : ((ins >> 11U) & 31U);
+        const unsigned mb = (ins >> 6U) & 31U;
+        const unsigned me = (ins >> 1U) & 31U;
+        const u32 mask = mask_mb_me(mb, me);
+        out.push_back(ldr_w(9, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + rt * 4U)));
+        if (op == 23U) {
+            out.push_back(ldr_w(10, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + rb * 4U)));
+            load_imm(out, 12, 0U);
+            out.push_back(sub_w(12, 12, 10)); // -(RB & 31), equivalent to 32-sh modulo 32
+            out.push_back(and_w(12, 12, 13)); // masked below after materialising 31
+            load_imm(out, 13, 31U);
+            out.push_back(and_w(12, 12, 13));
+            out.push_back(rorv_w(11, 9, 12));
+        } else {
+            const unsigned ror = (32U - shift) & 31U;
+            load_imm(out, 10, ror);
+            out.push_back(rorv_w(11, 9, 10));
+        }
+        load_imm(out, 10, mask);
+        out.push_back(and_w(11, 11, 10));
+        if (op == 20U) {
+            out.push_back(ldr_w(12, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + ra * 4U)));
+            load_imm(out, 13, ~mask);
+            out.push_back(and_w(12, 12, 13));
+            out.push_back(orr_w(11, 11, 12));
+        }
+        out.push_back(str_w(11, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + ra * 4U)));
+        if ((ins & 1U) != 0U) emit_cr0(out, 11);
         return true;
     }
     if (op == 28U || op == 29U) { // andi. / andis. always update CR0
