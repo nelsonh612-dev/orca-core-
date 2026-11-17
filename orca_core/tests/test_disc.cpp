@@ -84,6 +84,37 @@ TEST_CASE(disc_header_and_apploader_parsing) {
     CHECK(!empty_disc.read(1, empty));
 }
 
+TEST_CASE(wii_partition_table_parsing_and_bounds) {
+    std::vector<u8> image(0x60000U, 0);
+    put32(image, 0x40000U, 1U);       // group 0: one partition
+    put32(image, 0x40004U, 0x10010U); // entry table at 0x40040
+    put32(image, 0x40040U, 0x12000U); // partition at 0x48000
+    put32(image, 0x40044U, 0U);       // data partition
+    disc::MemoryDisc d(std::move(image));
+    std::string error;
+    const auto parts = disc::parse_wii_partition_table(d, error);
+    CHECK(parts.has_value());
+    if (parts) {
+        CHECK_EQ(parts->size(), 1U);
+        CHECK_EQ((*parts)[0].offset, 0x48000U);
+        CHECK_EQ((*parts)[0].type, 0U);
+    }
+
+    std::vector<u8> bad_image(0x60000U, 0);
+    put32(bad_image, 0x40000U, 1U);
+    put32(bad_image, 0x40004U, 0x10010U);
+    put32(bad_image, 0x40040U, 0xFFFFFFFFU); // multiplied offset is outside image
+    disc::MemoryDisc bad(std::move(bad_image));
+    CHECK(!disc::parse_wii_partition_table(bad, error).has_value());
+
+    disc::MemoryDisc truncated(std::vector<u8>(0x40010U, 0));
+    CHECK(!disc::parse_wii_partition_table(truncated, error).has_value());
+
+    std::vector<u8> no_parts(0x50000U, 0);
+    disc::MemoryDisc empty(std::move(no_parts));
+    CHECK(!disc::parse_wii_partition_table(empty, error).has_value());
+}
+
 TEST_CASE(disc_rejections) {
     std::string err;
     std::vector<u8> app(64, 0), dol(0x100, 0);
