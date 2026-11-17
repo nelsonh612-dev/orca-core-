@@ -344,6 +344,48 @@ TEST_CASE(jit_arm64_translates_conditional_branch_as_block_exit) {
 }
 
 #if defined(__aarch64__)
+TEST_CASE(jit_arm64_differential_conditional_branch_not_taken_updates_link_and_falls_through) {
+    Machine reference;
+    const std::array<u32, 1> code{A::bc(12, 2, 16, false, true)};
+    reference.code(0x1000U, {code[0]});
+    reference.s().cr = 0U; // CR bit BI=2 is clear: branch not taken
+    reference.s().lr = 0xCAFEBABEU;
+    CHECK(reference.cpu->run(1U) == StepResult::Executed);
+    const CpuState expected = reference.s();
+
+    CpuState actual{};
+    actual.pc = 0x1000U;
+    actual.cr = 0U;
+    actual.lr = 0xCAFEBABEU;
+    const Block block = compile_arm64(code, 0x1000U);
+    CHECK_EQ(block.guest_instructions, 1U);
+    CHECK(execute_arm64(block, actual));
+    CHECK(actual == expected);
+}
+#endif
+
+#if defined(__aarch64__)
+TEST_CASE(jit_arm64_differential_conditional_branch_decrements_ctr_and_takes) {
+    Machine reference;
+    const std::array<u32, 1> code{A::bc(0, 0, 20, false, false)};
+    reference.code(0x1000U, {code[0]});
+    reference.s().ctr = 2U;
+    reference.s().cr = 0U; // BO requests CR[0] == 0
+    CHECK(reference.cpu->run(1U) == StepResult::Executed);
+    const CpuState expected = reference.s();
+
+    CpuState actual{};
+    actual.pc = 0x1000U;
+    actual.ctr = 2U;
+    actual.cr = 0U;
+    const Block block = compile_arm64(code, 0x1000U);
+    CHECK_EQ(block.guest_instructions, 1U);
+    CHECK(execute_arm64(block, actual));
+    CHECK(actual == expected);
+}
+#endif
+
+#if defined(__aarch64__)
 TEST_CASE(jit_arm64_differential_unconditional_branch_and_link_matches_interpreter) {
     Machine reference;
     const std::array<u32, 1> code{A::b(12, false, true)};
