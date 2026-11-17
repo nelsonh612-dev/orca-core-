@@ -249,6 +249,50 @@ bool translate_one(u32 ins, std::vector<u32>& out) {
         if ((ins & 1U) != 0U) emit_cr0(out, 11);
         return true;
     }
+    if (op == 19U && (ins & 1U) == 0U) {
+        const unsigned xo = (ins >> 1U) & 0x3FFU;
+        if (xo == 33U || xo == 129U || xo == 193U || xo == 225U ||
+            xo == 257U || xo == 289U || xo == 417U || xo == 449U) {
+            const unsigned bt = (ins >> 21U) & 31U;
+            const unsigned ba = (ins >> 16U) & 31U;
+            const unsigned bb = (ins >> 11U) & 31U;
+            const unsigned bit_a = 31U - ba;
+            const unsigned bit_b = 31U - bb;
+            const unsigned bit_t = 31U - bt;
+            out.push_back(ldr_w(9, 0, static_cast<unsigned>(offsetof(CpuState, cr))));
+            out.push_back(ubfx_w(10, 9, bit_a, 1U));
+            out.push_back(ubfx_w(11, 9, bit_b, 1U));
+            if (xo == 33U) { // crnor
+                out.push_back(orr_w(12, 10, 11));
+                out.push_back(mvn_w(12, 12));
+            } else if (xo == 129U) { // crandc
+                out.push_back(mvn_w(11, 11));
+                out.push_back(and_w(12, 10, 11));
+            } else if (xo == 193U) { // crxor
+                out.push_back(eor_w(12, 10, 11));
+            } else if (xo == 225U) { // crnand
+                out.push_back(and_w(12, 10, 11));
+                out.push_back(mvn_w(12, 12));
+            } else if (xo == 257U) { // crand
+                out.push_back(and_w(12, 10, 11));
+            } else if (xo == 289U) { // creqv
+                out.push_back(eor_w(12, 10, 11));
+                out.push_back(mvn_w(12, 12));
+            } else if (xo == 417U) { // crorc
+                out.push_back(mvn_w(11, 11));
+                out.push_back(orr_w(12, 10, 11));
+            } else { // cror
+                out.push_back(orr_w(12, 10, 11));
+            }
+            if (bit_t != 0U) out.push_back(lsl_w(12, 12, bit_t));
+            load_imm(out, 13, ~(1U << bit_t));
+            out.push_back(and_w(9, 9, 13));
+            out.push_back(orr_w(9, 9, 12));
+            out.push_back(str_w(9, 0, static_cast<unsigned>(offsetof(CpuState, cr))));
+            return true;
+        }
+    }
+
     if (op == 28U || op == 29U) { // andi. / andis. always update CR0
         out.push_back(ldr_w(9, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + rt * 4U)));
         load_imm(out, 10, op == 29U ? (imm << 16U) : imm);
