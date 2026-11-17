@@ -112,7 +112,7 @@ TEST_CASE(jit_arm64_executes_bit_exact_fpr_unary_operations) {
     CHECK(candidate.s()==reference.s());
     CHECK_EQ(candidate.s().fpr[2].ps0,0x7FF8123456789ABCULL);
     CHECK_EQ(candidate.s().fpr[3].ps0,0xFFF8123456789ABCULL);
-    CHECK_EQ(candidate.s().fpr[4].ps0,0x7FF8123456789ABCULL);
+    CHECK_EQ(candidate.s().fpr[4].ps0,0xFFF8123456789ABCULL);
     CHECK_EQ(candidate.s().fpr[5].ps0,0x7FF8123456789ABCULL);
 }
 #endif
@@ -123,7 +123,9 @@ TEST_CASE(jit_arm64_fpr_blocks_fall_back_for_fp_unavailable_exception) {
     const u32 ins=A::fmr(3U,1U);
     reference.code(0x1000U,{ins});
     candidate.code(0x1000U,{ins});
-    CHECK(reference.cpu->run(1U)==StepResult::ExceptionTaken);
+    reference.s().msr=0U;
+    candidate.s().msr=0U;
+    CHECK(reference.cpu->step()==StepResult::ExceptionTaken);
     CHECK(candidate.cpu->run_jit(1U)==StepResult::ExceptionTaken);
     CHECK(candidate.s()==reference.s());
 }
