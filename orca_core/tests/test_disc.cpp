@@ -138,9 +138,16 @@ TEST_CASE(wii_ticket_fields_and_validation) {
     std::vector<u8> bad(base + 0x2A4U, 0);
     for (std::size_t i = 0; i < 16U; ++i) bad[base + 0x1BFU + i] = static_cast<u8>(i + 1U);
     for (std::size_t i = 0; i < 8U; ++i) bad[base + 0x1DCU + i] = static_cast<u8>(0xA0U + i);
-    bad[base + 0x1F1U] = 2U;
-    disc::MemoryDisc unsupported(std::move(bad));
-    CHECK(!disc::parse_wii_ticket(unsupported, {base, 0U}, error).has_value());
+    bad[base + 0x1F1U] = 2U; // preserve unknown key indices for caller policy
+    disc::MemoryDisc alternate_key(std::move(bad));
+    const auto alternate = disc::parse_wii_ticket(alternate_key, {base, 0U}, error);
+    CHECK(alternate.has_value());
+    if (alternate) CHECK_EQ(alternate->common_key_index, 2U);
+
+    std::vector<u8> zero_id(base + 0x2A4U, 0);
+    for (std::size_t i = 0; i < 16U; ++i) zero_id[base + 0x1BFU + i] = static_cast<u8>(i + 1U);
+    disc::MemoryDisc invalid_id(std::move(zero_id));
+    CHECK(!disc::parse_wii_ticket(invalid_id, {base, 0U}, error).has_value());
 
     disc::MemoryDisc truncated(std::vector<u8>(base + 0x200U, 0));
     CHECK(!disc::parse_wii_ticket(truncated, {base, 0U}, error).has_value());
