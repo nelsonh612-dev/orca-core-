@@ -84,6 +84,59 @@ TEST_CASE(jit_arm64_translates_addic_record_form_and_builds_cr0) {
     CHECK(has_word(0x5303098CU)); // LSL w12, w12, #29
 }
 
+TEST_CASE(jit_arm64_translates_paired_single_sign_ops_and_merges) {
+    const std::array<u32,5> code{
+        A::ps_neg(3U,1U),A::ps_mr(4U,1U),A::ps_nabs(5U,1U),
+        A::ps_abs(6U,1U),A::ps_merge10(7U,1U,2U)
+    };
+    const Block block=compile_arm64(code,0x1000U);
+    CHECK_EQ(block.guest_instructions,5U);
+    CHECK(block.requires_fp);
+    CHECK(block.requires_paired);
+}
+
+#if defined(__aarch64__)
+TEST_CASE(jit_arm64_executes_paired_single_sign_ops_and_merge10) {
+    Machine reference;
+    Machine candidate;
+    const std::array<u32,5> code{
+        A::ps_neg(3U,1U),A::ps_mr(4U,1U),A::ps_nabs(5U,1U),
+        A::ps_abs(6U,1U),A::ps_merge10(7U,1U,2U)
+    };
+    reference.code(0x1000U,{code[0],code[1],code[2],code[3],code[4]});
+    candidate.code(0x1000U,{code[0],code[1],code[2],code[3],code[4]});
+    reference.s().msr|=MSR_FP; candidate.s().msr|=MSR_FP;
+    reference.s().hid2|=HID2_PSE; candidate.s().hid2|=HID2_PSE;
+    reference.s().fpr[1]={0x3FF0000000000000ULL,0xBFF0000000000000ULL};
+    candidate.s().fpr[1]=reference.s().fpr[1];
+    reference.s().fpr[2]={0x4000000000000000ULL,0xC000000000000000ULL};
+    candidate.s().fpr[2]=reference.s().fpr[2];
+    CHECK(reference.cpu->run(code.size())==StepResult::Executed);
+    CHECK(candidate.cpu->run_jit(code.size())==StepResult::Executed);
+    CHECK(candidate.s()==reference.s());
+    CHECK_EQ(candidate.s().fpr[3].ps0,0xBFF0000000000000ULL);
+    CHECK_EQ(candidate.s().fpr[3].ps1,0x3FF0000000000000ULL);
+    CHECK_EQ(candidate.s().fpr[5].ps0,0xBFF0000000000000ULL);
+    CHECK_EQ(candidate.s().fpr[5].ps1,0xBFF0000000000000ULL);
+    CHECK_EQ(candidate.s().fpr[6].ps0,0x3FF0000000000000ULL);
+    CHECK_EQ(candidate.s().fpr[6].ps1,0x3FF0000000000000ULL);
+    CHECK_EQ(candidate.s().fpr[7].ps0,0xBFF0000000000000ULL);
+    CHECK_EQ(candidate.s().fpr[7].ps1,0x4000000000000000ULL);
+}
+#endif
+
+TEST_CASE(jit_arm64_paired_single_blocks_fall_back_when_pse_disabled) {
+    Machine reference;
+    Machine candidate;
+    const u32 ins=A::ps_mr(3U,1U);
+    reference.code(0x1000U,{ins});
+    candidate.code(0x1000U,{ins});
+    reference.s().msr|=MSR_FP; candidate.s().msr|=MSR_FP;
+    CHECK(reference.cpu->step()==StepResult::ExceptionTaken);
+    CHECK(candidate.cpu->run_jit(1U)==StepResult::ExceptionTaken);
+    CHECK(candidate.s()==reference.s());
+}
+
 TEST_CASE(jit_arm64_translates_bit_exact_fpr_unary_operations) {
     const std::array<u32,4> code{
         A::fneg(2U,1U),A::fmr(3U,1U),A::fnabs(4U,1U),A::fabs_(5U,1U)
