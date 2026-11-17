@@ -127,6 +127,7 @@ TEST_CASE(jit_arm64_differential_d_form_update_load_store) {
     CHECK(native_load.bus.write32(0x2004U, 0xCAFEBABEU) == mem::BusStatus::Ok);
     CHECK(reference_load.cpu->run(1U) == StepResult::Executed);
     CHECK(native_load.cpu->run_jit(1U) == StepResult::Executed);
+    CHECK(native_load.cpu->jit_memory_fastpath_hits() >= 1U);
     CHECK(native_load.s() == reference_load.s());
 
     const u32 stwu = A::D(37, 5, 4, 8);
@@ -140,6 +141,7 @@ TEST_CASE(jit_arm64_differential_d_form_update_load_store) {
     native_store.s().gpr[5] = 0x11223344U;
     CHECK(reference_store.cpu->run(1U) == StepResult::Executed);
     CHECK(native_store.cpu->run_jit(1U) == StepResult::Executed);
+    CHECK(native_store.cpu->jit_memory_fastpath_hits() >= 1U);
     CHECK(native_store.s() == reference_store.s());
     CHECK_EQ(native_store.r32(0x2008U), reference_store.r32(0x2008U));
 }
@@ -158,6 +160,7 @@ TEST_CASE(jit_arm64_native_store_invalidates_cached_guest_code) {
     native_path.s().gpr[5] = new_instruction;
     CHECK(reference.cpu->run(2U) == StepResult::Executed);
     CHECK(native_path.cpu->run_jit(2U) == StepResult::Executed);
+    CHECK(native_path.cpu->jit_memory_fastpath_hits() >= 1U);
     CHECK(native_path.s() == reference.s());
     CHECK_EQ(native_path.r32(0x1004U), new_instruction);
 }
@@ -231,6 +234,7 @@ TEST_CASE(jit_arm64_differential_guarded_indexed_load_store_and_reverse_forms) {
     u64 completed = 0;
     CHECK(native_path.cpu->run_jit(code.size(), &completed) == StepResult::Executed);
     CHECK_EQ(completed, code.size());
+    CHECK(native_path.cpu->jit_memory_fastpath_hits() >= code.size());
     CHECK(native_path.s() == reference.s());
     CHECK_EQ(native_path.r32(0x201CU), reference.r32(0x201CU));
     CHECK_EQ(native_path.r32(0x2020U), reference.r32(0x2020U));
