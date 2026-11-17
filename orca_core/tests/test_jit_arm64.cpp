@@ -115,10 +115,18 @@ TEST_CASE(jit_arm64_translates_adde_and_subfe_using_xer_carry_in) {
 }
 
 TEST_CASE(jit_arm64_does_not_translate_overflow_enabled_xo_arithmetic_yet) {
-    const std::array<u32, 1> code{A::add(3, 4, 5, true, false)};
-    const Block b = compile_arm64(code, 0x1000U);
-    CHECK_EQ(b.guest_instructions, 0U);
-    CHECK(b.host_words.empty());
+    const std::array<u32, 4> code{
+        A::add(3, 4, 5, true, false),
+        A::XO(75U, 3U, 4U, 5U, true, false),
+        A::XO(11U, 3U, 4U, 5U, true, false),
+        A::mullw(3U, 4U, 5U, true, false)
+    };
+    for (u32 ins : code) {
+        const std::array<u32,1> one{ins};
+        const Block b = compile_arm64(one, 0x1000U);
+        CHECK_EQ(b.guest_instructions, 0U);
+        CHECK(b.host_words.empty());
+    }
 }
 
 TEST_CASE(jit_arm64_unsupported_first_instruction_produces_no_executable_block) {
