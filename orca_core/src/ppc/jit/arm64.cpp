@@ -972,7 +972,7 @@ Block compile_arm64(std::span<const u32> words, u32 start_pc) {
     return b;
 }
 
-ExecutableBlock::ExecutableBlock(const Block& block) noexcept {
+ExecutableBlock::ExecutableBlock(const Block& block) noexcept : has_guarded_memory_(block.has_guarded_memory) {
 #if defined(__aarch64__)
     if (block.guest_instructions == 0U || block.host_words.empty()) return;
     const long page = sysconf(_SC_PAGESIZE);
@@ -1001,9 +1001,10 @@ ExecutableBlock::~ExecutableBlock() {
 }
 
 ExecutableBlock::ExecutableBlock(ExecutableBlock&& other) noexcept
-    : memory_(other.memory_), allocation_size_(other.allocation_size_) {
+    : memory_(other.memory_), allocation_size_(other.allocation_size_), has_guarded_memory_(other.has_guarded_memory_) {
     other.memory_ = nullptr;
     other.allocation_size_ = 0;
+    other.has_guarded_memory_ = false;
 }
 
 ExecutableBlock& ExecutableBlock::operator=(ExecutableBlock&& other) noexcept {
@@ -1013,22 +1014,26 @@ ExecutableBlock& ExecutableBlock::operator=(ExecutableBlock&& other) noexcept {
 #endif
     memory_ = other.memory_;
     allocation_size_ = other.allocation_size_;
+    has_guarded_memory_ = other.has_guarded_memory_;
     other.memory_ = nullptr;
     other.allocation_size_ = 0;
+    other.has_guarded_memory_ = false;
     return *this;
 }
 
-bool ExecutableBlock::execute(CpuState& state) const noexcept {
+bool ExecutableBlock::execute(CpuState& state, void* context, MemoryResolver resolver) const noexcept {
 #if defined(__aarch64__)
-    if (memory_ == nullptr) return false;
-    using Fn = void (*)(CpuState*);
+    if (memory_ == nullptr || (has_guarded_memory_ && resolver == nullptr)) return false;
+    using Fn = void (*)(CpuState*, void*, MemoryResolver);
     static_assert(sizeof(Fn) == sizeof(memory_));
     Fn fn = nullptr;
     std::memcpy(&fn, &memory_, sizeof(fn));
-    fn(&state);
+    fn(&state, context, resolver);
     return true;
 #else
     (void)state;
+    (void)context;
+    (void)resolver;
     return false;
 #endif
 }
