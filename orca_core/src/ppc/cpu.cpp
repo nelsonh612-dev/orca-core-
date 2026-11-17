@@ -318,16 +318,22 @@ StepResult Cpu::run_jit(u64 budget, u64* completed, const u32* stop_pc) {
             continue;
         }
         jit_pending_write_ = false;
+        jit_memory_fallback_ = false;
         if (!it->second->executable.execute(state_, this, &Cpu::jit_memory_resolver)) {
             const StepResult r = step();
             if (r != StepResult::Executed && r != StepResult::ExceptionTaken) { if (completed != nullptr) *completed = done; return r; }
             ++done;
             continue;
         }
-        if (it->second->block.has_guarded_memory && state_.pc == pc) {
-            // Resolver declined (MMIO, non-contiguous mapping, fault, cache,
-            // or special WIMG): retry exactly once through the reference path.
+        if (jit_memory_fallback_) {
+            // The block may have executed a prefix. Its generated code saved
+            // PC at the guarded memory instruction before asking the resolver,
+            // so only that instruction is retried by the reference path.
+            jit_memory_fallback_ = false;
             jit_pending_write_ = false;
+            const u32 prefix = it->second->block.guarded_memory_prefix;
+            retired_ += prefix;
+            done += prefix;
             const StepResult r = step();
             if (r != StepResult::Executed && r != StepResult::ExceptionTaken) {
                 if (completed != nullptr) *completed = done;
