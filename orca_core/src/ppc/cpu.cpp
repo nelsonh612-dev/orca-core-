@@ -40,7 +40,7 @@ Cpu::Cpu(mem::Bus& bus, CpuConfig config) : bus_(bus), config_(config) {
     // Writes by other bus masters (DMA) to the reserved granule cancel a
     // lwarx reservation (PEM 5.1.2).
     observer_id_ = bus_.add_write_observer([this](const mem::WriteEvent& ev) {
-        if (!state_.reserve || ev.source == mem::AccessSource::Cpu) return;
+        if (!state_.reserve) return;
         const u64 lo = ev.address, hi = static_cast<u64>(ev.address) + ev.size;
         const u64 g_lo = state_.reserve_address, g_hi = g_lo + 32U;
         if (lo < g_hi && g_lo < hi) state_.reserve = false;
@@ -258,6 +258,8 @@ StepResult Cpu::run_jit(u64 budget, u64* completed, const u32* stop_pc) {
                 }
                 u32 ins = 0;
                 if (bus_.read32(tr.physical, ins) != mem::BusStatus::Ok) { fetch_ok = false; break; }
+                // Floating-point instructions require MSR[FP]. They may be
+                // compiled, but their cached blocks are guarded at entry.
                 words.push_back(ins);
             }
             if (!fetch_ok || words.empty()) {
@@ -304,14 +306,52 @@ StepResult Cpu::run_jit(u64 budget, u64* completed, const u32* stop_pc) {
             ++done;
             continue;
         }
-        if (!it->second->executable.execute(state_)) {
+        if ((it->second->block.requires_fp && (state_.msr & MSR_FP) == 0U) ||
+            (it->second->block.requires_paired && (state_.hid2 & HID2_PSE) == 0U)) {
+            // Preserve FP-unavailable / paired-single-disabled exceptions at the exact guest PC.
+            const StepResult r = step();
+            if (r != StepResult::Executed && r != StepResult::ExceptionTaken) {
+                if (completed != nullptr) *completed = done;
+                return r;
+            }
+            ++done;
+            continue;
+        }
+        jit_pending_write_ = false;
+        jit_memory_fallback_ = false;
+        if (!it->second->executable.execute(state_, this, &Cpu::jit_memory_resolver)) {
             const StepResult r = step();
             if (r != StepResult::Executed && r != StepResult::ExceptionTaken) { if (completed != nullptr) *completed = done; return r; }
             ++done;
             continue;
         }
+        if (jit_memory_fallback_) {
+            // The block may have executed a prefix. Its generated code saved
+            // PC at the guarded memory instruction before asking the resolver,
+            // so only that instruction is retried by the reference path.
+            jit_memory_fallback_ = false;
+            jit_pending_write_ = false;
+            const u32 prefix = it->second->block.guarded_memory_prefix;
+            retired_ += prefix;
+            done += prefix;
+            const StepResult r = step();
+            if (r != StepResult::Executed && r != StepResult::ExceptionTaken) {
+                if (completed != nullptr) *completed = done;
+                return r;
+            }
+            ++done;
+            continue;
+        }
+        const bool notify_write = jit_pending_write_;
+        const u32 written_address = jit_pending_write_address_;
+        const u32 written_size = jit_pending_write_size_;
+        jit_pending_write_ = false;
         retired_ += count;
         done += count;
+        // This may invalidate and destroy the just-executed cached block, so
+        // it must be the last operation that can reference the cache iterator.
+        if (notify_write)
+            bus_.notify_external_write(written_address, written_size, mem::AccessSource::Cpu);
     }
     if (completed != nullptr) *completed = done;
     return StepResult::Executed;
@@ -343,6 +383,39 @@ Cpu::Outcome Cpu::translate_data(u32 ea, u32 size, bool write, u32& pa_lo, u32& 
     if (second.status != TranslateStatus::Ok) return fail(second, ea);
     pa_hi = second.physical;
     return Outcome::done();
+}
+
+void* Cpu::resolve_jit_ram(u32 ea, u32 size, bool write) {
+    const auto decline = [this]() -> void* {
+        jit_memory_fallback_ = true;
+        return nullptr;
+    };
+    if ((size != 1U && size != 2U && size != 4U && size != 8U &&
+         (size > 128U || (size & 3U) != 0U)) ||
+        (size == 8U && (ea & 3U) != 0U) || !locked_cache_.empty()) return decline();
+    u32 pa_lo = 0, pa_hi = 0, split = 0;
+    u8 wimg = 0;
+    const Outcome translated = translate_data(ea, size, write, pa_lo, pa_hi, split, wimg);
+    if (!translated.ok() || split != size || (wimg & (WIMG_W | WIMG_I)) != 0U) return decline();
+    u8* const pointer = bus_.ram_pointer(pa_lo, size);
+    if (pointer == nullptr) return decline();
+    ++jit_memory_fastpath_hits_;
+    if (write) {
+        jit_pending_write_ = true;
+        jit_pending_write_address_ = pa_lo;
+        jit_pending_write_size_ = size;
+    }
+    return pointer;
+}
+
+void* Cpu::jit_memory_resolver(CpuState* state, void* context, u32 ea, u32 size, u32 write) {
+    auto* const cpu = static_cast<Cpu*>(context);
+    if (cpu == nullptr) return nullptr;
+    if (state != &cpu->state_) {
+        cpu->jit_memory_fallback_ = true;
+        return nullptr;
+    }
+    return cpu->resolve_jit_ram(ea, size, write != 0U);
 }
 
 bool Cpu::locked_cache_line(u32 physical, std::array<u8, 32>& out) const {
