@@ -12,6 +12,27 @@ namespace {
 constexpr u32 ldr_w(unsigned rt, unsigned rn, unsigned byte_offset) {
     return 0xB9400000U | ((byte_offset / 4U) << 10U) | (rn << 5U) | rt;
 }
+constexpr u32 ldr_x(unsigned rt, unsigned rn, unsigned byte_offset) {
+    return 0xF9400000U | ((byte_offset / 8U) << 10U) | (rn << 5U) | rt;
+}
+constexpr u32 str_x(unsigned rt, unsigned rn, unsigned byte_offset) {
+    return 0xF9000000U | ((byte_offset / 8U) << 10U) | (rn << 5U) | rt;
+}
+constexpr u32 movz_x(unsigned rd, u32 imm16, unsigned shift) {
+    return 0xD2800000U | ((shift / 16U) << 21U) | ((imm16 & 0xFFFFU) << 5U) | rd;
+}
+constexpr u32 movk_x(unsigned rd, u32 imm16, unsigned shift) {
+    return 0xF2800000U | ((shift / 16U) << 21U) | ((imm16 & 0xFFFFU) << 5U) | rd;
+}
+constexpr u32 eor_x(unsigned rd, unsigned rn, unsigned rm) {
+    return 0xCA000000U | (rm << 16U) | (rn << 5U) | rd;
+}
+constexpr u32 orr_x(unsigned rd, unsigned rn, unsigned rm) {
+    return 0xAA000000U | (rm << 16U) | (rn << 5U) | rd;
+}
+constexpr u32 and_x(unsigned rd, unsigned rn, unsigned rm) {
+    return 0x8A000000U | (rm << 16U) | (rn << 5U) | rd;
+}
 constexpr u32 str_w(unsigned rt, unsigned rn, unsigned byte_offset) {
     return 0xB9000000U | ((byte_offset / 4U) << 10U) | (rn << 5U) | rt;
 }
@@ -114,6 +135,18 @@ void emit_ov(std::vector<u32>& out) {
     out.push_back(lsl_w(13, 12, 1U)); // overflow also sets sticky SO
     out.push_back(orr_w(9, 9, 13));
     out.push_back(str_w(9, 0, static_cast<unsigned>(offsetof(CpuState, xer))));
+}
+
+void emit_cr1(std::vector<u32>& out) {
+    // FPSCR[0:3] is copied to CR1; no other CR field is touched.
+    out.push_back(ldr_w(9, 0, static_cast<unsigned>(offsetof(CpuState, fpscr))));
+    out.push_back(ubfx_w(10, 9, 28U, 4U));
+    out.push_back(lsl_w(10, 10, 24U));
+    out.push_back(ldr_w(9, 0, static_cast<unsigned>(offsetof(CpuState, cr))));
+    load_imm(out, 11, 0xF00FFFFFU);
+    out.push_back(and_w(9, 9, 11));
+    out.push_back(orr_w(9, 9, 10));
+    out.push_back(str_w(9, 0, static_cast<unsigned>(offsetof(CpuState, cr))));
 }
 
 void emit_cr0(std::vector<u32>& out, unsigned result_reg) {
@@ -342,6 +375,41 @@ bool translate_one(u32 ins, std::vector<u32>& out) {
         out.push_back(str_w(11, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + ra * 4U)));
         return true;
     }
+    if (op == 63U) {
+        const unsigned xo = (ins >> 1U) & 0x3FFU;
+        if (xo == 40U || xo == 72U || xo == 136U || xo == 264U) {
+            // fneg/fmr/fnabs/fabs operate on the raw ps0 bit pattern only.
+            // ps1 and FPSCR remain unchanged; Rc copies FPSCR[0:3] to CR1.
+            const unsigned frt = (ins >> 21U) & 31U;
+            const unsigned frb = (ins >> 11U) & 31U;
+            const unsigned source = static_cast<unsigned>(
+                offsetof(CpuState, fpr) + frb * sizeof(Fpr) + offsetof(Fpr, ps0));
+            const unsigned destination = static_cast<unsigned>(
+                offsetof(CpuState, fpr) + frt * sizeof(Fpr) + offsetof(Fpr, ps0));
+            out.push_back(ldr_x(9, 0, source));
+            if (xo != 72U) {
+                out.push_back(movz_x(10, 0x8000U, 48U));
+                if (xo == 40U) out.push_back(eor_x(11, 9, 10));
+                else if (xo == 136U) out.push_back(orr_x(11, 9, 10));
+                else {
+                    out.push_back(mvn_w(12, 12)); // overwritten below; keep W scratch independent
+                    load_imm(out, 12, 0U);
+                    out.pop_back();
+                    out.push_back(movz_x(10, 0x7FFFU, 48U));
+                    out.push_back(movk_x(10, 0xFFFFU, 32U));
+                    out.push_back(movk_x(10, 0xFFFFU, 16U));
+                    out.push_back(movk_x(10, 0xFFFFU, 0U));
+                    out.push_back(and_x(11, 9, 10));
+                }
+                out.push_back(str_x(11, 0, destination));
+            } else {
+                out.push_back(str_x(9, 0, destination));
+            }
+            if ((ins & 1U) != 0U) emit_cr1(out);
+            return true;
+        }
+    }
+
     if (op == 31U) {
         // Conservative XO subset: OE=0 only. Rc is supported by rebuilding
         // CR0 from the signed result and the sticky XER[SO] bit.
