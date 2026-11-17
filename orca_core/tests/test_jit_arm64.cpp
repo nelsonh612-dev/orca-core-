@@ -1138,6 +1138,48 @@ TEST_CASE(jit_arm64_differential_double_precision_fpr_memory_matches_interpreter
 }
 #endif
 
+TEST_CASE(jit_arm64_translates_all_scalar_fpr_memory_forms) {
+    const std::array<u32, 16> code{
+        A::lfs(1, 0, 3), A::lfsu(2, 4, 3), A::lfd(3, 8, 3), A::lfdu(4, 12, 3),
+        A::stfs(5, 16, 3), A::stfsu(6, 20, 3), A::stfd(7, 24, 3), A::stfdu(8, 28, 3),
+        A::lfsx(9, 3, 4), A::lfsux(10, 3, 4), A::lfdx(11, 3, 4), A::lfdux(12, 3, 4),
+        A::stfsx(13, 3, 4), A::stfsux(14, 3, 4), A::stfdx(15, 3, 4), A::stfdux(16, 3, 4)
+    };
+    for (u32 ins : code) {
+        const std::array<u32, 1> one{ins};
+        const Block block = compile_arm64(one, 0x1000U);
+        CHECK_EQ(block.guest_instructions, 1U);
+        CHECK(block.requires_fp);
+        CHECK(block.has_guarded_memory);
+        CHECK_EQ(block.guarded_memory_prefix, 0U);
+        CHECK_EQ(block.host_words.back(), 0xD65F03C0U);
+    }
+}
+
+#if defined(__aarch64__)
+TEST_CASE(jit_arm64_differential_single_precision_fpr_memory_matches_interpreter) {
+    const std::array<u32, 4> code{
+        A::lfs(1, 0, 3), A::stfs(1, 4, 3), A::lfsu(2, 8, 3), A::stfsu(2, 4, 3)
+    };
+    Machine reference;
+    Machine native_path;
+    reference.code(0x1000U, {code[0], code[1], code[2], code[3]});
+    native_path.code(0x1000U, {code[0], code[1], code[2], code[3]});
+    for (Machine* m : {&reference, &native_path}) {
+        m->s().msr = MSR_FP;
+        m->s().gpr[3] = 0x2000U;
+        CHECK(m->bus.write32(0x2000U, 0x3F800001U) == mem::BusStatus::Ok);
+        CHECK(m->bus.write32(0x2008U, 0xBF000001U) == mem::BusStatus::Ok);
+    }
+    CHECK(reference.cpu->run(code.size()) == StepResult::Executed);
+    CHECK(native_path.cpu->run_jit(code.size()) == StepResult::Executed);
+    CHECK(native_path.cpu->jit_memory_fastpath_hits() >= code.size());
+    CHECK(native_path.s() == reference.s());
+    for (u32 address : {0x2004U, 0x200CU})
+        CHECK_EQ(native_path.r32(address), reference.r32(address));
+}
+#endif
+
 TEST_CASE(jit_arm64_unsupported_first_instruction_produces_no_executable_block) {
     // bcctr with BO[2] clear is architecturally invalid and must stay in fallback.
     const std::array<u32, 1> code{A::bcctr(0, 0)};
