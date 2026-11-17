@@ -24,12 +24,23 @@ std::unique_ptr<FileDisc> FileDisc::open(const std::string& path, std::string& e
     d->file_.open(path, std::ios::binary);
     if (!d->file_) { error = "cannot open disc image " + path; return nullptr; }
     d->file_.seekg(0, std::ios::end);
-    d->size_ = static_cast<u64>(d->file_.tellg());
+    const std::streampos end = d->file_.tellg();
+    if (end < std::streampos{0}) {
+        error = "cannot determine disc image size " + path;
+        return nullptr;
+    }
+    d->size_ = static_cast<u64>(end);
+    d->file_.seekg(0, std::ios::beg);
+    if (!d->file_) {
+        error = "cannot seek to start of disc image " + path;
+        return nullptr;
+    }
     return d;
 }
 
 bool FileDisc::read(u64 offset, std::span<u8> out) {
     if (offset > size_ || out.size() > size_ - offset) return false;
+    if (out.empty()) return true;
     file_.clear();
     file_.seekg(static_cast<std::streamoff>(offset));
     file_.read(reinterpret_cast<char*>(out.data()), static_cast<std::streamsize>(out.size()));
