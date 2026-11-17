@@ -622,7 +622,7 @@ bool translate_one(u32 ins, std::vector<u32>& out) {
             out.push_back(ubfx_w(16, 9, 31U, 1U));
             out.push_back(sub_w(16, 31U, 16)); // 0 or 0xFFFFFFFF from dividend sign
             out.push_back(cmp_zero_w(13));
-            out.push_back(csel_w(11, 11, 16, 1U)); // exceptional ? sign-mask : SDIV result
+            out.push_back(csel_w(11, 16, 11, 1U)); // exceptional ? sign-mask : SDIV result
             out.push_back(str_w(11, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + rt * 4U)));
 
             // OE controls whether divw updates XER[OV]/[SO].
