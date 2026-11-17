@@ -225,6 +225,39 @@ TEST_CASE(jit_arm64_keeps_arithmetic_shifts_in_reference_fallback_until_xer_ca_i
     CHECK(b.host_words.empty());
 }
 
+
+#if defined(__aarch64__)
+TEST_CASE(jit_arm64_differential_logical_record_forms_match_reference_interpreter) {
+    Machine reference;
+    const std::array<u32, 10> code{
+        A::andi_(3, 4, 0xF0F0), A::andis_(5, 6, 0x8001),
+        A::and_(7, 8, 9, true), A::andc(10, 11, 12, true),
+        A::nor(13, 14, 15, true), A::eqv(16, 17, 18, true),
+        A::xor_(19, 20, 21, true), A::orc(22, 23, 24, true),
+        A::or_(25, 26, 27, true), A::nand(28, 29, 30, true)
+    };
+    reference.code(0x1000U, {code[0],code[1],code[2],code[3],code[4],
+                             code[5],code[6],code[7],code[8],code[9]});
+    for (unsigned i = 4; i < 31; ++i)
+        reference.s().gpr[i] = 0x9E3779B9U * static_cast<u32>(i);
+    reference.s().xer = XER_SO | XER_OV;
+    reference.s().cr = 0xA5A5A5A5U;
+    CHECK(reference.cpu->run(code.size()) == StepResult::Executed);
+    const CpuState expected = reference.s();
+
+    CpuState actual{};
+    actual.pc = 0x1000U;
+    for (unsigned i = 4; i < 31; ++i)
+        actual.gpr[i] = 0x9E3779B9U * static_cast<u32>(i);
+    actual.xer = XER_SO | XER_OV;
+    actual.cr = 0xA5A5A5A5U;
+    const Block block = compile_arm64(code, 0x1000U);
+    CHECK_EQ(block.guest_instructions, code.size());
+    CHECK(execute_arm64(block, actual));
+    CHECK(actual == expected);
+}
+#endif
+
 TEST_CASE(jit_arm64_unsupported_first_instruction_produces_no_executable_block) {
     const std::array<u32, 1> code{A::b(4)};
     const Block b = compile_arm64(code, 0x1000);
