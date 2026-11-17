@@ -69,6 +69,7 @@ constexpr u32 eor_w(unsigned rd, unsigned rn, unsigned rm) { return 0x4A000000U 
 constexpr u32 and_w(unsigned rd, unsigned rn, unsigned rm) { return 0x0A000000U | (rm << 16U) | (rn << 5U) | rd; }
 constexpr u32 mul_w(unsigned rd, unsigned rn, unsigned rm) { return 0x1B007C00U | (rm << 16U) | (rn << 5U) | rd; }
 constexpr u32 udiv_w(unsigned rd, unsigned rn, unsigned rm) { return 0x1AC00800U | (rm << 16U) | (rn << 5U) | rd; }
+constexpr u32 sdiv_w(unsigned rd, unsigned rn, unsigned rm) { return 0x1AC00C00U | (rm << 16U) | (rn << 5U) | rd; }
 constexpr u32 smull_x(unsigned rd, unsigned rn, unsigned rm) {
     return 0x9B207C00U | (rm << 16U) | (rn << 5U) | rd;
 }
@@ -596,6 +597,43 @@ bool translate_one(u32 ins, std::vector<u32>& out) {
                 out.push_back(orr_w(9, 9, 14)); // sticky SO
                 out.push_back(str_w(9, 0, static_cast<unsigned>(offsetof(CpuState, xer))));
             }
+            if ((ins & 1U) != 0U) emit_cr0(out, 11);
+            return true;
+        }
+        if (xo9 == 491U) { // divw: signed quotient with interpreter-defined exceptional result
+            out.push_back(ldr_w(9, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + ra * 4U)));
+            out.push_back(ldr_w(10, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + rb * 4U)));
+            out.push_back(sdiv_w(11, 9, 10));
+
+            // The interpreter defines both divisor-zero and INT_MIN/-1 as
+            // exceptional, returning all ones for a negative dividend and
+            // zero otherwise. AArch64 SDIV alone does not implement that
+            // contract (it returns zero / INT_MIN respectively).
+            out.push_back(cmp_zero_w(10));
+            out.push_back(cset_w(13, 0U)); // divisor == 0
+            load_imm(out, 14, 0x80000000U);
+            out.push_back(cmp_w(9, 14));
+            out.push_back(cset_w(15, 0U)); // dividend == INT_MIN
+            load_imm(out, 14, 0xFFFFFFFFU);
+            out.push_back(cmp_w(10, 14));
+            out.push_back(cset_w(16, 0U)); // divisor == -1
+            out.push_back(and_w(15, 15, 16));
+            out.push_back(orr_w(13, 13, 15)); // either exceptional condition
+            out.push_back(ubfx_w(16, 9, 31U, 1U));
+            out.push_back(sub_w(16, 31U, 16)); // 0 or 0xFFFFFFFF from dividend sign
+            out.push_back(cmp_zero_w(13));
+            out.push_back(csel_w(11, 11, 16, 1U)); // exceptional ? sign-mask : SDIV result
+            out.push_back(str_w(11, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + rt * 4U)));
+
+            // OV is replaced on every divw; SO remains sticky.
+            out.push_back(lsl_w(14, 13, 30U));
+            out.push_back(ldr_w(12, 0, static_cast<unsigned>(offsetof(CpuState, xer))));
+            load_imm(out, 15, XER_OV);
+            out.push_back(bic_w(12, 12, 15));
+            out.push_back(orr_w(12, 12, 14));
+            out.push_back(lsl_w(14, 13, 1U));
+            out.push_back(orr_w(12, 12, 14));
+            out.push_back(str_w(12, 0, static_cast<unsigned>(offsetof(CpuState, xer))));
             if ((ins & 1U) != 0U) emit_cr0(out, 11);
             return true;
         }
