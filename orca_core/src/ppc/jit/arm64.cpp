@@ -789,6 +789,11 @@ Block compile_arm64(std::span<const u32> words, u32 start_pc) {
         }
 
         if (!translate_one(ins, b.host_words)) break;
+        if ((ins >> 26U) == 63U) {
+            const unsigned fp_xo = (ins >> 1U) & 0x3FFU;
+            if (fp_xo == 40U || fp_xo == 72U || fp_xo == 136U || fp_xo == 264U)
+                b.requires_fp = true;
+        }
         ++b.guest_instructions;
         b.end_pc += 4U;
     }
