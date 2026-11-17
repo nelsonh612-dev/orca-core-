@@ -573,6 +573,7 @@ bool translate_one(u32 ins, u32 guest_pc, std::vector<u32>& out, bool& terminate
 
 
         if(xo10==75U || xo10==11U) { // mulhw / mulhwu
+            if((ins&0x400U)!=0U) return false; // OE/overflow semantics not emitted
             out.push_back(ldr_w(9,0,static_cast<unsigned>(offsetof(CpuState,gpr)+ra*4U)));
             out.push_back(ldr_w(10,0,static_cast<unsigned>(offsetof(CpuState,gpr)+rb*4U)));
             out.push_back(xo10==75U ? smull_x(12,9,10) : umull_x(12,9,10));
@@ -582,6 +583,7 @@ bool translate_one(u32 ins, u32 guest_pc, std::vector<u32>& out, bool& terminate
             return true;
         }
         if(xo10==235U) { // mullw, OE=0
+            if((ins&0x400U)!=0U) return false; // OE must update XER[OV]/[SO]
             out.push_back(ldr_w(9,0,static_cast<unsigned>(offsetof(CpuState,gpr)+ra*4U)));
             out.push_back(ldr_w(10,0,static_cast<unsigned>(offsetof(CpuState,gpr)+rb*4U)));
             out.push_back(mul_w(11,9,10));
