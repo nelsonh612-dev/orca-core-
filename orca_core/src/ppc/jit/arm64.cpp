@@ -948,6 +948,55 @@ Block compile_arm64(std::span<const u32> words, u32 start_pc) {
         }
 
         const unsigned guest_op = ins >> 26U;
+        if (guest_op == 46U || guest_op == 47U) { // lmw/stmw
+            const unsigned rt = (ins >> 21U) & 31U;
+            const unsigned ra = (ins >> 16U) & 31U;
+            const bool is_load = guest_op == 46U;
+            const unsigned size = (32U - rt) * 4U;
+            b.host_words.push_back(sub_sp_32());
+            b.host_words.push_back(str_x(0, 31U, 0U));
+            b.host_words.push_back(str_x(30, 31U, 8U));
+            b.host_words.push_back(str_x(20, 31U, 24U));
+            if (ra == 0U) load_imm(b.host_words, 9, 0U);
+            else b.host_words.push_back(ldr_w(9, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + ra * 4U)));
+            load_imm(b.host_words, 10, static_cast<u32>(static_cast<s32>(static_cast<s16>(ins & 0xFFFFU))));
+            b.host_words.push_back(add_w(20, 9, 10));
+            b.host_words.push_back(orr_x(16, 2, 31U));
+            b.host_words.push_back(orr_w(2, 20, 31U));
+            load_imm(b.host_words, 3, size);
+            load_imm(b.host_words, 4, is_load ? 0U : 1U);
+            b.host_words.push_back(blr_x16());
+            const std::size_t fallback_branch = b.host_words.size();
+            b.host_words.push_back(cbz_x(0, 0U));
+            b.host_words.push_back(ldr_x(17, 31U, 0U));
+            for (unsigned reg = rt; reg < 32U; ++reg) {
+                const unsigned memory_offset = (reg - rt) * 4U;
+                if (is_load) {
+                    b.host_words.push_back(ldr_w(11, 0U, memory_offset));
+                    b.host_words.push_back(rev_w(11, 11));
+                    b.host_words.push_back(str_w(11, 17, static_cast<unsigned>(offsetof(CpuState, gpr) + reg * 4U)));
+                } else {
+                    b.host_words.push_back(ldr_w(11, 17, static_cast<unsigned>(offsetof(CpuState, gpr) + reg * 4U)));
+                    b.host_words.push_back(rev_w(11, 11));
+                    b.host_words.push_back(str_w(11, 0U, memory_offset));
+                }
+            }
+            load_imm(b.host_words, 9, b.end_pc + 4U);
+            b.host_words.push_back(str_w(9, 17, static_cast<unsigned>(offsetof(CpuState, pc))));
+            const std::size_t epilogue = b.host_words.size();
+            const std::size_t branch_words = epilogue - fallback_branch;
+            if (branch_words >= (1U << 18U)) break;
+            b.host_words[fallback_branch] = cbz_x(0, static_cast<unsigned>(branch_words));
+            b.host_words.push_back(ldr_x(20, 31U, 24U));
+            b.host_words.push_back(ldr_x(30, 31U, 8U));
+            b.host_words.push_back(add_sp_32());
+            b.has_guarded_memory = true;
+            ++b.guest_instructions;
+            b.end_pc += 4U;
+            control_flow_exit = true;
+            break;
+        }
+
         if (guest_op >= 32U && guest_op <= 45U) {
             const unsigned rt = (ins >> 21U) & 31U;
             const unsigned ra = (ins >> 16U) & 31U;
