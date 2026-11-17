@@ -24,6 +24,7 @@ constexpr u32 strb_w(unsigned rt, unsigned rn) { return 0x39000000U | (rn << 5U)
 constexpr u32 strh_w(unsigned rt, unsigned rn) { return 0x79000000U | (rn << 5U) | rt; }
 constexpr u32 rev16_w(unsigned rd, unsigned rn) { return 0x5AC00400U | (rn << 5U) | rd; }
 constexpr u32 rev_w(unsigned rd, unsigned rn) { return 0x5AC00800U | (rn << 5U) | rd; }
+constexpr u32 rev_x(unsigned rd, unsigned rn) { return 0xDAC00C00U | (rn << 5U) | rd; }
 constexpr u32 cbz_x(unsigned rt, unsigned imm19) { return 0xB4000000U | (imm19 << 5U) | rt; }
 constexpr u32 blr_x16() { return 0xD63F0200U; }
 constexpr u32 sub_sp_32() { return 0xD10083FFU; }
@@ -994,6 +995,78 @@ Block compile_arm64(std::span<const u32> words, u32 start_pc) {
             b.host_words.push_back(add_sp_32());
             b.has_guarded_memory = true;
             b.guarded_memory_prefix = b.guest_instructions;
+            ++b.guest_instructions;
+            b.end_pc += 4U;
+            control_flow_exit = true;
+            break;
+        }
+
+        // Double-precision FPR memory operations. The generated path is
+        // guarded by the same MMU/WIMG/contiguous-RAM resolver as integer
+        // accesses; alignment, MMIO, locked-cache and faults retry in step().
+        if (guest_op == 50U || guest_op == 51U ||
+            guest_op == 54U || guest_op == 55U ||
+            (guest_op == 31U && (((ins >> 1U) & 0x3FFU) == 599U ||
+                                 ((ins >> 1U) & 0x3FFU) == 631U ||
+                                 ((ins >> 1U) & 0x3FFU) == 727U ||
+                                 ((ins >> 1U) & 0x3FFU) == 759U))) {
+            const bool indexed = guest_op == 31U;
+            const unsigned xo = indexed ? ((ins >> 1U) & 0x3FFU) : 0U;
+            const bool is_load = indexed ? (xo == 599U || xo == 631U)
+                                         : (guest_op == 50U || guest_op == 51U);
+            const bool update = indexed ? (xo == 631U || xo == 759U)
+                                        : (guest_op == 51U || guest_op == 55U);
+            const unsigned ft = (ins >> 21U) & 31U;
+            const unsigned ra = (ins >> 16U) & 31U;
+            const unsigned rb = (ins >> 11U) & 31U;
+            if (update && ra == 0U) break;
+            b.host_words.push_back(sub_sp_32());
+            b.host_words.push_back(str_x(0, 31U, 0U));
+            b.host_words.push_back(str_x(30, 31U, 8U));
+            b.host_words.push_back(str_x(20, 31U, 24U));
+            if (ra == 0U) load_imm(b.host_words, 9, 0U);
+            else b.host_words.push_back(ldr_w(9, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + ra * 4U)));
+            if (indexed) {
+                b.host_words.push_back(ldr_w(10, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + rb * 4U)));
+            } else {
+                load_imm(b.host_words, 10, static_cast<u32>(static_cast<s32>(static_cast<s16>(ins & 0xFFFFU))));
+            }
+            b.host_words.push_back(add_w(20, 9, 10));
+            load_imm(b.host_words, 9, b.end_pc);
+            b.host_words.push_back(str_w(9, 0, static_cast<unsigned>(offsetof(CpuState, pc))));
+            b.host_words.push_back(orr_x(16, 2, 31U));
+            b.host_words.push_back(orr_w(2, 20, 31U));
+            load_imm(b.host_words, 3, 8U);
+            load_imm(b.host_words, 4, is_load ? 0U : 1U);
+            b.host_words.push_back(blr_x16());
+            const std::size_t fallback_branch = b.host_words.size();
+            b.host_words.push_back(cbz_x(0, 0U));
+            b.host_words.push_back(ldr_x(17, 31U, 0U));
+            const unsigned fpr_offset = static_cast<unsigned>(
+                offsetof(CpuState, fpr) + ft * sizeof(Fpr) + offsetof(Fpr, ps0));
+            if (is_load) {
+                b.host_words.push_back(ldr_x(11, 0U, 0U));
+                b.host_words.push_back(rev_x(11, 11)); // PowerPC big-endian double
+                b.host_words.push_back(str_x(11, 17, fpr_offset));
+            } else {
+                b.host_words.push_back(ldr_x(11, 17, fpr_offset));
+                b.host_words.push_back(rev_x(11, 11));
+                b.host_words.push_back(str_x(11, 0U, 0U));
+            }
+            if (update)
+                b.host_words.push_back(str_w(20, 17, static_cast<unsigned>(offsetof(CpuState, gpr) + ra * 4U)));
+            load_imm(b.host_words, 9, b.end_pc + 4U);
+            b.host_words.push_back(str_w(9, 17, static_cast<unsigned>(offsetof(CpuState, pc))));
+            const std::size_t epilogue = b.host_words.size();
+            const std::size_t branch_words = epilogue - fallback_branch;
+            if (branch_words >= (1U << 18U)) break;
+            b.host_words[fallback_branch] = cbz_x(0, static_cast<unsigned>(branch_words));
+            b.host_words.push_back(ldr_x(20, 31U, 24U));
+            b.host_words.push_back(ldr_x(30, 31U, 8U));
+            b.host_words.push_back(add_sp_32());
+            b.has_guarded_memory = true;
+            b.guarded_memory_prefix = b.guest_instructions;
+            b.requires_fp = true;
             ++b.guest_instructions;
             b.end_pc += 4U;
             control_flow_exit = true;
