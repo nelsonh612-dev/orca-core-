@@ -176,3 +176,8 @@ Se amplía tools/bench_interpreter.cpp para aceptar modo interpreter, jit o comp
 ## M052 — memoria FPU escalar
 
 Se extiende el fast path guarded de RAM para lfs/lfsu, lfd/lfdu, stfs/stfsu y stfd/stfdu, incluidas las variantes indexadas lfsx/lfsux, lfdx/lfdux, stfsx/stfsux y stfdx/stfdux. El acceso a memoria y el endianess se ejecutan en ARM64; las conversiones single/double usan las rutinas bit-exactas fpu::load_single/store_single para preservar NaN signaling, subnormales y la semántica de truncamiento documentada del emulador. lfs actualiza ambos slots FPR como el intérprete. Las direcciones no seguras se derivan al intérprete por el resolver. Se añadieron pruebas de traducción de las 16 formas y prueba diferencial de load/store single. CI todavía bloqueado: los workflows 44058601048–44058941750 terminaron con runner_id=0 y cero pasos, por lo que no hay resultado de compilación ni ejecución para M052.
+
+
+## M053 — stfiwx guarded native store
+
+Se añade la forma indexada stfiwx al fast path FPR: el resolver traduce y valida una escritura RAM de 4 bytes; ARM64 toma literalmente los 32 bits bajos de FPR[ps0], corrige el endianess PowerPC y almacena sin convertir el valor flotante. MMIO, páginas cruzadas y mapeos especiales siguen usando el intérprete. Se amplía la prueba de traducción de las formas FPR y se añade comparación diferencial contra el intérprete, incluyendo el patrón 0xE5F60718. La compilación y ejecución aún requieren un runner ARM64 disponible.
