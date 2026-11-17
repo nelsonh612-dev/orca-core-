@@ -1065,6 +1065,7 @@ Block compile_arm64(std::span<const u32> words, u32 start_pc) {
             b.host_words.push_back(ldr_x(30, 31U, 8U));
             b.host_words.push_back(add_sp_32());
             b.has_guarded_memory = true;
+            b.guarded_memory_prefix = b.guest_instructions;
             ++b.guest_instructions;
             b.end_pc += 4U;
             control_flow_exit = true;
