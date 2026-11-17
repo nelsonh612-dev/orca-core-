@@ -100,6 +100,22 @@ void load_imm(std::vector<u32>& out, unsigned reg, u32 value) {
     out.push_back(movz_w(reg, value & 0xFFFFU));
     if ((value >> 16U) != 0U) out.push_back(movk_w(reg, value >> 16U));
 }
+void emit_ov(std::vector<u32>& out) {
+    // AArch64 V (NZCV[28]) is the signed 32-bit overflow result for the
+    // corresponding ADDS/ADCS/SUBS/SBCS operation. PPC OV is replaced,
+    // while SO is sticky until an explicit XER-clearing instruction.
+    out.push_back(mrs_nzcv_x(12));
+    out.push_back(ubfx_w(12, 12, 28U, 1U));
+    out.push_back(lsl_w(12, 12, 30U)); // OV
+    out.push_back(ldr_w(9, 0, static_cast<unsigned>(offsetof(CpuState, xer))));
+    load_imm(out, 14, XER_OV);
+    out.push_back(bic_w(9, 9, 14));
+    out.push_back(orr_w(9, 9, 12));
+    out.push_back(lsl_w(13, 12, 1U)); // overflow also sets sticky SO
+    out.push_back(orr_w(9, 9, 13));
+    out.push_back(str_w(9, 0, static_cast<unsigned>(offsetof(CpuState, xer))));
+}
+
 void emit_cr0(std::vector<u32>& out, unsigned result_reg) {
     out.push_back(cmp_zero_w(result_reg));
     out.push_back(cset_w(12, 0xBU)); // LT
@@ -370,7 +386,7 @@ bool translate_one(u32 ins, std::vector<u32>& out) {
         }
 
         const bool rc = (ins & 1U) != 0U;
-        if (!oe && (xo9 == 138U || xo9 == 136U)) {
+        if (xo9 == 138U || xo9 == 136U) {
             // adde/subfe consume the architectural XER[CA] as the carry-in.
             out.push_back(ldr_w(12, 0, static_cast<unsigned>(offsetof(CpuState, xer))));
             out.push_back(ubfx_w(12, 12, 29, 1));
@@ -389,6 +405,7 @@ bool translate_one(u32 ins, std::vector<u32>& out) {
             out.push_back(bic_w(9, 9, 13));
             out.push_back(orr_w(9, 9, 12));
             out.push_back(str_w(9, 0, static_cast<unsigned>(offsetof(CpuState, xer))));
+            if (oe) emit_ov(out);
             if (rc) {
                 out.push_back(cmp_zero_w(11));
                 out.push_back(cset_w(12, 0xBU));
@@ -411,12 +428,12 @@ bool translate_one(u32 ins, std::vector<u32>& out) {
             }
             return true;
         }
-        if (!oe && (xo9 == 202U || xo9 == 234U || xo9 == 200U || xo9 == 232U || xo9 == 104U)) {
+        if (xo9 == 202U || xo9 == 234U || xo9 == 200U || xo9 == 232U || xo9 == 104U) {
             // addze/addme/subfze/subfme consume XER[CA] and replace it with
             // the carry/no-borrow result. neg is the non-carry 0 - RA form.
             out.push_back(ldr_w(9, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + ra * 4U)));
             if (xo9 == 104U) {
-                out.push_back(sub_w(11, 31U, 9U)); // neg: 0 - RA
+                out.push_back(subs_w(11, 31U, 9U)); // neg: 0 - RA, retain V for OE
             } else {
                 out.push_back(ldr_w(12, 0, static_cast<unsigned>(offsetof(CpuState, xer))));
                 out.push_back(ubfx_w(12, 12, 29U, 1U));
@@ -443,21 +460,20 @@ bool translate_one(u32 ins, std::vector<u32>& out) {
                 out.push_back(str_w(9, 0, static_cast<unsigned>(offsetof(CpuState, xer))));
                 out.push_back(ldr_w(9, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + ra * 4U)));
             }
+            if (oe) emit_ov(out);
             out.push_back(str_w(11, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + rt * 4U)));
             if (rc) emit_cr0(out, 11);
             return true;
         }
-        if (!oe && (xo9 == 266U || xo9 == 10U || xo9 == 40U || xo9 == 8U)) {
+        if (xo9 == 266U || xo9 == 10U || xo9 == 40U || xo9 == 8U) {
             out.push_back(ldr_w(9, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + ra * 4U)));
             out.push_back(ldr_w(10, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + rb * 4U)));
-            if (xo9 == 266U) out.push_back(add_w(11, 9, 10));
+            if (xo9 == 266U) out.push_back(oe ? adds_w(11, 9, 10) : add_w(11, 9, 10));
             else if (xo9 == 10U) out.push_back(adds_w(11, 9, 10));
             else if (xo9 == 40U) {
-                // subf RT,RA,RB = RB - RA = RB + ~RA + 1.
-                out.push_back(mvn_w(9, 9));
-                load_imm(out, 12, 1U);
-                out.push_back(add_w(11, 9, 10));
-                out.push_back(add_w(11, 11, 12));
+                // subf RT,RA,RB = RB - RA. SUBS is also used for OE forms
+                // so NZCV[V] carries the architectural signed overflow.
+                out.push_back(subs_w(11, 10, 9));
             } else {
                 // subfc RT,RA,RB = RB - RA; SUBS sets C=1 when no borrow.
                 out.push_back(subs_w(11, 10, 9));
@@ -473,6 +489,7 @@ bool translate_one(u32 ins, std::vector<u32>& out) {
                 out.push_back(orr_w(9, 9, 12));
                 out.push_back(str_w(9, 0, static_cast<unsigned>(offsetof(CpuState, xer))));
             }
+            if (oe) emit_ov(out);
             if (rc) {
                 out.push_back(cmp_zero_w(11));
                 out.push_back(cset_w(12, 0xBU));
