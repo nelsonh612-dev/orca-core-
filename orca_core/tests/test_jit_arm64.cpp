@@ -1279,6 +1279,45 @@ TEST_CASE(jit_arm64_differential_single_precision_fpr_memory_matches_interpreter
     for (u32 address : {0x2004U, 0x200CU})
         CHECK_EQ(native_path.r32(address), reference.r32(address));
 }
+TEST_CASE(jit_arm64_differential_all_indexed_fpr_memory_forms_match_interpreter) {
+    const std::array<u32, 8> instructions{
+        A::lfsx(1, 3, 4), A::lfsux(2, 3, 4),
+        A::lfdx(3, 3, 4), A::lfdux(4, 3, 4),
+        A::stfsx(5, 3, 4), A::stfsux(6, 3, 4),
+        A::stfdx(7, 3, 4), A::stfdux(8, 3, 4)
+    };
+    for (u32 instruction : instructions) {
+        Machine reference;
+        Machine native_path;
+        reference.code(0x1000U, {instruction});
+        native_path.code(0x1000U, {instruction});
+        for (Machine* m : {&reference, &native_path}) {
+            m->s().msr = MSR_FP;
+            m->s().gpr[3] = 0x2000U;
+            m->s().gpr[4] = 0x40U;
+            m->s().fpr[5].ps0 = 0x3FF123456789ABCDULL;
+            m->s().fpr[6].ps0 = 0x400921FB54442D18ULL;
+            m->s().fpr[7].ps0 = 0xC005BF0A8B145769ULL;
+            m->s().fpr[8].ps0 = 0x4015BF0A8B145769ULL;
+            CHECK(m->bus.write(0x2040U, 8U, 0x7FF0000100000001ULL) == mem::BusStatus::Ok);
+        }
+        CHECK(reference.cpu->run(1U) == StepResult::Executed);
+        CHECK(native_path.cpu->run_jit(1U) == StepResult::Executed);
+        CHECK(native_path.cpu->jit_memory_fastpath_hits() >= 1U);
+        CHECK(native_path.s() == reference.s());
+        u64 reference_memory = 0;
+        u64 native_memory = 0;
+        CHECK(reference.bus.read(0x2040U, 8U, reference_memory) == mem::BusStatus::Ok);
+        CHECK(native_path.bus.read(0x2040U, 8U, native_memory) == mem::BusStatus::Ok);
+        CHECK_EQ(native_memory, reference_memory);
+        const bool update = instruction == A::lfsux(2, 3, 4) ||
+                            instruction == A::lfdux(4, 3, 4) ||
+                            instruction == A::stfsux(6, 3, 4) ||
+                            instruction == A::stfdux(8, 3, 4);
+        CHECK_EQ(native_path.s().gpr[3], update ? 0x2040U : 0x2000U);
+    }
+}
+
 TEST_CASE(jit_arm64_differential_stfiwx_stores_low_fpr_word) {
     const u32 instruction = A::stfiwx(3, 4, 5);
     Machine reference;
