@@ -191,8 +191,9 @@ TEST_CASE(jit_arm64_translates_integer_shift_and_sign_extension_forms) {
 #if defined(__aarch64__)
 TEST_CASE(jit_arm64_differential_integer_shifts_match_reference_interpreter) {
     Machine reference;
-    const std::array<u32, 5> code{
+    const std::array<u32, 7> code{
         A::slw(3, 4, 5), A::srw(6, 7, 8),
+        A::sraw(9, 10, 11, true), A::srawi(12, 13, 7, true),
         A::cntlzw(14, 15), A::extsb(16, 17), A::extsh(18, 19)
     };
     reference.code(0x1000U, {code[0], code[1], code[2], code[3], code[4], code[5], code[6]});
