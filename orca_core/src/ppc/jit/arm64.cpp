@@ -47,6 +47,27 @@ void load_imm(std::vector<u32>& out, unsigned reg, u32 value) {
     out.push_back(movz_w(reg, value & 0xFFFFU));
     if ((value >> 16U) != 0U) out.push_back(movk_w(reg, value >> 16U));
 }
+void emit_cr0(std::vector<u32>& out, unsigned result_reg) {
+    out.push_back(cmp_zero_w(result_reg));
+    out.push_back(cset_w(12, 0xBU)); // LT
+    out.push_back(lsl_w(12, 12, 31));
+    out.push_back(cset_w(14, 0xCU)); // GT
+    out.push_back(lsl_w(14, 14, 30));
+    out.push_back(cset_w(15, 0x0U)); // EQ
+    out.push_back(lsl_w(15, 15, 29));
+    out.push_back(ldr_w(9, 0, static_cast<unsigned>(offsetof(CpuState, xer))));
+    out.push_back(ubfx_w(13, 9, 31, 1)); // sticky XER[SO]
+    out.push_back(lsl_w(13, 13, 28));
+    out.push_back(orr_w(12, 12, 14));
+    out.push_back(orr_w(12, 12, 15));
+    out.push_back(orr_w(12, 12, 13));
+    out.push_back(ldr_w(9, 0, static_cast<unsigned>(offsetof(CpuState, cr))));
+    load_imm(out, 14, 0x0FFFFFFFU);
+    out.push_back(and_w(9, 9, 14));
+    out.push_back(orr_w(9, 9, 12));
+    out.push_back(str_w(9, 0, static_cast<unsigned>(offsetof(CpuState, cr))));
+}
+
 bool translate_one(u32 ins, std::vector<u32>& out) {
     const unsigned op = ins >> 26U;
     const unsigned rt = (ins >> 21U) & 31U;
@@ -108,6 +129,14 @@ bool translate_one(u32 ins, std::vector<u32>& out) {
         load_imm(out, 10, addend);
         out.push_back(add_w(11, 9, 10));
         out.push_back(str_w(11, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + rt * 4U)));
+        return true;
+    }
+    if (op == 28U || op == 29U) { // andi. / andis. always update CR0
+        out.push_back(ldr_w(9, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + rt * 4U)));
+        load_imm(out, 10, op == 29U ? (imm << 16U) : imm);
+        out.push_back(and_w(11, 9, 10));
+        out.push_back(str_w(11, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + ra * 4U)));
+        emit_cr0(out, 11);
         return true;
     }
     if (op == 24U || op == 25U || op == 26U || op == 27U) { // ori/oris/xori/xoris
@@ -213,13 +242,24 @@ bool translate_one(u32 ins, std::vector<u32>& out) {
             return true;
         }
     }
-    if (op == 31U && (ins & 1U) == 0U) {
+    if (op == 31U) {
         const unsigned xo = (ins >> 1U) & 0x3FFU;
-        if (xo == 28U || xo == 444U || xo == 316U) { // and/or/xor (Rc=0 only)
+        const bool rc = (ins & 1U) != 0U;
+        if (xo == 28U || xo == 60U || xo == 124U || xo == 284U ||
+            xo == 316U || xo == 412U || xo == 444U || xo == 476U) {
+            // X-form logical operations: RS is encoded in the RT field and RA is the destination.
             out.push_back(ldr_w(9, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + rt * 4U)));
             out.push_back(ldr_w(10, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + rb * 4U)));
-            out.push_back(xo == 28U ? and_w(11, 9, 10) : (xo == 444U ? orr_w(11, 9, 10) : eor_w(11, 9, 10)));
+            if (xo == 28U) out.push_back(and_w(11, 9, 10));                 // and
+            else if (xo == 60U) { out.push_back(mvn_w(10, 10)); out.push_back(and_w(11, 9, 10)); } // andc
+            else if (xo == 124U) { out.push_back(orr_w(11, 9, 10)); out.push_back(mvn_w(11, 11)); } // nor
+            else if (xo == 284U) { out.push_back(eor_w(11, 9, 10)); out.push_back(mvn_w(11, 11)); } // eqv
+            else if (xo == 316U) out.push_back(eor_w(11, 9, 10));          // xor
+            else if (xo == 412U) { out.push_back(mvn_w(10, 10)); out.push_back(orr_w(11, 9, 10)); } // orc
+            else if (xo == 444U) out.push_back(orr_w(11, 9, 10));          // or
+            else { out.push_back(and_w(11, 9, 10)); out.push_back(mvn_w(11, 11)); } // nand
             out.push_back(str_w(11, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + ra * 4U)));
+            if (rc) emit_cr0(out, 11);
             return true;
         }
     }
