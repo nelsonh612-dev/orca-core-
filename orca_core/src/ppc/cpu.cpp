@@ -211,7 +211,6 @@ StepResult Cpu::run_jit(u64 budget, u64* completed, const u32* stop_pc) {
         // Keep all architectural boundary checks in Cpu::step(). In particular,
         // do not bypass asynchronous interrupts, trace/LE modes, or POW idle.
         if (state_.halted || (state_.msr & (MSR_SE | MSR_BE | MSR_LE | MSR_POW)) != 0U ||
-            (state_.msr & MSR_FP) == 0U ||
             (((state_.msr & MSR_EE) != 0U) && (external_line_ || state_.dec_pending))) {
             const StepResult r = step();
             if (r != StepResult::Executed && r != StepResult::ExceptionTaken) { if (completed != nullptr) *completed = done; return r; }
@@ -259,6 +258,8 @@ StepResult Cpu::run_jit(u64 budget, u64* completed, const u32* stop_pc) {
                 }
                 u32 ins = 0;
                 if (bus_.read32(tr.physical, ins) != mem::BusStatus::Ok) { fetch_ok = false; break; }
+                // Floating-point instructions require MSR[FP]. They may be
+                // compiled, but their cached blocks are guarded at entry.
                 words.push_back(ins);
             }
             if (!fetch_ok || words.empty()) {
