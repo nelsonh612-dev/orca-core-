@@ -10,6 +10,8 @@ import android.net.Uri
 import android.opengl.GLSurfaceView
 import android.os.Bundle
 import android.os.Process
+import android.os.VibrationEffect
+import android.os.Vibrator
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.MotionEvent
@@ -38,6 +40,10 @@ class MainActivity : Activity() {
     @Volatile private var audioRunning = false
     @Volatile private var audioTrack: AudioTrack? = null
     private var audioThread: Thread? = null
+    @Volatile private var rumbleRunning = false
+    private var rumbleThread: Thread? = null
+    private var rumbleState = -1
+    private val vibrator by lazy { getSystemService(Vibrator::class.java) }
     private var pendingConsole = 0 // 0 = GameCube, 1 = Wii
     private var pendingDiscUri: Uri? = null
 
@@ -45,6 +51,7 @@ class MainActivity : Activity() {
     private external fun nativeLoadDisc(path: String, consoleKind: Int, keyText: String): String
     private external fun nativeSetPadState(buttons: Int, sx: Int, sy: Int, csx: Int, csy: Int, tl: Int, tr: Int)
     private external fun nativeStatus(): String
+    private external fun nativeRumbleState(): Int
     private external fun nativeAudioRate(): Int
     private external fun nativeReadAudio(buffer: ShortArray): Int
     private external fun nativeDrawFrame()
@@ -153,6 +160,42 @@ class MainActivity : Activity() {
             isDaemon = true
             start()
         }
+    }
+
+    private fun startRumbleMonitor() {
+        stopRumbleMonitor()
+        rumbleRunning = true
+        rumbleThread = Thread({
+            while (rumbleRunning) {
+                val next = nativeRumbleState()
+                if (next != rumbleState) {
+                    rumbleState = next
+                    if (next == 0) {
+                        vibrator?.cancel()
+                    } else if (vibrator?.hasVibrator() == true) {
+                        val amplitude = if (next >= 3) 220 else 110
+                        vibrator.vibrate(VibrationEffect.createWaveform(
+                            longArrayOf(0, 90), intArrayOf(amplitude, amplitude), 0
+                        ))
+                    }
+                }
+                try { Thread.sleep(20) } catch (_: InterruptedException) { break }
+            }
+            vibrator?.cancel()
+            rumbleState = 0
+        }, "OrcaCore-Rumble").apply {
+            isDaemon = true
+            start()
+        }
+    }
+
+    private fun stopRumbleMonitor() {
+        rumbleRunning = false
+        rumbleThread?.interrupt()
+        try { rumbleThread?.join(250) } catch (_: InterruptedException) { Thread.currentThread().interrupt() }
+        rumbleThread = null
+        rumbleState = 0
+        vibrator?.cancel()
     }
 
     private fun stopAudio() {
@@ -392,7 +435,7 @@ class MainActivity : Activity() {
                     catch (t: Throwable) { "Error al cargar disco: ${t.message}" }
                     runOnUiThread {
                         status.text = result
-                        if (result.contains("iniciado")) startAudio()
+                        if (result.contains("iniciado")) { startAudio(); startRumbleMonitor() }
                     }
                 }
             } catch (t: Throwable) {
@@ -403,6 +446,7 @@ class MainActivity : Activity() {
 
     override fun onResume() { super.onResume(); glView.onResume() }
     override fun onPause() {
+        stopRumbleMonitor()
         stopAudio()
         glView.queueEvent { nativeShutdown() }
         glView.onPause()
