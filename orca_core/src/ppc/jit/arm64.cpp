@@ -251,6 +251,20 @@ bool translate_one(u32 ins, std::vector<u32>& out) {
     }
     if (op == 19U && (ins & 1U) == 0U) {
         const unsigned xo = (ins >> 1U) & 0x3FFU;
+        if (xo == 0U) { // mcrf: copy one CR field, preserve the other seven
+            const unsigned dst = (ins >> 23U) & 7U;
+            const unsigned src = (ins >> 18U) & 7U;
+            const unsigned src_shift = 28U - src * 4U;
+            const unsigned dst_shift = 28U - dst * 4U;
+            out.push_back(ldr_w(9, 0, static_cast<unsigned>(offsetof(CpuState, cr))));
+            out.push_back(ubfx_w(10, 9, src_shift, 4U));
+            if (dst_shift != 0U) out.push_back(lsl_w(10, 10, dst_shift));
+            load_imm(out, 11, ~(0xFU << dst_shift));
+            out.push_back(and_w(9, 9, 11));
+            out.push_back(orr_w(9, 9, 10));
+            out.push_back(str_w(9, 0, static_cast<unsigned>(offsetof(CpuState, cr))));
+            return true;
+        }
         if (xo == 33U || xo == 129U || xo == 193U || xo == 225U ||
             xo == 257U || xo == 289U || xo == 417U || xo == 449U) {
             const unsigned bt = (ins >> 21U) & 31U;
@@ -317,6 +331,27 @@ bool translate_one(u32 ins, std::vector<u32>& out) {
         // CR0 from the signed result and the sticky XER[SO] bit.
         const unsigned xo9 = (ins >> 1U) & 0x1FFU;
         const bool oe = (ins & 0x400U) != 0U;
+        if (xo9 == 19U && (ins & 1U) == 0U) { // mfcr
+            out.push_back(ldr_w(9, 0, static_cast<unsigned>(offsetof(CpuState, cr))));
+            out.push_back(str_w(9, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + rt * 4U)));
+            return true;
+        }
+        if (xo9 == 144U && (ins & 1U) == 0U) { // mtcrf
+            const unsigned fxm = (ins >> 12U) & 0xFFU;
+            u32 mask = 0U;
+            for (unsigned field = 0; field < 8U; ++field)
+                if ((fxm & (0x80U >> field)) != 0U) mask |= 0xFU << (28U - field * 4U);
+            out.push_back(ldr_w(9, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + rt * 4U)));
+            out.push_back(ldr_w(10, 0, static_cast<unsigned>(offsetof(CpuState, cr))));
+            load_imm(out, 11, mask);
+            out.push_back(and_w(9, 9, 11));
+            load_imm(out, 12, ~mask);
+            out.push_back(and_w(10, 10, 12));
+            out.push_back(orr_w(10, 10, 9));
+            out.push_back(str_w(10, 0, static_cast<unsigned>(offsetof(CpuState, cr))));
+            return true;
+        }
+
         const bool rc = (ins & 1U) != 0U;
         if (!oe && (xo9 == 138U || xo9 == 136U)) {
             // adde/subfe consume the architectural XER[CA] as the carry-in.
