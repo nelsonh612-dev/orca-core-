@@ -258,6 +258,41 @@ TEST_CASE(jit_arm64_differential_logical_record_forms_match_reference_interprete
 #endif
 
 
+TEST_CASE(jit_arm64_translates_condition_register_logical_forms) {
+    const std::array<u32, 8> code{
+        A::crand(0, 1, 2), A::crandc(3, 4, 5), A::cror(6, 7, 8),
+        A::crorc(9, 10, 11), A::crxor(12, 13, 14), A::crnand(15, 16, 17),
+        A::crnor(18, 19, 20), A::creqv(21, 22, 23)
+    };
+    const Block block = compile_arm64(code, 0x1000U);
+    CHECK_EQ(block.guest_instructions, code.size());
+    CHECK_EQ(block.end_pc, 0x1020U);
+    CHECK_EQ(block.host_words.back(), 0xD65F03C0U);
+}
+
+#if defined(__aarch64__)
+TEST_CASE(jit_arm64_differential_condition_register_logical_forms_match_interpreter) {
+    Machine reference;
+    const std::array<u32, 8> code{
+        A::crand(0, 1, 2), A::crandc(3, 4, 5), A::cror(6, 7, 8),
+        A::crorc(9, 10, 11), A::crxor(12, 13, 14), A::crnand(15, 16, 17),
+        A::crnor(18, 19, 20), A::creqv(21, 22, 23)
+    };
+    reference.code(0x1000U, {code[0],code[1],code[2],code[3],code[4],code[5],code[6],code[7]});
+    reference.s().cr = 0xA5963CC3U;
+    CHECK(reference.cpu->run(code.size()) == StepResult::Executed);
+    const CpuState expected = reference.s();
+
+    CpuState actual{};
+    actual.pc = 0x1000U;
+    actual.cr = 0xA5963CC3U;
+    const Block block = compile_arm64(code, 0x1000U);
+    CHECK_EQ(block.guest_instructions, code.size());
+    CHECK(execute_arm64(block, actual));
+    CHECK(actual == expected);
+}
+#endif
+
 TEST_CASE(jit_arm64_translates_signed_and_unsigned_compare_forms) {
     const std::array<u32, 4> code{
         A::cmpwi(0, 3, -5), A::cmplwi(1, 4, 0xFF00),
