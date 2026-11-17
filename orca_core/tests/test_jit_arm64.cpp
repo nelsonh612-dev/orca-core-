@@ -641,6 +641,47 @@ TEST_CASE(jit_arm64_differential_integer_state_matches_reference_interpreter) {
 }
 #endif
 
+TEST_CASE(jit_arm64_translates_mfspr_and_mtspr_for_lr_ctr_and_read_only_xer) {
+    const std::array<u32,6> code{
+        A::mfspr(3U,1U), A::mfspr(4U,8U), A::mfspr(5U,9U),
+        A::mtspr(8U,6U), A::mtspr(9U,7U), A::mtspr(1U,8U)
+    };
+    const Block block=compile_arm64(code,0x1000U);
+    // XER writes stay on the reference path because write_spr masks reserved bits.
+    CHECK_EQ(block.guest_instructions,5U);
+    CHECK_EQ(block.end_pc,0x1014U);
+    const std::array<u32,1> unsupported{A::mtspr(1U,8U)};
+    const Block fallback=compile_arm64(unsupported,0x1000U);
+    CHECK_EQ(fallback.guest_instructions,0U);
+    CHECK(fallback.host_words.empty());
+}
+
+#if defined(__aarch64__)
+TEST_CASE(jit_arm64_executes_mfspr_mtspr_lr_ctr_and_reads_xer) {
+    Machine reference;
+    Machine candidate;
+    const std::array<u32,5> code{
+        A::mfspr(3U,1U), A::mfspr(4U,8U), A::mfspr(5U,9U),
+        A::mtspr(8U,6U), A::mtspr(9U,7U)
+    };
+    reference.code(0x1000U,{code[0],code[1],code[2],code[3],code[4]});
+    candidate.code(0x1000U,{code[0],code[1],code[2],code[3],code[4]});
+    reference.s().xer=0xE000007FU; candidate.s().xer=0xE000007FU;
+    reference.s().lr=0x12345678U; candidate.s().lr=0x12345678U;
+    reference.s().ctr=0x87654321U; candidate.s().ctr=0x87654321U;
+    reference.s().gpr[6]=0xAABBCCDDU; candidate.s().gpr[6]=0xAABBCCDDU;
+    reference.s().gpr[7]=0x55667788U; candidate.s().gpr[7]=0x55667788U;
+    CHECK(reference.cpu->run(code.size())==StepResult::Executed);
+    CHECK(candidate.cpu->run_jit(code.size())==StepResult::Executed);
+    CHECK(candidate.s()==reference.s());
+    CHECK_EQ(candidate.s().gpr[3],0xE000007FU);
+    CHECK_EQ(candidate.s().gpr[4],0x12345678U);
+    CHECK_EQ(candidate.s().gpr[5],0x87654321U);
+    CHECK_EQ(candidate.s().lr,0xAABBCCDDU);
+    CHECK_EQ(candidate.s().ctr,0x55667788U);
+}
+#endif
+
 TEST_MAIN("jit_arm64")
 
 TEST_CASE(jit_arm64_dispatcher_falls_back_to_reference_for_memory_and_resumes_native_code) {
