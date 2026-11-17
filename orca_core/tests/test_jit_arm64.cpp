@@ -191,6 +191,42 @@ TEST_CASE(jit_arm64_fpr_blocks_fall_back_for_fp_unavailable_exception) {
     CHECK(candidate.s()==reference.s());
 }
 
+TEST_CASE(jit_arm64_translates_overflow_enabled_carry_arithmetic) {
+    const std::array<u32,6> code{
+        A::adde(3U,4U,5U,true),A::subfe(6U,7U,8U,true),
+        A::addze(9U,10U,true),A::addme(11U,12U,true),
+        A::subfze(13U,14U,true),A::subfme(15U,16U,true)
+    };
+    const Block block=compile_arm64(code,0x1000U);
+    CHECK_EQ(block.guest_instructions,6U);
+}
+
+#if defined(__aarch64__)
+TEST_CASE(jit_arm64_executes_overflow_enabled_carry_arithmetic) {
+    Machine reference;
+    Machine candidate;
+    const std::array<u32,6> code{
+        A::adde(3U,4U,5U,true),A::subfe(6U,7U,8U,true),
+        A::addze(9U,10U,true),A::addme(11U,12U,true),
+        A::subfze(13U,14U,true),A::subfme(15U,16U,true)
+    };
+    reference.code(0x1000U,{code[0],code[1],code[2],code[3],code[4],code[5]});
+    candidate.code(0x1000U,{code[0],code[1],code[2],code[3],code[4],code[5]});
+    reference.s().xer=XER_CA; candidate.s().xer=XER_CA;
+    const std::array<u32,13> values{
+        0U,0U,0x7FFFFFFFU,0U,0x80000000U,0U,0x7FFFFFFFU,
+        0xFFFFFFFFU,0x80000000U,0x7FFFFFFFU,0xFFFFFFFFU,1U,0x7FFFFFFFU
+    };
+    for(std::size_t i=0;i<values.size();++i) {
+        reference.s().gpr[i+4U]=values[i];
+        candidate.s().gpr[i+4U]=values[i];
+    }
+    CHECK(reference.cpu->run(code.size())==StepResult::Executed);
+    CHECK(candidate.cpu->run_jit(code.size())==StepResult::Executed);
+    CHECK(candidate.s()==reference.s());
+}
+#endif
+
 TEST_CASE(jit_arm64_translates_overflow_enabled_division) {
     const std::array<u32,2> code{A::divw(3U,4U,5U,true),A::divwu(6U,7U,8U,true)};
     const Block block=compile_arm64(code,0x1000U);
