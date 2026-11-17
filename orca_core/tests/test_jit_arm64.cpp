@@ -89,6 +89,65 @@ TEST_CASE(jit_arm64_translates_adde_and_subfe_using_xer_carry_in) {
     CHECK(has_word(0xD53B420CU)); // MRS NZCV (carry-out)
 }
 
+TEST_CASE(jit_arm64_translates_fpr_unary_sign_and_move_operations) {
+    const std::array<u32, 4> code{
+        A::fmr(1, 2), A::fneg(4, 5, true), A::fnabs(6, 7), A::fabs_(8, 9)
+    };
+    const Block block = compile_arm64(code, 0x1000U);
+    CHECK_EQ(block.guest_instructions, code.size());
+    CHECK_EQ(block.end_pc, 0x1010U);
+    CHECK(block.requires_fp);
+    CHECK(!block.host_words.empty());
+    CHECK_EQ(block.host_words.back(), 0xD65F03C0U);
+}
+
+#if defined(__aarch64__)
+TEST_CASE(jit_arm64_differential_fpr_unary_sign_and_move_operations) {
+    const std::array<u32, 4> code{
+        A::fmr(1, 2), A::fneg(4, 5, true), A::fnabs(6, 7), A::fabs_(8, 9)
+    };
+    Machine reference;
+    reference.code(0x1000U, {code[0], code[1], code[2], code[3]});
+    reference.s().msr |= MSR_FP;
+    reference.s().cr = 0xA5963CC3U;
+    for (unsigned i = 0; i < 32U; ++i) {
+        reference.s().fpr[i].ps0 = 0xFFF0000000000001ULL + i;
+        reference.s().fpr[i].ps1 = 0x7FF8000000000100ULL + i;
+    }
+    CHECK(reference.cpu->run(code.size()) == StepResult::Executed);
+    const CpuState expected = reference.s();
+
+    CpuState actual{};
+    actual.pc = 0x1000U;
+    actual.msr = MSR_FP;
+    actual.cr = 0xA5963CC3U;
+    for (unsigned i = 0; i < 32U; ++i) {
+        actual.fpr[i].ps0 = 0xFFF0000000000001ULL + i;
+        actual.fpr[i].ps1 = 0x7FF8000000000100ULL + i;
+    }
+    const Block block = compile_arm64(code, 0x1000U);
+    CHECK(block.requires_fp);
+    CHECK(execute_arm64(block, actual));
+    CHECK(actual == expected);
+}
+
+TEST_CASE(jit_arm64_run_jit_preserves_floating_point_unavailable_exception) {
+    Machine reference;
+    const u32 instruction = A::fmr(1, 2);
+    reference.code(0x1000U, {instruction});
+    reference.s().msr &= ~MSR_FP;
+    const StepResult expected_result = reference.cpu->step();
+    const CpuState expected = reference.s();
+
+    Machine native_path;
+    native_path.code(0x1000U, {instruction});
+    native_path.s().msr &= ~MSR_FP;
+    const StepResult actual_result = native_path.cpu->run_jit(1U);
+    CHECK(actual_result == expected_result);
+    CHECK(native_path.s() == expected);
+}
+#endif
+
 TEST_CASE(jit_arm64_translates_addze_addme_subfze_subfme_and_neg) {
     const std::array<u32, 5> code{
         A::addze(3, 4, false, true), A::addme(5, 6),
