@@ -319,12 +319,8 @@ bool translate_one(u32 ins, std::vector<u32>& out) {
             out.push_back(ldr_w(9, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + rt * 4U)));
             if (xo == 824U) {
                 const unsigned sh = rb;
-                out.push_back(sh == 0U ? 0x2A0903EBU : 0x13000000U); // replaced below for nonzero shift
-                if (sh == 0U) out.pop_back();
-                else {
-                    // ASR immediate alias: SBFM W11,W9,#SH,#31.
-                    out.back() = 0x13000000U | (sh << 16U) | (31U << 10U) | (9U << 5U) | 11U;
-                }
+                // ASR immediate alias: SBFM W11,W9,#SH,#31.
+                out.push_back(0x13000000U | (sh << 16U) | (31U << 10U) | (9U << 5U) | 11U);
             } else if (xo == 24U || xo == 536U || xo == 792U) {
                 out.push_back(ldr_w(10, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + rb * 4U)));
                 load_imm(out, 12, 31U);
