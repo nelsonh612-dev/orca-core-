@@ -381,6 +381,54 @@ bool translate_one(u32 ins, std::vector<u32>& out) {
         out.push_back(str_w(11, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + ra * 4U)));
         return true;
     }
+    if (op == 4U) {
+        const unsigned xo = (ins >> 1U) & 0x3FFU;
+        if (xo == 40U || xo == 72U || xo == 136U || xo == 264U ||
+            xo == 528U || xo == 560U || xo == 592U || xo == 624U) {
+            const unsigned frt = (ins >> 21U) & 31U;
+            const unsigned fra = (ins >> 16U) & 31U;
+            const unsigned frb = (ins >> 11U) & 31U;
+            auto slot_offset = [](unsigned reg, bool upper) {
+                return static_cast<unsigned>(offsetof(CpuState, fpr) + reg * sizeof(Fpr) +
+                    (upper ? offsetof(Fpr, ps1) : offsetof(Fpr, ps0)));
+            };
+            if (xo >= 528U) {
+                const unsigned source0 = xo == 528U || xo == 560U ? fra : fra;
+                const bool source0_upper = xo == 592U || xo == 624U;
+                const unsigned source1 = frb;
+                const bool source1_upper = xo == 560U || xo == 624U;
+                out.push_back(ldr_x(9, 0, slot_offset(source0, source0_upper)));
+                out.push_back(ldr_x(10, 0, slot_offset(source1, source1_upper)));
+                out.push_back(str_x(9, 0, slot_offset(frt, false)));
+                out.push_back(str_x(10, 0, slot_offset(frt, true)));
+            } else {
+                out.push_back(ldr_x(9, 0, slot_offset(frb, false)));
+                out.push_back(ldr_x(10, 0, slot_offset(frb, true)));
+                if (xo != 72U) {
+                    out.push_back(movz_x(12, 0x8000U, 48U));
+                    if (xo == 40U) {
+                        out.push_back(eor_x(11, 9, 12));
+                        out.push_back(eor_x(13, 10, 12));
+                    } else if (xo == 136U) {
+                        out.push_back(orr_x(11, 9, 12));
+                        out.push_back(orr_x(13, 10, 12));
+                    } else {
+                        out.push_back(mvn_x(12, 12));
+                        out.push_back(and_x(11, 9, 12));
+                        out.push_back(and_x(13, 10, 12));
+                    }
+                } else {
+                    out.push_back(orr_x(11, 9, 31U));
+                    out.push_back(orr_x(13, 10, 31U));
+                }
+                out.push_back(str_x(11, 0, slot_offset(frt, false)));
+                out.push_back(str_x(13, 0, slot_offset(frt, true)));
+            }
+            if ((ins & 1U) != 0U) emit_cr1(out);
+            return true;
+        }
+    }
+
     if (op == 63U) {
         const unsigned xo = (ins >> 1U) & 0x3FFU;
         if (xo == 40U || xo == 72U || xo == 136U || xo == 264U) {
@@ -818,10 +866,18 @@ Block compile_arm64(std::span<const u32> words, u32 start_pc) {
         }
 
         if (!translate_one(ins, b.host_words)) break;
-        if ((ins >> 26U) == 63U) {
+        const unsigned guest_op = ins >> 26U;
+        if (guest_op == 63U) {
             const unsigned fp_xo = (ins >> 1U) & 0x3FFU;
             if (fp_xo == 40U || fp_xo == 72U || fp_xo == 136U || fp_xo == 264U)
                 b.requires_fp = true;
+        } else if (guest_op == 4U) {
+            const unsigned ps_xo = (ins >> 1U) & 0x3FFU;
+            if (ps_xo == 40U || ps_xo == 72U || ps_xo == 136U || ps_xo == 264U ||
+                ps_xo == 528U || ps_xo == 560U || ps_xo == 592U || ps_xo == 624U) {
+                b.requires_fp = true;
+                b.requires_paired = true;
+            }
         }
         ++b.guest_instructions;
         b.end_pc += 4U;
