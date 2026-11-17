@@ -116,6 +116,36 @@ TEST_CASE(wii_partition_table_parsing_and_bounds) {
 }
 
 
+
+TEST_CASE(wii_ticket_fields_and_validation) {
+    constexpr std::size_t base = 0x48000U;
+    std::vector<u8> image(base + 0x2A4U, 0);
+    for (std::size_t i = 0; i < 16U; ++i) image[base + 0x1BFU + i] = static_cast<u8>(i + 1U);
+    for (std::size_t i = 0; i < 8U; ++i) image[base + 0x1DCU + i] = static_cast<u8>(0xA0U + i);
+    image[base + 0x1F1U] = 0U;
+    disc::MemoryDisc d(std::move(image));
+    std::string error;
+    const auto ticket = disc::parse_wii_ticket(d, {base, 0U}, error);
+    CHECK(ticket.has_value());
+    if (ticket) {
+        CHECK_EQ(ticket->encrypted_title_key[0], 1U);
+        CHECK_EQ(ticket->encrypted_title_key[15], 16U);
+        CHECK_EQ(ticket->title_id[0], 0xA0U);
+        CHECK_EQ(ticket->title_id[7], 0xA7U);
+        CHECK_EQ(ticket->common_key_index, 0U);
+    }
+
+    std::vector<u8> bad(base + 0x2A4U, 0);
+    for (std::size_t i = 0; i < 16U; ++i) bad[base + 0x1BFU + i] = static_cast<u8>(i + 1U);
+    for (std::size_t i = 0; i < 8U; ++i) bad[base + 0x1DCU + i] = static_cast<u8>(0xA0U + i);
+    bad[base + 0x1F1U] = 2U;
+    disc::MemoryDisc unsupported(std::move(bad));
+    CHECK(!disc::parse_wii_ticket(unsupported, {base, 0U}, error).has_value());
+
+    disc::MemoryDisc truncated(std::vector<u8>(base + 0x200U, 0));
+    CHECK(!disc::parse_wii_ticket(truncated, {base, 0U}, error).has_value());
+}
+
 TEST_CASE(wii_partition_header_metadata_and_bounds) {
     constexpr std::size_t base = 0x48000U;
     std::vector<u8> image(0x90000U, 0);
