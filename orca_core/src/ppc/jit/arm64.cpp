@@ -9,6 +9,43 @@
 
 namespace orca::ppc::jit {
 namespace {
+constexpr u32 ldr_x(unsigned rt,unsigned rn,unsigned byte_offset) {
+    return 0xF9400000U | ((byte_offset/8U)<<10U) | (rn<<5U) | rt;
+}
+constexpr u32 str_x(unsigned rt,unsigned rn,unsigned byte_offset) {
+    return 0xF9000000U | ((byte_offset/8U)<<10U) | (rn<<5U) | rt;
+}
+constexpr u32 movz_x(unsigned rd,u32 imm16) { return 0xD2800000U | ((imm16&0xFFFFU)<<5U) | rd; }
+constexpr u32 movk_x(unsigned rd,u32 imm16,unsigned shift) {
+    return 0xF2800000U | ((shift/16U)<<21U) | ((imm16&0xFFFFU)<<5U) | rd;
+}
+constexpr u32 eor_x(unsigned rd,unsigned rn,unsigned rm) {
+    return 0xCA000000U | (rm<<16U) | (rn<<5U) | rd;
+}
+constexpr u32 and_x(unsigned rd,unsigned rn,unsigned rm) {
+    return 0x8A000000U | (rm<<16U) | (rn<<5U) | rd;
+}
+constexpr u32 orr_x(unsigned rd,unsigned rn,unsigned rm) {
+    return 0xAA000000U | (rm<<16U) | (rn<<5U) | rd;
+}
+void load_imm64(std::vector<u32>& out,unsigned reg,u64 value) {
+    out.push_back(movz_x(reg,static_cast<u32>(value)&0xFFFFU));
+    for(unsigned shift=16U;shift<64U;shift+=16U) {
+        const u32 part=static_cast<u32>(value>>shift)&0xFFFFU;
+        if(part!=0U) out.push_back(movk_x(reg,part,shift));
+    }
+}
+void emit_cr1(std::vector<u32>& out) {
+    out.push_back(ldr_w(9,0,static_cast<unsigned>(offsetof(CpuState,fpscr))));
+    out.push_back(ubfx_w(11,9,28U,4U));
+    out.push_back(lsl_w(11,11,24U));
+    out.push_back(ldr_w(10,0,static_cast<unsigned>(offsetof(CpuState,cr))));
+    load_imm(out,12,~0x0F000000U);
+    out.push_back(and_w(10,10,12));
+    out.push_back(orr_w(10,10,11));
+    out.push_back(str_w(10,0,static_cast<unsigned>(offsetof(CpuState,cr))));
+}
+
 constexpr u32 ldr_w(unsigned rt, unsigned rn, unsigned byte_offset) {
     return 0xB9400000U | ((byte_offset / 4U) << 10U) | (rn << 5U) | rt;
 }
@@ -502,6 +539,27 @@ bool translate_one(u32 ins, u32 guest_pc, std::vector<u32>& out, bool& terminate
     }
 
 
+    if(op==63U) { // Native bit-exact unary FPR moves/sign operations.
+        const unsigned xo=(ins>>1U)&0x3FFU;
+        if(xo!=40U && xo!=72U && xo!=136U && xo!=264U) return false;
+        const unsigned fd=rt, fb=rb;
+        const unsigned src=static_cast<unsigned>(offsetof(CpuState,fpr)+fb*sizeof(Fpr)+offsetof(Fpr,ps0));
+        const unsigned dst=static_cast<unsigned>(offsetof(CpuState,fpr)+fd*sizeof(Fpr)+offsetof(Fpr,ps0));
+        out.push_back(ldr_x(9,0,src));
+        if(xo==40U || xo==136U) {
+            load_imm64(out,10,0x8000000000000000ULL);
+            out.push_back(xo==40U?eor_x(11,9,10):orr_x(11,9,10));
+        } else if(xo==264U) {
+            load_imm64(out,10,0x7FFFFFFFFFFFFFFFULL);
+            out.push_back(and_x(11,9,10));
+        } else {
+            out.push_back(orr_x(11,9,9));
+        }
+        out.push_back(str_x(11,0,dst));
+        if((ins&1U)!=0U) emit_cr1(out);
+        return true;
+    }
+
     if(op==31U) {
         const unsigned xo10=(ins>>1U)&0x3FFU;
         const unsigned xo9=(ins>>1U)&0x1FFU;
@@ -775,6 +833,7 @@ Block compile_arm64(std::span<const u32> words, u32 start_pc) {
         bool instruction_terminates=false;
         if(!translate_one(ins,b.end_pc,b.host_words,instruction_terminates)) break;
         ++b.guest_instructions;
+        if((ins>>26U)==63U) b.requires_fp=true;
         b.end_pc += 4U;
         if(instruction_terminates) { terminated=true; break; }
     }
