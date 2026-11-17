@@ -14,6 +14,7 @@
 #pragma once
 #include "orca/core/bits.hpp"
 
+#include <array>
 #include <fstream>
 #include <memory>
 #include <optional>
@@ -83,6 +84,16 @@ struct WiiPartition {
     u32 type{0}; // 0 = data, 1 = update, other values are reserved
 };
 std::optional<std::vector<WiiPartition>> parse_wii_partition_table(DiscReader& disc, std::string& error);
+
+struct WiiTicket {
+    std::array<u8, 16> encrypted_title_key{};
+    std::array<u8, 8> title_id{};
+    u8 common_key_index{0};
+};
+// Reads the fixed-size ticket at the start of a partition. The common key
+// itself is deliberately supplied by the caller and is never embedded here.
+std::optional<WiiTicket> parse_wii_ticket(
+    DiscReader& disc, const WiiPartition& partition, std::string& error);
 
 struct WiiPartitionHeader {
     u32 tmd_size{0};
