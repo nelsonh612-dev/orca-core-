@@ -140,6 +140,56 @@ TEST_CASE(jit_arm64_differential_addze_addme_subfze_subfme_and_neg) {
 }
 #endif
 
+#if defined(__aarch64__)
+TEST_CASE(jit_arm64_differential_overflow_enabled_integer_arithmetic) {
+    const std::array<u32, 11> code{
+        A::add(3, 4, 5, true, true), A::addc(6, 7, 8, true, true),
+        A::adde(9, 10, 11, true, true), A::addze(12, 13, true, true),
+        A::addme(14, 15, true, true), A::subf(16, 17, 18, true, true),
+        A::subfc(19, 20, 21, true, true), A::subfe(22, 23, 24, true, true),
+        A::subfze(25, 26, true, true), A::subfme(27, 28, true, true),
+        A::neg(29, 30, true, true)
+    };
+    for (std::size_t index = 0; index < code.size(); ++index) {
+        for (u32 initial_xer : {0U, XER_SO | XER_OV, XER_CA | XER_OV}) {
+            Machine reference;
+            reference.code(0x1000U, {code[index]});
+            reference.s().gpr[4] = 0x7FFFFFFFU; reference.s().gpr[5] = 1U;
+            reference.s().gpr[7] = 0xFFFFFFFFU; reference.s().gpr[8] = 1U;
+            reference.s().gpr[10] = 0x7FFFFFFFU; reference.s().gpr[11] = 0U;
+            reference.s().gpr[13] = 0x7FFFFFFFU;
+            reference.s().gpr[15] = 0x80000000U;
+            reference.s().gpr[17] = 1U; reference.s().gpr[18] = 0x80000000U;
+            reference.s().gpr[20] = 1U; reference.s().gpr[21] = 0x80000000U;
+            reference.s().gpr[23] = 1U; reference.s().gpr[24] = 0x80000000U;
+            reference.s().gpr[26] = 0x80000000U;
+            reference.s().gpr[28] = 0x80000000U;
+            reference.s().gpr[30] = 0x80000000U;
+            reference.s().xer = initial_xer;
+            reference.s().cr = 0xA5963CC3U;
+            CHECK(reference.cpu->run(1U) == StepResult::Executed);
+            const CpuState expected = reference.s();
+
+            CpuState actual{};
+            actual.pc = 0x1000U;
+            actual.gpr = reference.s().gpr;
+            // Restore pre-instruction state, not the reference result.
+            actual.gpr[3] = 0U; actual.gpr[6] = 0U; actual.gpr[9] = 0U;
+            actual.gpr[12] = 0U; actual.gpr[14] = 0U; actual.gpr[16] = 0U;
+            actual.gpr[19] = 0U; actual.gpr[22] = 0U; actual.gpr[25] = 0U;
+            actual.gpr[27] = 0U; actual.gpr[29] = 0U;
+            actual.xer = initial_xer;
+            actual.cr = 0xA5963CC3U;
+            const std::array<u32, 1> one{code[index]};
+            const Block block = compile_arm64(one, 0x1000U);
+            CHECK_EQ(block.guest_instructions, 1U);
+            CHECK(execute_arm64(block, actual));
+            CHECK(actual == expected);
+        }
+    }
+}
+#endif
+
 TEST_CASE(jit_arm64_does_not_translate_overflow_enabled_xo_arithmetic_yet) {
     const std::array<u32, 1> code{A::add(3, 4, 5, true, false)};
     const Block b = compile_arm64(code, 0x1000U);
