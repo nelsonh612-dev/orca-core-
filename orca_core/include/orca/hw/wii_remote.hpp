@@ -26,6 +26,10 @@ struct WiiRemoteState {
 // report includes its report ID as byte zero, as delivered by Android HID.
 // Build the 0x11 LED/rumble output report. led_mask bit 0..3 selects LEDs 1..4.
 std::array<u8,2> make_wii_remote_led_report(u8 led_mask, bool rumble) noexcept;
+// Configure one of the supported input report modes (0x30/31/33/35/37).
+std::array<u8,3> make_wii_remote_report_mode(u8 report_id, bool continuous,
+                                             bool rumble) noexcept;
+std::array<u8,2> make_wii_remote_status_request(bool rumble) noexcept;
 bool decode_wii_remote_input_report(std::span<const u8> report,
                                     WiiRemoteState& state,
                                     std::string& error) noexcept;
