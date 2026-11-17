@@ -39,6 +39,9 @@ constexpr u32 bic_w(unsigned rd, unsigned rn, unsigned rm) {
     return 0x0A200000U | (rm << 16U) | (rn << 5U) | rd;
 }
 constexpr u32 cmp_zero_w(unsigned rn) { return 0x7100001FU | (rn << 5U); }
+constexpr u32 csel_w(unsigned rd, unsigned rn, unsigned rm, unsigned condition) {
+    return 0x1A800000U | (rm << 16U) | (condition << 12U) | (rn << 5U) | rd;
+}
 
 constexpr u32 cmp_w(unsigned rn, unsigned rm) {
     return 0x6B00001FU | (rm << 16U) | (rn << 5U);
@@ -456,10 +459,56 @@ Block compile_arm64(std::span<const u32> words, u32 start_pc) {
     for (u32 ins : words) {
         if ((b.end_pc >> 12U) != (start_pc >> 12U)) break;
 
-        // Unconditional immediate branch (b / bl). Branches terminate a
-        // block: the dispatcher resumes at the guest target on its next turn.
-        // Conditional and indirect branches remain in the interpreter until
-        // their BO/BI, CTR/LR and exception-boundary semantics are emitted.
+        // Conditional immediate branch (bc). Evaluate the architectural
+        // BO/BI tests in generated code, including CTR decrement, then select
+        // target or fall-through PC. This instruction always ends the block.
+        if ((ins >> 26U) == 16U) {
+            const unsigned bo = (ins >> 21U) & 31U;
+            const unsigned bi = (ins >> 16U) & 31U;
+            if ((bo & 4U) == 0U) {
+                b.host_words.push_back(ldr_w(9, 0, static_cast<unsigned>(offsetof(CpuState, ctr))));
+                load_imm(b.host_words, 10, 1U);
+                b.host_words.push_back(sub_w(11, 9, 10));
+                b.host_words.push_back(str_w(11, 0, static_cast<unsigned>(offsetof(CpuState, ctr))));
+                b.host_words.push_back(cmp_zero_w(11));
+                b.host_words.push_back(cset_w(12, (bo & 2U) != 0U ? 0x0U : 0x1U));
+            } else {
+                load_imm(b.host_words, 12, 1U);
+            }
+            if ((bo & 16U) == 0U) {
+                b.host_words.push_back(ldr_w(9, 0, static_cast<unsigned>(offsetof(CpuState, cr))));
+                b.host_words.push_back(ubfx_w(10, 9, 31U - bi, 1U));
+                b.host_words.push_back(cmp_zero_w(10));
+                b.host_words.push_back(cset_w(14, (bo & 8U) != 0U ? 0x1U : 0x0U));
+            } else {
+                load_imm(b.host_words, 14, 1U);
+            }
+            b.host_words.push_back(and_w(12, 12, 14));
+            b.host_words.push_back(cmp_zero_w(12));
+            const u32 encoded_disp = ins & 0x0000FFFCU;
+            const s32 displacement = (encoded_disp & 0x00008000U) != 0U
+                ? static_cast<s32>(encoded_disp | 0xFFFF0000U)
+                : static_cast<s32>(encoded_disp);
+            const u32 target = (ins & 2U) != 0U
+                ? static_cast<u32>(displacement)
+                : b.end_pc + static_cast<u32>(displacement);
+            load_imm(b.host_words, 13, target);
+            load_imm(b.host_words, 14, b.end_pc + 4U);
+            b.host_words.push_back(csel_w(9, 13, 14, 0x1U)); // NE => taken
+            b.host_words.push_back(str_w(9, 0, static_cast<unsigned>(offsetof(CpuState, pc))));
+            if ((ins & 1U) != 0U) {
+                load_imm(b.host_words, 9, b.end_pc + 4U);
+                b.host_words.push_back(str_w(9, 0, static_cast<unsigned>(offsetof(CpuState, lr))));
+            }
+            ++b.guest_instructions;
+            b.end_pc += 4U;
+            control_flow_exit = true;
+            break;
+        }
+
+        // Unconditional immediate branch (b / bl). Both branch types
+        // terminate a block; the dispatcher resumes at the selected PC.
+        // Indirect branches (bclr/bcctr) remain in the interpreter.
         if ((ins >> 26U) == 18U) {
             const u32 encoded_disp = ins & 0x03FFFFFCU;
             const s32 displacement = (encoded_disp & 0x02000000U) != 0U
