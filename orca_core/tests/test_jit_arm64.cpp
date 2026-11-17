@@ -217,6 +217,14 @@ TEST_CASE(jit_arm64_differential_integer_shifts_match_reference_interpreter) {
 }
 #endif
 
+
+TEST_CASE(jit_arm64_keeps_arithmetic_shifts_in_reference_fallback_until_xer_ca_is_supported) {
+    const std::array<u32, 2> code{A::sraw(3, 4, 5), A::srawi(6, 7, 9)};
+    const Block b = compile_arm64(code, 0x1000U);
+    CHECK_EQ(b.guest_instructions, 0U);
+    CHECK(b.host_words.empty());
+}
+
 TEST_CASE(jit_arm64_unsupported_first_instruction_produces_no_executable_block) {
     const std::array<u32, 1> code{A::b(4)};
     const Block b = compile_arm64(code, 0x1000);
