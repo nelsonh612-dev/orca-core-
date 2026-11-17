@@ -156,3 +156,11 @@ Se añaden lwz/lwzu, lbz/lbzu, lhz/lhzu, lha/lhau, stw/stwu, stb/stbu y sth/sthu
 ## M048 — indexed integer load/store y byte-reverse
 
 Se añaden lwzx/lwzux, lbzx/lbzux, lhzx/lhzux, lhax/lhaux, stwx/stwux, stbx/stbux, sthx/sthux, más lwbrx/lhbrx/stwbrx/sthbrx. Se reutiliza el mismo resolver guarded Bus/MMU; los reverse forms omiten REV para conservar la inversión de bytes definida por PowerPC. Pruebas cubren indexed/update, loads sign-extended, byte-reverse, write invalidation, unmapped y page-crossing fallback. CI pendiente.
+
+## M048 — indexed/update/reverse-endian memory path
+
+CI completo aprobado en workflow 44009281338: GCC, Clang, QEMU ARM64 y APK Android. QEMU: 55 tests / 498 checks / 0 failures. Incluye lwzx/lwzux, lbzx/lbzux, lhzx/lhzux, lhax/lhaux, stwx/stwux, stbx/stbux, sthx/sthux y formas byte-reverse, además de tests de update y de invalidación de código tras un store JIT.
+
+## M049 — fsel y ps_sel
+
+Se emite selección bit-exact sin alterar FPSCR: la condición detecta signo, ±0 y NaN en el patrón IEEE-754, eligiendo C cuando A >= 0 y B en caso contrario. fsel afecta ps0; ps_sel procesa ambas lanes. Se respeta Rc→CR1 y los requisitos MSR[FP]/HID2[PSE]. Pruebas diferenciales para finitos positivos/negativos, -0, NaN y selección paired-single; CI pendiente.
