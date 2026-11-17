@@ -284,6 +284,10 @@ bool translate_one(u32 ins, std::vector<u32>& out) {
             } else { // cror
                 out.push_back(orr_w(12, 10, 11));
             }
+            // Complement operations produce all-one upper bits in W registers;
+            // CR logical instructions consume only the low boolean bit.
+            load_imm(out, 13, 1U);
+            out.push_back(and_w(12, 12, 13));
             if (bit_t != 0U) out.push_back(lsl_w(12, 12, bit_t));
             load_imm(out, 13, ~(1U << bit_t));
             out.push_back(and_w(9, 9, 13));
