@@ -384,16 +384,29 @@ bool translate_one(u32 ins, u32 guest_pc, std::vector<u32>& out, bool& terminate
         const unsigned xo9 = (ins >> 1U) & 0x1FFU;
         const bool oe = (ins & 0x400U) != 0U;
         const bool rc = (ins & 1U) != 0U;
-        if (!oe && (xo9 == 138U || xo9 == 136U)) {
-            // adde/subfe consume the architectural XER[CA] as the carry-in.
+        if (!oe && (xo9 == 138U || xo9 == 136U || xo9 == 202U ||
+                    xo9 == 234U || xo9 == 200U || xo9 == 232U)) {
+            // Carry-consuming arithmetic: add/subtract extended and the
+            // zero/minus-one variants. AArch64 C is PPC XER[CA].
             out.push_back(ldr_w(12, 0, static_cast<unsigned>(offsetof(CpuState, xer))));
             out.push_back(ubfx_w(12, 12, 29, 1));
             out.push_back(lsl_w(12, 12, 29));
             out.push_back(msr_nzcv_x(12));
             out.push_back(ldr_w(9, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + ra * 4U)));
-            out.push_back(ldr_w(10, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + rb * 4U)));
-            if (xo9 == 138U) out.push_back(adcs_w(11, 9, 10));
-            else out.push_back(sbcs_w(11, 10, 9)); // RB - RA - (1 - CA)
+            if (xo9 == 138U || xo9 == 136U) {
+                out.push_back(ldr_w(10, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + rb * 4U)));
+                if (xo9 == 138U) out.push_back(adcs_w(11, 9, 10));
+                else out.push_back(sbcs_w(11, 10, 9)); // RB - RA - (1 - CA)
+            } else if (xo9 == 202U || xo9 == 234U) {
+                if (xo9 == 234U) mvn_w(10,31U), out.push_back(mvn_w(10,31U));
+                else out.push_back(orr_w(10,31U,31U)); // zero
+                out.push_back(adcs_w(11,9,10)); // addze / addme
+            } else {
+                out.push_back(mvn_w(9,9));
+                if (xo9 == 232U) out.push_back(mvn_w(10,31U));
+                else out.push_back(orr_w(10,31U,31U));
+                out.push_back(sbcs_w(11,10,9)); // subfze / subfme
+            }
             out.push_back(str_w(11, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + rt * 4U)));
             out.push_back(mrs_nzcv_x(12));
             out.push_back(ubfx_w(12, 12, 29, 1));
@@ -403,26 +416,7 @@ bool translate_one(u32 ins, u32 guest_pc, std::vector<u32>& out, bool& terminate
             out.push_back(bic_w(9, 9, 13));
             out.push_back(orr_w(9, 9, 12));
             out.push_back(str_w(9, 0, static_cast<unsigned>(offsetof(CpuState, xer))));
-            if (rc) {
-                out.push_back(cmp_zero_w(11));
-                out.push_back(cset_w(12, 0xBU));
-                out.push_back(lsl_w(12, 12, 31));
-                out.push_back(cset_w(14, 0xCU));
-                out.push_back(lsl_w(14, 14, 30));
-                out.push_back(cset_w(15, 0x0U));
-                out.push_back(lsl_w(15, 15, 29));
-                out.push_back(ldr_w(9, 0, static_cast<unsigned>(offsetof(CpuState, xer))));
-                out.push_back(ubfx_w(13, 9, 31, 1));
-                out.push_back(lsl_w(13, 13, 28));
-                out.push_back(orr_w(12, 12, 14));
-                out.push_back(orr_w(12, 12, 15));
-                out.push_back(orr_w(12, 12, 13));
-                out.push_back(ldr_w(9, 0, static_cast<unsigned>(offsetof(CpuState, cr))));
-                load_imm(out, 14, 0x0FFFFFFFU);
-                out.push_back(and_w(9, 9, 14));
-                out.push_back(orr_w(9, 9, 12));
-                out.push_back(str_w(9, 0, static_cast<unsigned>(offsetof(CpuState, cr))));
-            }
+            if (rc) emit_cr0(out,11);
             return true;
         }
         if (!oe && (xo9 == 266U || xo9 == 10U || xo9 == 40U || xo9 == 8U)) {
