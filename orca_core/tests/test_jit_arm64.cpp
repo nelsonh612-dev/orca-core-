@@ -57,6 +57,7 @@ TEST_CASE(jit_arm64_translates_signed_divide_word_and_exception_guards) {
     CHECK(has_word(0x7100015FU)); // CMP w10, #0
     CHECK(has_word(0x1A9F17EDU)); // CSET w13, EQ
     CHECK(has_word(0x4B1003F0U)); // SUB w16, wzr, w16
+    CHECK(has_word(0x1A8B120BU)); // CSEL w11, w16, w11, NE (exception result override)
 }
 
 #if defined(__aarch64__)
