@@ -61,7 +61,10 @@ TEST_CASE(jit_arm64_translates_signed_divide_word_and_exception_guards) {
 
 #if defined(__aarch64__)
 TEST_CASE(jit_arm64_differential_signed_divide_matches_interpreter) {
-    const std::array<u32, 1> code{A::X(491, 3, 4, 5, true)};
+    const std::array<u32, 2> code{
+        A::X(491, 3, 4, 5, true),
+        A::XO(491, 3, 4, 5, true, true)
+    };
     const std::array<std::pair<u32, u32>, 5> cases{{
         {static_cast<u32>(-17), 5U},
         {17U, 5U},
@@ -69,20 +72,45 @@ TEST_CASE(jit_arm64_differential_signed_divide_matches_interpreter) {
         {17U, 0U},
         {0x80000000U, 0xFFFFFFFFU}
     }};
-    for (const auto [dividend, divisor] : cases) {
-        Machine reference;
-        Machine native_path;
-        reference.code(0x1000U, {code[0]});
-        native_path.code(0x1000U, {code[0]});
-        for (Machine* m : {&reference, &native_path}) {
-            m->s().gpr[4] = dividend;
-            m->s().gpr[5] = divisor;
-            m->s().xer = XER_SO | XER_OV;
-            m->s().cr = 0x12345678U;
+    for (u32 instruction : code) {
+        for (const auto [dividend, divisor] : cases) {
+            Machine reference;
+            Machine native_path;
+            reference.code(0x1000U, {instruction});
+            native_path.code(0x1000U, {instruction});
+            for (Machine* m : {&reference, &native_path}) {
+                m->s().gpr[4] = dividend;
+                m->s().gpr[5] = divisor;
+                m->s().xer = XER_SO | XER_OV;
+                m->s().cr = 0x12345678U;
+            }
+            CHECK(reference.cpu->run(1U) == StepResult::Executed);
+            CHECK(native_path.cpu->run_jit(1U) == StepResult::Executed);
+            CHECK(native_path.s() == reference.s());
         }
-        CHECK(reference.cpu->run(1U) == StepResult::Executed);
-        CHECK(native_path.cpu->run_jit(1U) == StepResult::Executed);
-        CHECK(native_path.s() == reference.s());
+    }
+}
+
+#endif
+
+#if defined(__aarch64__)
+TEST_CASE(jit_arm64_differential_unsigned_divide_respects_oe) {
+    for (u32 instruction : {A::X(459, 3, 4, 5, true), A::XO(459, 3, 4, 5, true, true)}) {
+        for (u32 divisor : {0U, 3U}) {
+            Machine reference;
+            Machine native_path;
+            reference.code(0x1000U, {instruction});
+            native_path.code(0x1000U, {instruction});
+            for (Machine* m : {&reference, &native_path}) {
+                m->s().gpr[4] = 17U;
+                m->s().gpr[5] = divisor;
+                m->s().xer = XER_SO | XER_OV;
+                m->s().cr = 0x87654321U;
+            }
+            CHECK(reference.cpu->run(1U) == StepResult::Executed);
+            CHECK(native_path.cpu->run_jit(1U) == StepResult::Executed);
+            CHECK(native_path.s() == reference.s());
+        }
     }
 }
 #endif
