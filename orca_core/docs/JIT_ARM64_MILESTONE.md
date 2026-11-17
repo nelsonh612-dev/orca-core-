@@ -114,3 +114,8 @@ Se traducen mcrf, mfcr y mtcrf. mcrf copia solo el nibble de campo indicado; mfc
 ## M040 — saltos indirectos bclr/bcctr
 
 Se añaden terminadores de bloque nativos para bclr y bcctr. El destino LR/CTR se captura antes de modificar LR/CTR, se alinea a palabra, se aplican BO/BI, decremento de CTR cuando corresponde, y LK actualiza LR después de capturar el destino. bcctr con BO[2]=0 permanece en fallback para que el intérprete entregue InvalidForm sin efectos parciales. El CI de estos últimos cambios debe aprobar antes de considerar validados M039/M040.
+
+
+## M041 — mcrxr
+
+Se añade mcrxr como operación nativa: copia XER[SO|OV|CA] al nibble CR indicado y limpia esos bits del XER, preservando los 28 bits inferiores. Su decodificación utiliza el XO completo de 10 bits (512), no el XO de 9 bits empleado por las instrucciones XO/OE. Incluye prueba diferencial de CpuState completo; CI pendiente para este commit.
