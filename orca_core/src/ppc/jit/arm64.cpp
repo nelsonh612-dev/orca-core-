@@ -43,6 +43,12 @@ constexpr u32 orr_w(unsigned rd, unsigned rn, unsigned rm) { return 0x2A000000U 
 constexpr u32 eor_w(unsigned rd, unsigned rn, unsigned rm) { return 0x4A000000U | (rm << 16U) | (rn << 5U) | rd; }
 constexpr u32 and_w(unsigned rd, unsigned rn, unsigned rm) { return 0x0A000000U | (rm << 16U) | (rn << 5U) | rd; }
 constexpr u32 mul_w(unsigned rd, unsigned rn, unsigned rm) { return 0x1B007C00U | (rm << 16U) | (rn << 5U) | rd; }
+constexpr u32 smull_x(unsigned rd, unsigned rn, unsigned rm) {
+    return 0x9B207C00U | (rm << 16U) | (rn << 5U) | rd;
+}
+constexpr u32 cmp_x(unsigned rn, unsigned rm) {
+    return 0xEB00001FU | (rm << 16U) | (rn << 5U);
+}
 constexpr u32 adds_w(unsigned rd, unsigned rn, unsigned rm) { return 0x2B000000U | (rm << 16U) | (rn << 5U) | rd; }
 constexpr u32 mvn_w(unsigned rd, unsigned rm) { return 0x2A2003E0U | (rm << 16U) | rd; }
 constexpr u32 subs_w(unsigned rd, unsigned rn, unsigned rm) { return 0x6B000000U | (rm << 16U) | (rn << 5U) | rd; }
@@ -426,6 +432,29 @@ bool translate_one(u32 ins, std::vector<u32>& out) {
         }
         const unsigned xo9 = (ins >> 1U) & 0x1FFU;
         const bool oe = (ins & 0x400U) != 0U;
+        if (xo9 == 235U) { // mullw: signed 32x32 -> 64, retain low 32 bits
+            out.push_back(ldr_w(9, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + ra * 4U)));
+            out.push_back(ldr_w(10, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + rb * 4U)));
+            out.push_back(smull_x(11, 9, 10));
+            out.push_back(str_w(11, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + rt * 4U)));
+            if (oe) {
+                // Overflow iff the full signed product differs from the
+                // sign-extension of its low 32-bit architectural result.
+                out.push_back(sxtw_x(12, 11));
+                out.push_back(cmp_x(11, 12));
+                out.push_back(cset_w(13, 1U)); // NE => signed overflow
+                out.push_back(lsl_w(13, 13, 30U));
+                out.push_back(ldr_w(9, 0, static_cast<unsigned>(offsetof(CpuState, xer))));
+                load_imm(out, 14, XER_OV);
+                out.push_back(bic_w(9, 9, 14));
+                out.push_back(orr_w(9, 9, 13));
+                out.push_back(lsl_w(14, 13, 1U));
+                out.push_back(orr_w(9, 9, 14)); // sticky SO
+                out.push_back(str_w(9, 0, static_cast<unsigned>(offsetof(CpuState, xer))));
+            }
+            if (rc) emit_cr0(out, 11);
+            return true;
+        }
         if (xo9 == 19U && (ins & 1U) == 0U) { // mfcr
             out.push_back(ldr_w(9, 0, static_cast<unsigned>(offsetof(CpuState, cr))));
             out.push_back(str_w(9, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + rt * 4U)));
