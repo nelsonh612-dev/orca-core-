@@ -88,6 +88,78 @@ TEST_CASE(jit_arm64_translates_adde_and_subfe_using_xer_carry_in) {
     CHECK(has_word(0xD53B420CU)); // MRS NZCV (carry-out)
 }
 
+#if defined(__aarch64__)
+TEST_CASE(jit_arm64_differential_guarded_d_form_ram_load_store) {
+    const std::array<u32, 6> code{
+        A::D(32, 3, 4, 0), A::D(40, 5, 4, 4), A::D(42, 6, 4, 6),
+        A::D(36, 7, 4, 8), A::D(38, 8, 4, 12), A::D(44, 9, 4, 14)
+    };
+    Machine reference;
+    reference.code(0x1000U, {code[0],code[1],code[2],code[3],code[4],code[5]});
+    reference.s().gpr[4] = 0x2000U;
+    reference.s().gpr[7] = 0xDEADBEEFU;
+    reference.s().gpr[8] = 0x5AU;
+    reference.s().gpr[9] = 0xBEEFU;
+    CHECK(reference.bus.write32(0x2000U, 0x12345678U) == mem::BusStatus::Ok);
+    CHECK(reference.bus.write16(0x2004U, 0xABCDU) == mem::BusStatus::Ok);
+    CHECK(reference.bus.write16(0x2006U, 0x8001U) == mem::BusStatus::Ok);
+
+    Machine native_path;
+    native_path.code(0x1000U, {code[0],code[1],code[2],code[3],code[4],code[5]});
+    native_path.s().gpr[4] = 0x2000U;
+    native_path.s().gpr[7] = 0xDEADBEEFU;
+    native_path.s().gpr[8] = 0x5AU;
+    native_path.s().gpr[9] = 0xBEEFU;
+    CHECK(native_path.bus.write32(0x2000U, 0x12345678U) == mem::BusStatus::Ok);
+    CHECK(native_path.bus.write16(0x2004U, 0xABCDU) == mem::BusStatus::Ok);
+    CHECK(native_path.bus.write16(0x2006U, 0x8001U) == mem::BusStatus::Ok);
+
+    CHECK(reference.cpu->run(code.size()) == StepResult::Executed);
+    u64 completed = 0;
+    CHECK(native_path.cpu->run_jit(code.size(), &completed) == StepResult::Executed);
+    CHECK_EQ(completed, code.size());
+    CHECK(native_path.s() == reference.s());
+    CHECK_EQ(native_path.r32(0x2008U), reference.r32(0x2008U));
+    CHECK_EQ(native_path.r32(0x200CU), reference.r32(0x200CU));
+    CHECK_EQ(native_path.r16(0x200EU), reference.r16(0x200EU));
+}
+
+TEST_CASE(jit_arm64_guarded_memory_falls_back_for_unmapped_and_page_crossing) {
+    const u32 instruction = A::D(32, 3, 4, 0);
+    Machine reference_unmapped;
+    reference_unmapped.code(0x1000U, {instruction});
+    reference_unmapped.s().gpr[4] = 0x10000000U;
+    const StepResult expected_fault = reference_unmapped.cpu->step();
+    const CpuState expected_fault_state = reference_unmapped.s();
+
+    Machine jit_unmapped;
+    jit_unmapped.code(0x1000U, {instruction});
+    jit_unmapped.s().gpr[4] = 0x10000000U;
+    CHECK(jit_unmapped.cpu->run_jit(1U) == expected_fault);
+    CHECK(jit_unmapped.s() == expected_fault_state);
+
+    const u32 unaligned = A::D(32, 3, 4, 0);
+    Machine reference_cross;
+    reference_cross.code(0x1000U, {unaligned});
+    reference_cross.s().gpr[4] = 0x1FFFU;
+    CHECK(reference_cross.bus.write8(0x1FFFU, 0x12U) == mem::BusStatus::Ok);
+    CHECK(reference_cross.bus.write8(0x2000U, 0x34U) == mem::BusStatus::Ok);
+    CHECK(reference_cross.bus.write8(0x2001U, 0x56U) == mem::BusStatus::Ok);
+    CHECK(reference_cross.bus.write8(0x2002U, 0x78U) == mem::BusStatus::Ok);
+
+    Machine jit_cross;
+    jit_cross.code(0x1000U, {unaligned});
+    jit_cross.s().gpr[4] = 0x1FFFU;
+    CHECK(jit_cross.bus.write8(0x1FFFU, 0x12U) == mem::BusStatus::Ok);
+    CHECK(jit_cross.bus.write8(0x2000U, 0x34U) == mem::BusStatus::Ok);
+    CHECK(jit_cross.bus.write8(0x2001U, 0x56U) == mem::BusStatus::Ok);
+    CHECK(jit_cross.bus.write8(0x2002U, 0x78U) == mem::BusStatus::Ok);
+    CHECK(reference_cross.cpu->run(1U) == StepResult::Executed);
+    CHECK(jit_cross.cpu->run_jit(1U) == StepResult::Executed);
+    CHECK(jit_cross.s() == reference_cross.s());
+}
+#endif
+
 TEST_CASE(jit_arm64_translates_paired_single_unary_and_merge_operations) {
     const std::array<u32, 8> code{
         A::psX(40, 1, 0, 2, true), A::psX(72, 3, 0, 4),
