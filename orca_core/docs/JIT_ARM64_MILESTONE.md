@@ -100,3 +100,8 @@ Se añadieron pruebas de traducción y una prueba diferencial AArch64 para b+LK 
 Se añade la forma opcode 16 (bc) como terminador de bloque. El código nativo evalúa BO/BI, decrementa CTR cuando BO lo solicita, consulta el bit CR seleccionado y elige entre destino y fall-through; LK actualiza LR incluso cuando la condición no toma el salto, igual que el intérprete de referencia. Las formas indirectas bclr/bcctr siguen en fallback.
 
 Se incorporó una prueba diferencial para una condición CR tomada y una prueba estructural de destino absoluto. La validación de estos últimos commits está pendiente del workflow CI más reciente; no se debe extrapolar el resultado anterior de M035 a M036/M037.
+
+
+## M038 — operaciones lógicas del registro CR
+
+Se añaden las operaciones CR lógicas crand, crandc, cror, crorc, crxor, crnand, crnor y creqv. La emisión respeta la numeración PowerPC de bits CR (BT/BA/BB, de MSB a LSB) y actualiza únicamente el bit destino. Se añaden tests estructurales y una comparación diferencial de CpuState completo contra el intérprete. El workflow que incluya M038 debe aprobar antes de considerar validado este hito.
