@@ -398,7 +398,7 @@ bool translate_one(u32 ins, u32 guest_pc, std::vector<u32>& out, bool& terminate
                 if (xo9 == 138U) out.push_back(adcs_w(11, 9, 10));
                 else out.push_back(sbcs_w(11, 10, 9)); // RB - RA - (1 - CA)
             } else if (xo9 == 202U || xo9 == 234U) {
-                if (xo9 == 234U) mvn_w(10,31U), out.push_back(mvn_w(10,31U));
+                if (xo9 == 234U) out.push_back(mvn_w(10,31U));
                 else out.push_back(orr_w(10,31U,31U)); // zero
                 out.push_back(adcs_w(11,9,10)); // addze / addme
             } else {
