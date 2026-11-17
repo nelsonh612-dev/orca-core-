@@ -47,6 +47,7 @@ std::atomic<std::uint32_t> g_audio_head{0};
 std::atomic<std::uint32_t> g_audio_tail{0};
 std::atomic<std::uint64_t> g_audio_dropped{0};
 std::atomic<jint> g_audio_rate{48000};
+std::atomic<jint> g_rumble_state{0};
 
 void reset_audio_ring() noexcept {
     g_audio_head.store(0, std::memory_order_relaxed);
@@ -303,6 +304,9 @@ Java_org_orcacore_android_MainActivity_nativeLoadDisc(JNIEnv* env, jobject, jstr
     auto candidate = std::make_unique<orca::system::System>(orca::system::SystemConfig{console});
     if (console == orca::system::Console::Wii)
         candidate->set_wii_common_key_provider(&g_wii_key_provider);
+    candidate->controller().set_rumble_sink([](orca::u8 state) {
+        g_rumble_state.store(static_cast<jint>(state & 3U), std::memory_order_release);
+    });
     candidate->insert_disc(std::move(disc));
     if (!candidate->boot_disc(error)) return java_string(env, "No se pudo iniciar el disco: " + error);
     candidate->set_field_listener([](bool bottom) { capture_xfb(bottom); });
@@ -332,6 +336,11 @@ Java_org_orcacore_android_MainActivity_nativeSetPadState(JNIEnv*, jobject, jint 
     p.cstick_y = static_cast<orca::u8>(std::clamp(csy, 0, 255));
     p.trigger_l = static_cast<orca::u8>(std::clamp(tl, 0, 255));
     p.trigger_r = static_cast<orca::u8>(std::clamp(tr, 0, 255));
+}
+
+extern "C" JNIEXPORT jint JNICALL
+Java_org_orcacore_android_MainActivity_nativeRumbleState(JNIEnv*, jobject) {
+    return g_rumble_state.load(std::memory_order_acquire);
 }
 
 extern "C" JNIEXPORT jint JNICALL
@@ -374,6 +383,7 @@ Java_org_orcacore_android_MainActivity_nativeDrawFrame(JNIEnv*, jobject) {
 extern "C" JNIEXPORT void JNICALL
 Java_org_orcacore_android_MainActivity_nativeShutdown(JNIEnv*, jobject) {
     g_system.reset();
+    g_rumble_state.store(0, std::memory_order_release);
     g_wii_key_provider.clear();
     reset_audio_ring();
     g_audio_rate.store(48000, std::memory_order_release);
