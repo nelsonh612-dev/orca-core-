@@ -1091,7 +1091,7 @@ Block compile_arm64(std::span<const u32> words, u32 start_pc) {
                 if (is_integer_word) {
                     // stfiwx stores the low-order 32 bits of FPR[ps0] verbatim;
                     // it is not a floating-point conversion.
-                    b.host_words.push_back(ldr_w(11, 17, fpr_offset + 4U));
+                    b.host_words.push_back(ldr_w(11, 17, fpr_offset));
                     b.host_words.push_back(rev_w(11, 11));
                     b.host_words.push_back(ldr_x(17, 31U, 16U));
                     b.host_words.push_back(str_w(11, 17, 0U));
