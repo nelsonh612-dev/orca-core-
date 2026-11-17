@@ -102,6 +102,45 @@ std::optional<std::vector<WiiPartition>> parse_wii_partition_table(DiscReader& d
 }
 
 
+
+std::optional<WiiTicket> parse_wii_ticket(
+    DiscReader& disc, const WiiPartition& partition, std::string& error) {
+    constexpr u64 kTicketSize = 0x2A4U;
+    constexpr u64 kEncryptedTitleKeyOffset = 0x1BFU;
+    constexpr u64 kTitleIdOffset = 0x1DCU;
+    constexpr u64 kCommonKeyIndexOffset = 0x1F1U;
+    if (partition.offset > disc.size() || kTicketSize > disc.size() - partition.offset) {
+        error = "Wii ticket: ticket extends past the disc image";
+        return std::nullopt;
+    }
+    std::array<u8, kTicketSize> raw{};
+    if (!disc.read(partition.offset, raw)) {
+        error = "Wii ticket: cannot read ticket";
+        return std::nullopt;
+    }
+    WiiTicket ticket;
+    std::copy_n(raw.begin() + static_cast<std::ptrdiff_t>(kEncryptedTitleKeyOffset),
+                ticket.encrypted_title_key.size(), ticket.encrypted_title_key.begin());
+    std::copy_n(raw.begin() + static_cast<std::ptrdiff_t>(kTitleIdOffset),
+                ticket.title_id.size(), ticket.title_id.begin());
+    ticket.common_key_index = raw[static_cast<std::size_t>(kCommonKeyIndexOffset)];
+    if (std::all_of(ticket.encrypted_title_key.begin(), ticket.encrypted_title_key.end(),
+                    [](u8 value) { return value == 0U; })) {
+        error = "Wii ticket: encrypted title key is empty";
+        return std::nullopt;
+    }
+    if (std::all_of(ticket.title_id.begin(), ticket.title_id.end(),
+                    [](u8 value) { return value == 0U; })) {
+        error = "Wii ticket: title ID is empty";
+        return std::nullopt;
+    }
+    if (ticket.common_key_index > 1U) {
+        error = "Wii ticket: unsupported common-key index";
+        return std::nullopt;
+    }
+    return ticket;
+}
+
 std::optional<WiiPartitionHeader> parse_wii_partition_header(
     DiscReader& disc, const WiiPartition& partition, std::string& error) {
     constexpr u64 kTicketSize = 0x2A4U;
