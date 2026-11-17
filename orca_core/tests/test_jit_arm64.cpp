@@ -1362,3 +1362,70 @@ TEST_CASE(jit_arm64_misaligned_stfsx_uses_interpreter_alignment_exception) {
 #endif
 
 TEST_MAIN("jit_arm64")
+
+
+#if defined(__aarch64__)
+TEST_CASE(jit_arm64_differential_paired_single_unary_and_merge_match_interpreter) {
+    const std::array<u32, 8> code{
+        A::ps_neg(1, 2), A::ps_mr(3, 1), A::ps_nabs(4, 3), A::ps_abs(5, 4),
+        A::ps_merge00(6, 1, 2), A::ps_merge01(7, 1, 2),
+        A::ps_merge10(8, 1, 2), A::ps_merge11(9, 1, 2)
+    };
+    Machine reference;
+    Machine candidate;
+    reference.code(0x1000U, {code[0],code[1],code[2],code[3],code[4],code[5],code[6],code[7]});
+    candidate.code(0x1000U, {code[0],code[1],code[2],code[3],code[4],code[5],code[6],code[7]});
+    for (Machine* m : {&reference, &candidate}) {
+        m->s().msr = MSR_FP;
+        m->s().hid2 = HID2_PSE;
+        m->s().fpr[1].ps0 = 0xBFF0000000000000ULL;
+        m->s().fpr[1].ps1 = 0x4000000000000000ULL;
+        m->s().fpr[2].ps0 = 0x4008000000000000ULL;
+        m->s().fpr[2].ps1 = 0xC010000000000000ULL;
+    }
+    CHECK(reference.cpu->run(code.size()) == StepResult::Executed);
+    CHECK(candidate.cpu->run_jit(code.size()) == StepResult::Executed);
+    CHECK(candidate.s() == reference.s());
+}
+
+TEST_CASE(jit_arm64_differential_paired_single_select_matches_interpreter) {
+    const u32 instruction = A::ps_sel(3, 1, 2, 4);
+    Machine reference;
+    Machine candidate;
+    reference.code(0x1000U, {instruction});
+    candidate.code(0x1000U, {instruction});
+    for (Machine* m : {&reference, &candidate}) {
+        m->s().msr = MSR_FP;
+        m->s().hid2 = HID2_PSE;
+        m->s().fpr[1].ps0 = 0x3FF0000000000000ULL; // +1 selects C
+        m->s().fpr[1].ps1 = 0xBFF0000000000000ULL; // -1 selects B
+        m->s().fpr[2].ps0 = 0x4000000000000000ULL;
+        m->s().fpr[2].ps1 = 0x4008000000000000ULL;
+        m->s().fpr[4].ps0 = 0x4010000000000000ULL;
+        m->s().fpr[4].ps1 = 0x4014000000000000ULL;
+    }
+    CHECK(reference.cpu->run(1U) == StepResult::Executed);
+    CHECK(candidate.cpu->run_jit(1U) == StepResult::Executed);
+    CHECK(candidate.s() == reference.s());
+}
+
+TEST_CASE(jit_arm64_differential_scalar_fsel_matches_interpreter_for_zero_and_nan) {
+    const u32 instruction = A::fsel(3, 1, 2, 4);
+    for (u64 selector : {0x0000000000000000ULL, 0x8000000000000000ULL,
+                         0xBFF0000000000000ULL, 0x7FF8000000000001ULL}) {
+        Machine reference;
+        Machine candidate;
+        reference.code(0x1000U, {instruction});
+        candidate.code(0x1000U, {instruction});
+        for (Machine* m : {&reference, &candidate}) {
+            m->s().msr = MSR_FP;
+            m->s().fpr[1].ps0 = selector;
+            m->s().fpr[2].ps0 = 0x4000000000000000ULL;
+            m->s().fpr[4].ps0 = 0x4010000000000000ULL;
+        }
+        CHECK(reference.cpu->run(1U) == StepResult::Executed);
+        CHECK(candidate.cpu->run_jit(1U) == StepResult::Executed);
+        CHECK(candidate.s() == reference.s());
+    }
+}
+#endif
