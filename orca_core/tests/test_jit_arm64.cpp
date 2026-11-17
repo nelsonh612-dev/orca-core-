@@ -39,7 +39,7 @@ TEST_CASE(jit_arm64_translates_signed_and_unsigned_multiply_high) {
         return false;
     };
     CHECK(has_word(0x9B257C8BU)); // SMULL x11, w4, w5
-    CHECK(has_word(0x9BA87CCBU)); // UMULL x11, w6, w8
+    CHECK(has_word(0x9BA87CE6U)); // UMULL x6, w7, w8 -> x6
 }
 
 TEST_CASE(jit_arm64_translates_addic_and_subfic_with_xer_carry_update) {
