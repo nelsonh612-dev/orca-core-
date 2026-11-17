@@ -321,7 +321,8 @@ StepResult Cpu::run_jit(u64 budget, u64* completed, const u32* stop_pc) {
         // Native FPR blocks are valid only while MSR[FP] is enabled.
         // Route through the reference step otherwise so the architectural
         // FloatingPointUnavailable exception is delivered at the exact PC.
-        if (it->second->block.requires_fp && (state_.msr & MSR_FP) == 0U) {
+        if ((it->second->block.requires_fp && (state_.msr & MSR_FP) == 0U) ||
+            (it->second->block.requires_paired && (state_.hid2 & HID2_PSE) == 0U)) {
             const StepResult r = step();
             if (r != StepResult::Executed && r != StepResult::ExceptionTaken) {
                 if (completed != nullptr) *completed = done;
