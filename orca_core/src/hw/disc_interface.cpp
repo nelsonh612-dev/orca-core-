@@ -79,7 +79,8 @@ bool DiscInterface::start_command() {
 void DiscInterface::complete() {
     const u64 offset = static_cast<u64>(cmd_[1]) << 2U;
     std::vector<u8> data(dilength_);
-    if (!disc_->read(offset, data)) {
+    disc::DiscReader* source = read_view_ != nullptr ? read_view_ : disc_.get();
+    if (source == nullptr || !source->read(offset, data)) {
         disr_ |= di::DISR_DEINT; // drive error: read outside the image
     } else {
         (void)bus_.dma_write(dimar_, data);

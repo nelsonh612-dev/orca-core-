@@ -29,6 +29,7 @@
 #include "orca/hw/processor_interface.hpp"
 
 #include <array>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -65,8 +66,13 @@ public:
     bool need_origin{true};
     u8 motor{0};
     u8 analog_mode{3};
+    // Raw two-bit motor command from PAD_CMD_POLL. The frontend maps this to
+    // its haptic device without coupling the emulated SI device to Android.
+    void set_rumble_sink(std::function<void(u8)> sink) { rumble_sink_ = std::move(sink); }
     std::optional<std::vector<u8>> transfer(const std::vector<u8>& out, std::string& error) override;
     std::vector<u8> status_bytes() const;
+private:
+    std::function<void(u8)> rumble_sink_;
 };
 
 namespace si {

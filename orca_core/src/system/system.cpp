@@ -58,7 +58,18 @@ void System::hle_boot(u32 entry) {
     ppc::CpuState& s = cpu_->state();
     s.ibat[0] = {0x80001FFFU, 0x00000002U};
     s.dbat[0] = {0x80001FFFU, 0x00000002U};
-    s.dbat[1] = {0xC0001FFFU, 0x0000002AU}; // WIMG = 0101 (I, G), PP = 10
+    s.dbat[1] = {0xC0001FFFU, 0x0000002AU}; // MEM1 uncached alias, WIMG = 0101, PP = 10
+    if (config_.console == Console::Wii) {
+        // The Wii's uncached MEM2 alias is a separate 256 MiB BAT window:
+        // 0xD0000000 -> physical 0x10000000. DBAT1 above maps 0xC0000000
+        // to physical zero and therefore cannot serve this alias.
+        s.dbat[3] = {0xD00007FFU, 0x1000002AU};
+        // Wii MEM2 is a distinct 64 MiB region at physical 0x10000000.
+        // Install its cached 0x90000000 alias for instruction fetches and
+        // data accesses; DBAT1 already provides the uncached 0xD0000000 alias.
+        s.ibat[1] = {0x900007FFU, 0x10000002U};
+        s.dbat[2] = {0x900007FFU, 0x10000002U};
+    }
     s.msr = ppc::MSR_FP | ppc::MSR_IR | ppc::MSR_DR;
     s.pc = entry;
     (void)bus_.write32(0x20, 0x0D15EA5EU);
@@ -106,67 +117,142 @@ std::optional<u32> System::call_guest(u32 function, std::initializer_list<u32> a
 }
 
 bool System::boot_disc(std::string& error) {
-    disc::DiscReader* d = di_->disc();
-    if (d == nullptr) { error = "boot_disc: no disc inserted"; return false; }
-    const auto header = disc::parse_header(*d, error);
-    if (!header) return false;
-    const auto app = disc::parse_apploader_header(*d, error);
-    if (!app) return false;
-    const u32 app_bytes = app->size + app->trailer_size;
-    if (disc::kApploaderLoadAddress + app_bytes > kGuestReturn) { error = "boot_disc: apploader overlaps the HLE stub area"; return false; }
+    di_->set_read_view(nullptr);
+    wii_partition_.reset();
+    disc::DiscReader* raw = di_->disc();
+    if (raw == nullptr) { error = "boot_disc: no disc inserted"; return false; }
 
-    // Low-memory globals
-    std::array<u8, 0x20> id{};
-    d->read(0, id);
-    (void)bus_.dma_write(0, id);
-    const bool gc = config_.console == Console::GameCube;
-    (void)bus_.write32(0x20, 0x0D15EA5EU);
-    (void)bus_.write32(0x28, mem::kMem1Size);
-    (void)bus_.write32(0xF8, gc ? 162000000U : 243000000U);
-    (void)bus_.write32(0xFC, static_cast<u32>(clocks_.cpu_hz));
-    std::vector<u8> bi2(0x2000);
-    if (!d->read(0x440, bi2)) { error = "boot_disc: cannot read bi2.bin"; return false; }
-    (void)bus_.dma_write(loader::virtual_to_physical(kBi2Address), bi2);
-    (void)bus_.write32(0xF4, kBi2Address);
+    std::array<u8,0x20> raw_header{};
+    if(!raw->read(0,raw_header)) { error="boot_disc: raw disc header is truncated"; return false; }
+    const u32 magic=(u32{raw_header[0x18]}<<24U)|(u32{raw_header[0x19]}<<16U)|
+                    (u32{raw_header[0x1A]}<<8U)|u32{raw_header[0x1B]};
+    const bool is_wii=magic==disc::kWiiMagic;
+    disc::DiscReader* boot_reader=raw;
+    std::optional<disc::DiscHeader> header;
 
-    // Apploader image and HLE stubs
-    std::vector<u8> code(app_bytes);
-    if (!d->read(disc::kApploaderOffset + 0x20U, code)) { error = "boot_disc: cannot read the apploader"; return false; }
-    (void)bus_.dma_write(loader::virtual_to_physical(disc::kApploaderLoadAddress), code);
-    const u32 stub_pa = loader::virtual_to_physical(kGuestReturn);
-    (void)bus_.write32(stub_pa, 0x4E800020U);      // blr (never executed: the run loop stops here)
-    (void)bus_.write32(stub_pa + 4U, 0x4E800020U); // report stub: blr
-    hle_boot(0);
-    cpu_->state().gpr[1] = kApploaderStack;
-
-    constexpr u64 kBudget = 2000000000ULL;
-    const u32 slots = kGuestReturn + 0x10U, args = kGuestReturn + 0x20U;
-    if (!call_guest(app->entry, {slots, slots + 4U, slots + 8U}, kBudget, error)) return false;
-    u32 init = 0, main_fn = 0, close = 0;
-    bus_.read32(loader::virtual_to_physical(slots), init);
-    bus_.read32(loader::virtual_to_physical(slots + 4U), main_fn);
-    bus_.read32(loader::virtual_to_physical(slots + 8U), close);
-    if (!call_guest(init, {kReportStub}, kBudget, error)) return false;
-    for (int i = 0;; ++i) {
-        if (i > 100000) { error = "boot_disc: apploader main() never finished"; return false; }
-        const auto more = call_guest(main_fn, {args, args + 4U, args + 8U}, kBudget, error);
-        if (!more) return false;
-        u32 dst = 0, size = 0, offset = 0;
-        bus_.read32(loader::virtual_to_physical(args), dst);
-        bus_.read32(loader::virtual_to_physical(args + 4U), size);
-        bus_.read32(loader::virtual_to_physical(args + 8U), offset);
-        if (size != 0U) {
-            const u32 pa = loader::virtual_to_physical(dst);
-            std::vector<u8> chunk(size);
-            if (!bus_.is_ram(pa, size)) { error = "boot_disc: apploader requested a read outside RAM"; return false; }
-            if (!d->read(offset, chunk)) { error = "boot_disc: apploader requested a read outside the disc"; return false; }
-            (void)bus_.dma_write(pa, chunk);
-            (void)bus_.write32(loader::virtual_to_physical(args + 4U), 0); // consumed
+    if(is_wii) {
+        if(config_.console!=Console::Wii) {
+            error="boot_disc: Wii disc requires a System configured for the Wii console";
+            return false;
         }
-        if (*more == 0U) break;
+        if(wii_key_provider_==nullptr) {
+            error="boot_disc: encrypted Wii disc requires a user-supplied common-key provider";
+            return false;
+        }
+        const auto table=disc::parse_wii_partition_table(*raw,error);
+        if(!table) return false;
+        const auto it=std::find_if(table->partitions.begin(),table->partitions.end(),
+                                   [](const disc::WiiPartitionInfo& p){ return p.type==0U; });
+        if(it==table->partitions.end()) {
+            error="boot_disc: no game-data partition (type 0) found";
+            return false;
+        }
+        crypto::Aes128Key title_key{};
+        if(!disc::derive_wii_title_key(*raw,*it,*wii_key_provider_,title_key,error)) return false;
+        wii_partition_=std::make_unique<disc::WiiPartitionReader>(*raw,*it,title_key);
+        volatile u8* wipe=title_key.data();
+        for(std::size_t i=0;i<title_key.size();++i) wipe[i]=0;
+        if(!wii_partition_->valid()) {
+            error=wii_partition_->error();
+            wii_partition_.reset();
+            return false;
+        }
+        boot_reader=wii_partition_.get();
+        header=disc::parse_wii_partition_header(*boot_reader,error);
+    } else {
+        if(config_.console!=Console::GameCube) {
+            error="boot_disc: GameCube disc requires a System configured for GameCube";
+            return false;
+        }
+        header=disc::parse_header(*raw,error);
     }
-    const auto entry = call_guest(close, {}, kBudget, error);
-    if (!entry) return false;
+    if(!header) return false;
+
+    const auto app=disc::parse_apploader_header(*boot_reader,error);
+    if(!app) return false;
+    if(is_wii) di_->set_read_view(wii_partition_.get());
+    const u32 app_bytes=app->size+app->trailer_size;
+    if(disc::kApploaderLoadAddress+app_bytes>kGuestReturn) {
+        error="boot_disc: apploader overlaps the HLE stub area";
+        return false;
+    }
+
+    // The decrypted Wii partition presents the same logical header/BI2/
+    // apploader/DOL address space as a GameCube disc.
+    std::array<u8,0x20> id{};
+    if(!boot_reader->read(0,id)) { error="boot_disc: cannot read logical disc ID"; return false; }
+    if (bus_.dma_write(0,id) != mem::BusStatus::Ok) {
+        error="boot_disc: cannot copy the logical disc ID into guest memory";
+        return false;
+    }
+    const bool gc=config_.console==Console::GameCube;
+    (void)bus_.write32(0x20,0x0D15EA5EU);
+    (void)bus_.write32(0x28,mem::kMem1Size);
+    (void)bus_.write32(0xF8,gc?162000000U:243000000U);
+    (void)bus_.write32(0xFC,static_cast<u32>(clocks_.cpu_hz));
+    std::vector<u8> bi2(0x2000);
+    if(!boot_reader->read(0x440,bi2)) { error="boot_disc: cannot read bi2.bin"; return false; }
+    if (bus_.dma_write(loader::virtual_to_physical(kBi2Address),bi2) != mem::BusStatus::Ok) {
+        error="boot_disc: cannot copy bi2.bin into guest memory";
+        return false;
+    }
+    (void)bus_.write32(0xF4,kBi2Address);
+
+    std::vector<u8> code(app_bytes);
+    if(!boot_reader->read(disc::kApploaderOffset+0x20U,code)) {
+        error="boot_disc: cannot read the apploader";
+        return false;
+    }
+    if (bus_.dma_write(loader::virtual_to_physical(disc::kApploaderLoadAddress),code) != mem::BusStatus::Ok) {
+        error="boot_disc: cannot copy the apploader into guest memory";
+        return false;
+    }
+    const u32 stub_pa=loader::virtual_to_physical(kGuestReturn);
+    if (bus_.write32(stub_pa,0x4E800020U) != mem::BusStatus::Ok ||
+        bus_.write32(stub_pa+4U,0x4E800020U) != mem::BusStatus::Ok) {
+        error="boot_disc: cannot install the apploader return stubs";
+        return false;
+    }
+    hle_boot(0);
+    cpu_->state().gpr[1]=kApploaderStack;
+
+    constexpr u64 kBudget=2000000000ULL;
+    const u32 slots=kGuestReturn+0x10U,args=kGuestReturn+0x20U;
+    if(!call_guest(app->entry,{slots,slots+4U,slots+8U},kBudget,error)) return false;
+    u32 init=0,main_fn=0,close=0;
+    if (bus_.read32(loader::virtual_to_physical(slots),init) != mem::BusStatus::Ok ||
+        bus_.read32(loader::virtual_to_physical(slots+4U),main_fn) != mem::BusStatus::Ok ||
+        bus_.read32(loader::virtual_to_physical(slots+8U),close) != mem::BusStatus::Ok) {
+        error="boot_disc: apploader did not return valid entry points";
+        return false;
+    }
+    if(!call_guest(init,{kReportStub},kBudget,error)) return false;
+    for(int i=0;;++i) {
+        if(i>100000) { error="boot_disc: apploader main() never finished"; return false; }
+        const auto more=call_guest(main_fn,{args,args+4U,args+8U},kBudget,error);
+        if(!more) return false;
+        u32 dst=0,size=0,offset=0;
+        bus_.read32(loader::virtual_to_physical(args),dst);
+        bus_.read32(loader::virtual_to_physical(args+4U),size);
+        bus_.read32(loader::virtual_to_physical(args+8U),offset);
+        if(size!=0U) {
+            const u32 pa=loader::virtual_to_physical(dst);
+            std::vector<u8> chunk(size);
+            if(!bus_.is_ram(pa,size)) { error="boot_disc: apploader requested a read outside RAM"; return false; }
+            if(!boot_reader->read(offset,chunk)) {
+                error="boot_disc: apploader requested a read outside the logical disc/partition";
+                return false;
+            }
+            if (bus_.dma_write(pa,chunk) != mem::BusStatus::Ok) {
+                error="boot_disc: apploader data could not be copied into guest memory";
+                return false;
+            }
+            (void)bus_.write32(loader::virtual_to_physical(args+4U),0);
+        }
+        if(*more==0U) break;
+    }
+    const auto entry=call_guest(close,{},kBudget,error);
+    if(!entry) return false;
     hle_boot(*entry);
     return true;
 }

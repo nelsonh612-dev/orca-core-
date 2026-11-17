@@ -1,6 +1,11 @@
 // Disc images, MMIO page splitter, Disc Interface, and HLE disc boot through a
 // real apploader (compiled with clang) on synthetic GameCube discs.
 #include "orca/disc/disc_image.hpp"
+#include "orca/disc/fst.hpp"
+#include "orca/disc/wii_partition.hpp"
+#include "orca/disc/wii_ticket.hpp"
+#include "orca/disc/wii_partition_reader.hpp"
+#include "orca/crypto/sha1.hpp"
 #include "orca/hw/disc_interface.hpp"
 #include "orca/hw/mmio_splitter.hpp"
 #include "orca/system/system.hpp"
@@ -8,6 +13,8 @@
 #include "test_framework.hpp"
 #include "test_port.hpp"
 
+#include <algorithm>
+#include <array>
 #include <cstdio>
 #include <fstream>
 #include <iterator>
@@ -75,6 +82,302 @@ TEST_CASE(disc_header_and_apploader_parsing) {
     std::vector<u8> out(16);
     CHECK(d.read(0x1FFFF0, out));
     CHECK(!d.read(0x1FFFF1, out));
+}
+
+TEST_CASE(wii_partition_table_metadata_parsing) {
+    std::vector<u8> image(0x90000, 0);
+    put32(image, 0x18, disc::kWiiMagic);
+    // Group 0: one partition; the entry list is at 0x40040.
+    put32(image, 0x40000, 1);
+    put32(image, 0x40004, 0x10010);
+    // Partition entry: partition starts at 0x50000, type 0 (game).
+    put32(image, 0x40040, 0x14000);
+    put32(image, 0x40044, 0);
+    // Partition metadata: TMD/cert/H3/data offsets are relative to partition.
+    put32(image, 0x50000 + 0x2A4, 0x100);
+    put32(image, 0x50000 + 0x2A8, 0x100);
+    put32(image, 0x50000 + 0x2AC, 0x80);
+    put32(image, 0x50000 + 0x2B0, 0x200);
+    put32(image, 0x50000 + 0x2B4, 0x3000);
+    put32(image, 0x50000 + 0x2B8, 0x8000);
+    put32(image, 0x50000 + 0x2BC, 0x1000);
+    for (u32 i = 0; i < 8; ++i) image[0x50000 + 0x1DC + i] = static_cast<u8>(0xA0U + i);
+    image[0x50000 + 0x1F1] = 1;
+
+    disc::MemoryDisc disc_image(std::move(image));
+    std::string error;
+    const auto parsed = disc::parse_wii_partition_table(disc_image, error);
+    CHECK(parsed.has_value());
+    if (!parsed) return;
+    CHECK_EQ(parsed->partitions.size(), 1U);
+    const auto& part = parsed->partitions[0];
+    CHECK_EQ(part.offset, 0x50000U);
+    CHECK_EQ(part.type, 0U);
+    CHECK_EQ(part.tmd_offset, 0x50400U);
+    CHECK_EQ(part.tmd_size, 0x100U);
+    CHECK_EQ(part.cert_offset, 0x50800U);
+    CHECK_EQ(part.cert_size, 0x80U);
+    CHECK_EQ(part.h3_offset, 0x5C000U);
+    CHECK_EQ(part.data_offset, 0x70000U);
+    CHECK_EQ(part.data_size, 0x4000U);
+    CHECK_EQ(part.title_id[0], 0xA0U);
+    CHECK_EQ(part.title_id[7], 0xA7U);
+    CHECK_EQ(part.common_key_index, 1U);
+}
+
+
+TEST_CASE(wii_decrypted_partition_header_and_fst) {
+    std::vector<u8> image(0x1000,0);
+    put32(image,0x18,disc::kWiiMagic);
+    const char id[]="ORCAW1";
+    for(std::size_t i=0;i<6;++i) image[i]=static_cast<u8>(id[i]);
+    put32(image,0x420,0x300U/4U); // main DOL pointer is stored in words
+    put32(image,0x424,0x200U/4U); // FST pointer is stored in words
+    put32(image,0x428,12U);
+    put32(image,0x42C,12U);
+    // One-entry root directory FST.
+    image[0x200]=1U;
+    put32(image,0x208,1U);
+    disc::MemoryDisc partition(std::move(image));
+    std::string error;
+    const auto header=disc::parse_wii_partition_header(partition,error);
+    CHECK(header.has_value());
+    if(!header) return;
+    CHECK(header->wii && !header->gamecube);
+    CHECK_EQ(header->dol_offset,0x300U);
+    CHECK_EQ(header->fst_offset,0x200U);
+    const auto fst=disc::parse_fst(partition,*header,error);
+    CHECK(fst.has_value());
+    if(fst) {
+        CHECK_EQ(fst->size(),1U);
+        CHECK((*fst)[0].directory);
+        CHECK((*fst)[0].path=="/");
+    }
+}
+
+
+
+TEST_CASE(wii_common_key_file_provider_parses_user_supplied_slots_and_rejects_bad_input) {
+    disc::WiiCommonKeyFileProvider provider;
+    std::string error;
+    CHECK(provider.load_text("# user-owned keys\n0 = 000102030405060708090a0b0c0d0e0f\n  1=FFEEDDCCBBAA99887766554433221100  \n", error));
+    crypto::Aes128Key key{};
+    CHECK(provider.get_common_key(0, key));
+    CHECK_EQ(key[0], 0x00U);
+    CHECK_EQ(key[15], 0x0FU);
+    CHECK(provider.get_common_key(1, key));
+    CHECK_EQ(key[0], 0xFFU);
+    CHECK(!provider.get_common_key(2, key));
+    CHECK(!provider.load_text("0=1234\n", error));
+    CHECK(error.find("line 1") != std::string::npos);
+    CHECK(!provider.get_common_key(0, key)); // failed reload never leaves stale keys installed
+    CHECK(provider.load_text("255=00112233445566778899aabbccddeeff", error));
+    CHECK(provider.get_common_key(255, key));
+    CHECK_EQ(key[15], 0xFFU);
+    provider.clear();
+    CHECK(!provider.get_common_key(255, key));
+}
+
+TEST_CASE(wii_ticket_derives_title_key_with_external_common_key) {
+    disc::WiiCommonKeyFileProvider provider;
+    std::string error;
+    CHECK(provider.load_text("0=000102030405060708090A0B0C0D0E0F",error));
+    std::vector<u8> image(0x1000,0);
+    const std::array<u8,16> encrypted={
+        0x69,0xC4,0xE0,0xD8,0x6A,0x7B,0x04,0x30,
+        0xD8,0xCD,0xB7,0x80,0x70,0xB4,0xC5,0x5A
+    };
+    std::copy(encrypted.begin(),encrypted.end(),image.begin()+0x100+0x1BF);
+    image[0x100+0x1F1]=0;
+    disc::MemoryDisc raw(std::move(image));
+    disc::WiiPartitionInfo part;
+    part.offset=0x100;
+    crypto::Aes128Key title{};
+    CHECK(disc::derive_wii_title_key(raw,part,provider,title,error));
+    const crypto::Aes128Key expected={
+        0x00,0x11,0x22,0x33,0x44,0x55,0x66,0x77,
+        0x88,0x99,0xAA,0xBB,0xCC,0xDD,0xEE,0xFF
+    };
+    CHECK(title==expected);
+}
+
+
+
+TEST_CASE(wii_partition_reader_rejects_data_larger_than_h3_capacity) {
+    // H3 has 0x18000 bytes: 4915 SHA-1 entries, each authenticating
+    // 64 encrypted clusters. This oversized metadata must be rejected
+    // before attempting to allocate or read the claimed partition.
+    constexpr u64 h3_entries=0x18000U/20U;
+    constexpr u64 clusters=(h3_entries*64U)+1U;
+    disc::MemoryDisc raw(std::vector<u8>(0x1000U,0));
+    disc::WiiPartitionInfo part;
+    part.offset=0x100U;
+    part.h3_offset=0x400U;
+    part.data_offset=0x800U;
+    part.data_size=clusters*disc::kWiiClusterRawSize;
+    const crypto::Aes128Key key{};
+    disc::WiiPartitionReader reader(raw,part,key);
+    CHECK(!reader.valid());
+    CHECK(reader.error().find("H3 table's hash-group capacity")!=std::string::npos);
+}
+
+TEST_CASE(wii_partition_reader_decrypts_cluster_and_validates_h0_h1_h2_h3) {
+    constexpr u64 kTmdOffset=0x1000U;
+    constexpr u64 kH3Offset=0x4000U;
+    constexpr u64 kDataOffset=0x20000U;
+    constexpr u64 kClusters=64U;
+    constexpr u64 kRawCluster=0x8000U;
+    constexpr std::size_t kHashSize=0x400U;
+    constexpr std::size_t kPayloadSize=0x7C00U;
+    constexpr std::size_t kH0Size=0x26CU;
+    constexpr std::size_t kH1Offset=0x280U;
+    constexpr std::size_t kH1Size=0xA0U;
+    constexpr std::size_t kH2Offset=0x340U;
+    constexpr std::size_t kH2Size=0xA0U;
+    const crypto::Aes128Key title_key={
+        0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x07,
+        0x08,0x09,0x0A,0x0B,0x0C,0x0D,0x0E,0x0F
+    };
+    std::vector<std::array<u8,kHashSize>> headers(kClusters);
+    std::vector<std::array<u8,kPayloadSize>> plaintext(kClusters);
+    for(u64 cluster=0;cluster<kClusters;++cluster) {
+        auto& payload=plaintext[static_cast<std::size_t>(cluster)];
+        for(std::size_t i=0;i<payload.size();++i)
+            payload[i]=static_cast<u8>((cluster*13U+i*7U+3U)&0xFFU);
+        auto& header=headers[static_cast<std::size_t>(cluster)];
+        for(std::size_t sector=0;sector<31U;++sector) {
+            const auto digest=crypto::sha1(std::span<const u8>(
+                payload.data()+sector*0x400U,0x400U));
+            std::copy(digest.begin(),digest.end(),
+                      header.begin()+static_cast<std::ptrdiff_t>(sector*20U));
+        }
+    }
+    // H1 stores the SHA-1 of each cluster's H0 table within each group of 8.
+    for(u64 subgroup=0;subgroup<8U;++subgroup) {
+        for(u64 slot=0;slot<8U;++slot) {
+            const u64 cluster=subgroup*8U+slot;
+            const auto digest=crypto::sha1(std::span<const u8>(
+                headers[static_cast<std::size_t>(cluster)].data(),kH0Size));
+            for(u64 member=0;member<8U;++member) {
+                auto& h=headers[static_cast<std::size_t>(subgroup*8U+member)];
+                std::copy(digest.begin(),digest.end(),
+                          h.begin()+static_cast<std::ptrdiff_t>(kH1Offset+slot*20U));
+            }
+        }
+    }
+    // H2 stores the SHA-1 of each subgroup's H1 table in the 64-cluster group.
+    for(u64 subgroup=0;subgroup<8U;++subgroup) {
+        const auto& first=headers[static_cast<std::size_t>(subgroup*8U)];
+        const auto digest=crypto::sha1(std::span<const u8>(
+            first.data()+kH1Offset,kH1Size));
+        for(auto& h:headers)
+            std::copy(digest.begin(),digest.end(),
+                      h.begin()+static_cast<std::ptrdiff_t>(kH2Offset+subgroup*20U));
+    }
+    std::vector<u8> h3(0x18000U,0);
+    const auto h3_entry=crypto::sha1(std::span<const u8>(
+        headers[0].data()+kH2Offset,kH2Size));
+    std::copy(h3_entry.begin(),h3_entry.end(),h3.begin());
+
+    std::vector<u8> image(static_cast<std::size_t>(kDataOffset+kClusters*kRawCluster),0);
+    std::copy(h3.begin(),h3.end(),image.begin()+static_cast<std::ptrdiff_t>(kH3Offset));
+    const auto tmd_digest=crypto::sha1(std::span<const u8>(h3.data(),h3.size()));
+    image[static_cast<std::size_t>(kTmdOffset)+0x1DEU]=0;
+    image[static_cast<std::size_t>(kTmdOffset)+0x1DEU+1U]=1;
+    std::copy(tmd_digest.begin(),tmd_digest.end(),
+              image.begin()+static_cast<std::ptrdiff_t>(kTmdOffset+0x1E4U+0x10U));
+
+    for(u64 cluster=0;cluster<kClusters;++cluster) {
+        const u64 base=kDataOffset+cluster*kRawCluster;
+        auto& header=headers[static_cast<std::size_t>(cluster)];
+        crypto::Aes128Iv hash_iv{};
+        CHECK(crypto::aes128_cbc_encrypt(title_key,hash_iv,header));
+        std::copy(header.begin(),header.end(),
+                  image.begin()+static_cast<std::ptrdiff_t>(base));
+        if(cluster==0U) {
+            auto& payload=plaintext[0];
+            crypto::Aes128Iv data_iv{};
+            std::copy_n(header.begin()+0x3D0,data_iv.size(),data_iv.begin());
+            CHECK(crypto::aes128_cbc_encrypt(title_key,data_iv,payload));
+            std::copy(payload.begin(),payload.end(),
+                      image.begin()+static_cast<std::ptrdiff_t>(base+kHashSize));
+        }
+    }
+
+    disc::MemoryDisc raw(std::move(image));
+    disc::WiiPartitionInfo part;
+    part.offset=0x100U;
+    part.tmd_offset=kTmdOffset;
+    part.tmd_size=0x208U;
+    part.h3_offset=kH3Offset;
+    part.data_offset=kDataOffset;
+    part.data_size=kClusters*kRawCluster;
+    disc::WiiPartitionReader reader(raw,part,title_key);
+    CHECK(reader.valid());
+    std::array<u8,kPayloadSize> decoded{};
+    CHECK(reader.read(0,decoded));
+    // Restore the expected plaintext after it was encrypted for the fixture.
+    for(std::size_t i=0;i<decoded.size();++i)
+        CHECK_EQ(decoded[i],static_cast<u8>((i*7U+3U)&0xFFU));
+
+    // Repeated partial reads from the same cluster must return the identical
+    // decrypted bytes (the reader keeps a one-cluster plaintext cache).
+    std::array<u8,64> repeated{};
+    CHECK(reader.read(0x123U,repeated));
+    for(std::size_t i=0;i<repeated.size();++i)
+        CHECK_EQ(repeated[i],static_cast<u8>(((0x123U+i)*7U+3U)&0xFFU));
+}
+
+TEST_CASE(wii_partition_reader_validates_h3_table_against_tmd) {
+    std::vector<u8> image(0x28000,0);
+    constexpr u64 tmd_offset=0x1000;
+    constexpr u64 h3_offset=0x4000;
+    constexpr u64 data_offset=0x20000;
+    std::vector<u8> h3(0x18000,0);
+    const auto digest=crypto::sha1(std::span<const u8>(h3.data(),h3.size()));
+    std::copy(h3.begin(),h3.end(),image.begin()+static_cast<std::ptrdiff_t>(h3_offset));
+    const std::size_t count_offset=static_cast<std::size_t>(tmd_offset)+0x1DEU;
+    image[count_offset]=0;
+    image[count_offset+1U]=1;
+    const std::size_t hash_offset=static_cast<std::size_t>(tmd_offset)+0x1E4U+0x10U;
+    std::copy(digest.begin(),digest.end(),image.begin()+static_cast<std::ptrdiff_t>(hash_offset));
+    disc::MemoryDisc raw(std::move(image));
+    disc::WiiPartitionInfo part;
+    part.offset=0x100;
+    part.tmd_offset=tmd_offset;
+    part.tmd_size=0x208;
+    part.h3_offset=h3_offset;
+    part.data_offset=data_offset;
+    part.data_size=0x8000;
+    crypto::Aes128Key title_key{};
+    disc::WiiPartitionReader reader(raw,part,title_key);
+    CHECK(reader.valid());
+    CHECK_EQ(reader.size(),0x7C00U);
+}
+
+TEST_CASE(wii_partition_table_rejects_corrupt_ranges) {
+    std::vector<u8> image(0x90000, 0);
+    put32(image, 0x18, disc::kWiiMagic);
+    put32(image, 0x40000, 1);
+    put32(image, 0x40004, 0x10010);
+    put32(image, 0x40040, 0x14000);
+    put32(image, 0x50000 + 0x2B8, 0xFFFFFFF0U);
+    disc::MemoryDisc disc_image(std::move(image));
+    std::string error;
+    CHECK(!disc::parse_wii_partition_table(disc_image, error).has_value());
+    CHECK(error.find("out-of-range") != std::string::npos ||
+          error.find("extends past") != std::string::npos);
+}
+
+
+TEST_CASE(wii_boot_requires_external_common_key_provider) {
+    std::vector<u8> raw(0x50000,0);
+    put32(raw,0x18,disc::kWiiMagic);
+    system::System sys({system::Console::Wii});
+    sys.insert_disc(std::make_unique<disc::MemoryDisc>(std::move(raw)));
+    std::string error;
+    CHECK(!sys.boot_disc(error));
+    CHECK(error.find("user-supplied common-key provider")!=std::string::npos);
 }
 
 TEST_CASE(disc_rejections) {
@@ -173,6 +476,21 @@ TEST_CASE(di_dma_read_completes_asynchronously) {
     CHECK_EQ(t.pi.causes() & hw::pi::CAUSE_DI, 0U);
     t.w(0x00, hw::di::DISR_TCINT);         // write 1 to clear
     CHECK_EQ(t.r(0x00), 0U);
+}
+
+
+TEST_CASE(di_dma_reads_from_decrypted_partition_view) {
+    DiRig t;
+    std::vector<u8> logical(0x200000,0);
+    put32(logical,0x100000,0x57494921U);
+    disc::MemoryDisc view(std::move(logical));
+    t.di.set_read_view(&view);
+    t.read_cmd(0x4000,0x20,0x100000);
+    t.w(0x1C,3);
+    t.sched.advance_to(1);
+    u32 value=0;
+    CHECK(t.bus.read32(0x4000,value)==mem::BusStatus::Ok);
+    CHECK_EQ(value,0x57494921U);
 }
 
 TEST_CASE(di_interrupt_and_latency) {

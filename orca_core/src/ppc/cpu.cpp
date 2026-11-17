@@ -284,6 +284,20 @@ StepResult Cpu::run_jit(u64 budget, u64* completed, const u32* stop_pc) {
         }
 
         const std::size_t count = it->second->block.guest_instructions;
+        // A cached straight-line block may have been compiled by an earlier
+        // run with a larger budget. Never let it execute past a caller's
+        // stop_pc: stop exactly at the requested guest boundary, even when
+        // that boundary falls in the middle of an already cached block.
+        if (stop_pc != nullptr && *stop_pc > pc &&
+            static_cast<u64>(*stop_pc - pc) < static_cast<u64>(count) * 4U) {
+            const StepResult r = step();
+            if (r != StepResult::Executed && r != StepResult::ExceptionTaken) {
+                if (completed != nullptr) *completed = done;
+                return r;
+            }
+            ++done;
+            continue;
+        }
         bool mapping_valid = count != 0U && count <= budget - done;
         // A guest can rewrite segment/BAT/PTE mappings without writing the
         // translated code page. Revalidate every fetch translation before a
@@ -304,7 +318,20 @@ StepResult Cpu::run_jit(u64 budget, u64* completed, const u32* stop_pc) {
             ++done;
             continue;
         }
-        if (!it->second->executable.execute(state_)) {
+        // Native FPR blocks are valid only while MSR[FP] is enabled.
+        // Route through the reference step otherwise so the architectural
+        // FloatingPointUnavailable exception is delivered at the exact PC.
+        if ((it->second->block.requires_fp && (state_.msr & MSR_FP) == 0U) ||
+            (it->second->block.requires_paired && (state_.hid2 & HID2_PSE) == 0U)) {
+            const StepResult r = step();
+            if (r != StepResult::Executed && r != StepResult::ExceptionTaken) {
+                if (completed != nullptr) *completed = done;
+                return r;
+            }
+            ++done;
+            continue;
+        }
+        if (!it->second->executable.execute(state_, this)) {
             const StepResult r = step();
             if (r != StepResult::Executed && r != StepResult::ExceptionTaken) { if (completed != nullptr) *completed = done; return r; }
             ++done;

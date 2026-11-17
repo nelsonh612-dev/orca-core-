@@ -27,7 +27,11 @@ std::optional<std::vector<u8>> StandardController::transfer(const std::vector<u8
             return std::nullopt;
         }
         analog_mode = mode;
-        motor = out[2] & 3U;
+        const u8 next_motor = out[2] & 3U;
+        if (next_motor != motor) {
+            motor = next_motor;
+            if (rumble_sink_) rumble_sink_(motor);
+        }
         return status_bytes();
     }
     case 0x41: case 0x42: {

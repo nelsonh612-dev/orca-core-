@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <iterator>
 
 namespace orca::gpu::sw {
 namespace {
@@ -82,6 +83,7 @@ bool Renderer::draw(Primitive prim, std::span<const OutputVertex> v, const BpMem
                     const TevState& tev, const TexSource& tex, std::string& error) {
     bp_ = &bp; xf_ = &xf; tev_ = &tev; tex_ = &tex;
     err_.clear();
+    decoded_textures_.clear();
     const u32 fmt = bits(bp.reg(bp::ZCOMPARE), 0, 3);
     if (fmt > 3U) {
         char b[64];
@@ -161,12 +163,33 @@ bool Renderer::triangle(const Vtx& a, const Vtx& b, const Vtx& c) {
         }
         return true;
     }
-    std::vector<Vtx> V = {a, back ? c : b, back ? b : c};
-    std::vector<int> idx = {0, 1, 2};
+    // Triangle clipping is on the hot path: retain per-thread scratch
+    // capacity instead of allocating four small vectors for every primitive.
+    // The renderer is re-entrant only across threads; each thread owns its
+    // scratch buffers, and every draw starts by clearing them.
+    thread_local std::vector<Vtx> V;
+    thread_local std::vector<int> idx;
+    thread_local std::vector<int> clip_in;
+    thread_local std::vector<int> clip_out;
+    V.clear();
+    idx.clear();
+    clip_in.clear();
+    clip_out.clear();
+    V.reserve(12U);
+    idx.reserve(24U);
+    clip_in.reserve(12U);
+    clip_out.reserve(12U);
+    V.push_back(a);
+    V.push_back(back ? c : b);
+    V.push_back(back ? b : c);
+    idx = {0, 1, 2};
     const bool skip_clip = (xf.word(xf::CLIP_DISABLE) & 1U) != 0U && V[0].clip[3] >= 0 && V[1].clip[3] >= 0 && V[2].clip[3] >= 0;
     const int m = mask(V[0]) | mask(V[1]) | mask(V[2]);
     if (!skip_clip && m != 0) {
-        std::vector<int> in = {0, 1, 2}, out;
+        clip_in = {0, 1, 2};
+        clip_out.clear();
+        auto& in = clip_in;
+        auto& out = clip_out;
         auto lerp = [&](float t, int o, int i) {
             const Vtx& A = V[static_cast<std::size_t>(o)];
             const Vtx& B = V[static_cast<std::size_t>(i)];
@@ -891,22 +914,48 @@ bool Renderer::sample_mip(s32 s, s32 t, s32 mip, bool linear, u32 texmap, u8 out
     const std::size_t taddr = static_cast<std::size_t>(bits(tl, 0, 10)) << 9;
     const std::span<const u8> tlut = taddr < tex_->tmem.size() ? tex_->tmem.subspan(taddr) : std::span<const u8>{};
     const TlutFormat tf = static_cast<TlutFormat>(bits(tl, 10, 2));
+    std::string e;
     if (tex_format_paletted(f) && bits(tl, 10, 2) > 2U) { err_ = "invalid TLUT format 3"; return false; }
     const u32 ws = bits(m0, 0, 2), wt = bits(m0, 2, 2);
-    std::string e;
-    const std::size_t ar_base = static_cast<std::size_t>(bits(i1, 0, 15)) * 32U;
-    const std::size_t gb_base = static_cast<std::size_t>(bits(tex_reg(bp, texmap, 4), 0, 15)) * 32U;
-    auto fetch = [&](u32 x, u32 y, u8 o[4]) {
+    // Decode each texture mip once per draw. The old per-fragment path
+    // repeated tiled-format address calculations and palette/CMPR decoding
+    // for every sampled texel. BP/TMEM/source state is stable during a draw,
+    // so this cache is safely scoped to draw() and needs no global invalidation.
+    auto cached = std::find_if(decoded_textures_.begin(), decoded_textures_.end(),
+        [&](const DecodedTexture& entry) { return entry.map == texmap && entry.mip == mip; });
+    if (cached == decoded_textures_.end()) {
+        DecodedTexture entry;
+        entry.map = texmap;
+        entry.mip = mip;
+        entry.width = width;
+        entry.height = height;
+        entry.rgba.resize(static_cast<std::size_t>(width) * height * 4U);
         if (tmem_rgba8) {
+            const std::size_t ar_base = static_cast<std::size_t>(bits(i1, 0, 15)) * 32U;
+            const std::size_t gb_base = static_cast<std::size_t>(bits(tex_reg(bp, texmap, 4), 0, 15)) * 32U;
             const std::size_t blocks_w = (static_cast<std::size_t>(wm1) >> 2) + 1U;
-            const std::size_t blk = (static_cast<std::size_t>(y >> 2) * blocks_w + (x >> 2)) << 4;
-            const std::size_t off = (blk + ((y & 3U) << 2) + (x & 3U)) << 1;
             auto rd = [&](std::size_t a) { return a < tex_->tmem.size() ? tex_->tmem[a] : u8{0}; };
-            o[3] = rd(ar_base + off); o[0] = rd(ar_base + off + 1U);
-            o[1] = rd(gb_base + off); o[2] = rd(gb_base + off + 1U);
-            return true;
+            for (u32 y = 0; y < height; ++y) for (u32 x = 0; x < width; ++x) {
+                const std::size_t blk = (static_cast<std::size_t>(y >> 2U) * blocks_w + (x >> 2U)) << 4U;
+                const std::size_t off = (blk + ((y & 3U) << 2U) + (x & 3U)) << 1U;
+                const std::size_t dst = (static_cast<std::size_t>(y) * width + x) * 4U;
+                entry.rgba[dst + 3U] = rd(ar_base + off);
+                entry.rgba[dst + 0U] = rd(ar_base + off + 1U);
+                entry.rgba[dst + 1U] = rd(gb_base + off);
+                entry.rgba[dst + 2U] = rd(gb_base + off + 1U);
+            }
+        } else if (!decode_texture(f, src, width, height, tlut, tf, entry.rgba, e)) {
+            err_ = "texture: " + e;
+            return false;
         }
-        return decode_texel(f, src, x, y, width, tlut, tf, o, e);
+        decoded_textures_.push_back(std::move(entry));
+        cached = std::prev(decoded_textures_.end());
+    }
+    auto fetch = [&](u32 x, u32 y, u8 o[4]) {
+        if (x >= cached->width || y >= cached->height) return false;
+        const std::size_t off = (static_cast<std::size_t>(y) * cached->width + x) * 4U;
+        std::memcpy(o, cached->rgba.data() + off, 4U);
+        return true;
     };
     if (linear) {
         s -= 64; t -= 64;

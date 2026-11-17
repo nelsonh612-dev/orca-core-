@@ -1,6 +1,7 @@
 // Scheduler, Processor Interface, gather pipe, executable loaders, system run loop.
 #include "orca/core/scheduler.hpp"
 #include "orca/hw/processor_interface.hpp"
+#include "orca/hw/wii_remote.hpp"
 #include "orca/loader/executable.hpp"
 #include "orca/memory/console_maps.hpp"
 #include "orca/system/system.hpp"
@@ -266,6 +267,59 @@ TEST_CASE(timebase_follows_cpu_cycles) {
     CHECK(wii.bus().is_ram(mem::kMem2Base, mem::kMem2Size));
 }
 
+TEST_CASE(wii_hle_boot_maps_cached_mem2_for_code_and_data) {
+    system::System wii({system::Console::Wii, 0, 1});
+    // MEM2 physical data and code are reached through the cached 0x90000000
+    // alias installed by HLE boot. This exercises both IBAT and DBAT setup.
+    CHECK(wii.bus().write32(mem::kMem2Base, 0x12345678U) == mem::BusStatus::Ok);
+    code(wii, mem::kMem2Base + 0x1000U,
+         {A::addi(3, 0, 42), A::addis(4, 0, 0x9000), 0x80A40000U}); // lwz r5,0(r4)
+    wii.hle_boot(0x90001000U);
+    const auto result = wii.run(3U);
+    CHECK(result.stop == StepResult::Executed);
+    CHECK_EQ(result.instructions, 3U);
+    CHECK_EQ(wii.cpu().state().gpr[3], 42U);
+    CHECK_EQ(wii.cpu().state().gpr[4], 0x90000000U);
+    CHECK_EQ(wii.cpu().state().gpr[5], 0x12345678U);
+}
+
+TEST_CASE(wii_hle_boot_maps_uncached_mem2_data_alias) {
+    system::System wii({system::Console::Wii, 0, 1});
+    CHECK(wii.bus().write32(mem::kMem2Base + 0x20U, 0x89ABCDEFU) == mem::BusStatus::Ok);
+    // Execute from MEM1, then access physical MEM2 through Wii's 0xD0000000
+    // uncached alias installed by the dedicated DBAT3 mapping during HLE boot.
+    code(wii, 0x3000U, {A::addis(4U, 0U, 0xD000), 0x80A40020U}); // lwz r5,0x20(r4)
+    wii.hle_boot(0x80003000U);
+    const auto result = wii.run(2U);
+    CHECK(result.stop == StepResult::Executed);
+    CHECK_EQ(result.instructions, 2U);
+    CHECK_EQ(wii.cpu().state().gpr[4], 0xD0000000U);
+    CHECK_EQ(wii.cpu().state().gpr[5], 0x89ABCDEFU);
+}
+
+TEST_CASE(si_standard_controller_forwards_rumble_state_changes) {
+    hw::StandardController pad;
+    std::vector<u8> commands;
+    pad.set_rumble_sink([&](u8 command) { commands.push_back(command); });
+    std::string error;
+    const auto start = pad.transfer({0x40U, 3U, 1U}, error);
+    CHECK(start.has_value());
+    CHECK_EQ(pad.motor, 1U);
+    CHECK_EQ(commands.size(), 1U);
+    CHECK_EQ(commands[0], 1U);
+
+    // Repeating the same poll state must not generate redundant haptic events.
+    const auto repeated = pad.transfer({0x40U, 3U, 1U}, error);
+    CHECK(repeated.has_value());
+    CHECK_EQ(commands.size(), 1U);
+
+    const auto stop = pad.transfer({0x40U, 3U, 0U}, error);
+    CHECK(stop.has_value());
+    CHECK_EQ(pad.motor, 0U);
+    CHECK_EQ(commands.size(), 2U);
+    CHECK_EQ(commands[1], 0U);
+}
+
 TEST_CASE(decrementer_interrupt_through_system_loop) {
     system::System sys({});
     auto& s = sys.cpu().state();
@@ -323,6 +377,51 @@ TEST_CASE(cpu_access_to_pi_and_gather_pipe_through_mmu) {
 
 TEST_MAIN("system")
 
+TEST_CASE(wii_remote_decodes_core_buttons_and_accelerometer_report) {
+    hw::WiiRemoteState state{};
+    std::string error;
+    const std::array<u8,6> report{0x31,0x18,0x08,0x7F,0x81,0xA2};
+    CHECK(hw::decode_wii_remote_input_report(report,state,error));
+    CHECK_EQ(state.report_id,0x31U);
+    CHECK_EQ(state.buttons,0x1808U);
+    CHECK((state.buttons & hw::WiiRemoteButtons::PLUS)!=0U);
+    CHECK((state.buttons & hw::WiiRemoteButtons::UP)!=0U);
+    CHECK((state.buttons & hw::WiiRemoteButtons::A)!=0U);
+    CHECK((state.buttons & hw::WiiRemoteButtons::TWO)==0U);
+    CHECK(state.has_accelerometer);
+    CHECK_EQ(state.accelerometer[0],0x7FU);
+    CHECK_EQ(state.accelerometer[1],0x81U);
+    CHECK_EQ(state.accelerometer[2],0xA2U);
+    CHECK(state.extension_size==0U);
+}
+
+TEST_CASE(wii_remote_preserves_extension_bytes_from_combined_reports) {
+    hw::WiiRemoteState state{};
+    std::string error;
+    std::array<u8,22> report{};
+    report[0]=0x35; report[1]=0x02; report[2]=0x08;
+    for (std::size_t i=0;i<16U;++i) report[6U+i]=static_cast<u8>(i+1U);
+    CHECK(hw::decode_wii_remote_input_report(report,state,error));
+    CHECK_EQ(state.extension_size,16U);
+    CHECK_EQ(state.extension_data[0],1U);
+    CHECK_EQ(state.extension_data[15],16U);
+    CHECK_EQ(state.buttons,0x0208U);
+}
+
+TEST_CASE(wii_remote_rejects_unknown_and_truncated_reports_without_mutating_state) {
+    hw::WiiRemoteState state{};
+    state.buttons=0x1234U;
+    std::string error;
+    const std::array<u8,2> truncated{0x31,0xFF};
+    CHECK(!hw::decode_wii_remote_input_report(truncated,state,error));
+    CHECK(error.find("truncated")!=std::string::npos);
+    CHECK_EQ(state.buttons,0x1234U);
+    const std::array<u8,3> unknown{0x3F,0,0};
+    CHECK(!hw::decode_wii_remote_input_report(unknown,state,error));
+    CHECK(error.find("unsupported")!=std::string::npos);
+    CHECK_EQ(state.buttons,0x1234U);
+}
+
 TEST_CASE(system_exposes_frontend_controller_on_channel_zero) {
     system::System sys({});
     auto& pad = sys.controller();
@@ -338,4 +437,104 @@ TEST_CASE(system_exposes_frontend_controller_on_channel_zero) {
     CHECK_EQ((*reply)[1], static_cast<u8>(0x88U)); // UP
     CHECK_EQ((*reply)[2], static_cast<u8>(0x91U));
     CHECK_EQ((*reply)[3], static_cast<u8>(0x72U));
+}
+
+
+TEST_CASE(wii_remote_preserves_packed_ir_payload_for_camera_reports) {
+    hw::WiiRemoteState state{};
+    std::string error;
+    std::array<u8,18> basic_ir{};
+    basic_ir[0]=0x33;
+    for (std::size_t i=0;i<12U;++i) basic_ir[6U+i]=static_cast<u8>(0xA0U+i);
+    CHECK(hw::decode_wii_remote_input_report(basic_ir,state,error));
+    CHECK_EQ(state.ir_size,12U);
+    CHECK_EQ(state.ir_data[0],0xA0U);
+    CHECK_EQ(state.ir_data[11],0xABU);
+    CHECK_EQ(state.extension_size,0U);
+
+    std::array<u8,22> combined{};
+    combined[0]=0x37;
+    for (std::size_t i=0;i<10U;++i) combined[6U+i]=static_cast<u8>(0x30U+i);
+    for (std::size_t i=0;i<6U;++i) combined[16U+i]=static_cast<u8>(0x60U+i);
+    CHECK(hw::decode_wii_remote_input_report(combined,state,error));
+    CHECK_EQ(state.ir_size,10U);
+    CHECK_EQ(state.ir_data[0],0x30U);
+    CHECK_EQ(state.ir_data[9],0x39U);
+    CHECK_EQ(state.extension_size,6U);
+    CHECK_EQ(state.extension_data[0],0x60U);
+    CHECK_EQ(state.extension_data[5],0x65U);
+}
+
+
+TEST_CASE(wii_remote_builds_led_and_rumble_output_report) {
+    const auto report=hw::make_wii_remote_led_report(0x05U,true);
+    CHECK_EQ(report[0],0x11U);
+    CHECK_EQ(report[1],0x51U);
+    const auto off=hw::make_wii_remote_led_report(0x0AU,false);
+    CHECK_EQ(off[0],0x11U);
+    CHECK_EQ(off[1],0xA0U);
+}
+
+
+TEST_CASE(wii_remote_builds_report_mode_and_status_commands) {
+    const auto mode=hw::make_wii_remote_report_mode(0x37U,true,true);
+    CHECK_EQ(mode[0],0x12U);
+    CHECK_EQ(mode[1],0x05U); // continuous + rumble
+    CHECK_EQ(mode[2],0x37U);
+    const auto one_shot=hw::make_wii_remote_report_mode(0x30U,false,false);
+    CHECK_EQ(one_shot[1],0x00U);
+    CHECK_EQ(one_shot[2],0x30U);
+    const auto status=hw::make_wii_remote_status_request(true);
+    CHECK_EQ(status[0],0x15U);
+    CHECK_EQ(status[1],0x01U);
+}
+
+
+TEST_CASE(wii_remote_decodes_status_report_battery_leds_and_extension_flags) {
+    hw::WiiRemoteState state{};
+    std::string error;
+    const std::array<u8,7> report{0x20,0x01,0x08,0xA2,0x00,0x00,0x7F};
+    CHECK(hw::decode_wii_remote_input_report(report,state,error));
+    CHECK(state.has_status);
+    CHECK_EQ(state.buttons,0x0108U);
+    CHECK_EQ(state.led_mask,0x0AU);
+    CHECK_EQ(state.status_flags,0x02U);
+    CHECK_EQ(state.battery_level,0x7FU);
+    CHECK(!state.has_accelerometer);
+}
+
+
+TEST_CASE(wii_remote_decodes_output_report_acknowledgement) {
+    hw::WiiRemoteState state{};
+    std::string error;
+    const std::array<u8,5> report{0x22,0x00,0x08,0x12,0x00};
+    CHECK(hw::decode_wii_remote_input_report(report,state,error));
+    CHECK(state.has_acknowledgement);
+    CHECK_EQ(state.acknowledged_report_id,0x12U);
+    CHECK_EQ(state.acknowledgement_error,0x00U);
+    CHECK(!state.has_status);
+    CHECK(!state.has_accelerometer);
+}
+
+
+
+TEST_CASE(wii_remote_status_and_acknowledgement_survive_input_reports) {
+    hw::WiiRemoteState state{};
+    std::string error;
+    const std::array<u8,7> status{0x20,0x00,0x00,0xA2,0x00,0x00,0x70};
+    CHECK(hw::decode_wii_remote_input_report(status,state,error));
+    const std::array<u8,5> ack{0x22,0x00,0x00,0x12,0x00};
+    CHECK(hw::decode_wii_remote_input_report(ack,state,error));
+    CHECK(state.has_status);
+    CHECK_EQ(state.battery_level,0x70U);
+    CHECK(state.has_acknowledgement);
+    CHECK_EQ(state.acknowledged_report_id,0x12U);
+
+    const std::array<u8,3> buttons{0x30,0x18,0x08};
+    CHECK(hw::decode_wii_remote_input_report(buttons,state,error));
+    CHECK_EQ(state.buttons,0x1808U);
+    CHECK(state.has_status);
+    CHECK_EQ(state.led_mask,0x0AU);
+    CHECK(state.has_acknowledgement);
+    CHECK_EQ(state.acknowledgement_error,0U);
 }

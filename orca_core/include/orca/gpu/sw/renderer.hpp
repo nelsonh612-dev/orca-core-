@@ -123,6 +123,12 @@ public:
 
 private:
     using Vtx = ScreenVertex;
+    struct DecodedTexture {
+        u32 map{};
+        s32 mip{};
+        u32 width{}, height{};
+        std::vector<u8> rgba;
+    };
     TriangleSink* sink_{nullptr};
     bool triangle(const Vtx& a, const Vtx& b, const Vtx& c);
     bool line(Vtx a, Vtx b);
@@ -143,6 +149,7 @@ private:
     const TevState* tev_{nullptr};
     const TexSource* tex_{nullptr};
     std::string err_;
+    std::vector<DecodedTexture> decoded_textures_;
     u64 pixels_{0};
     // per-triangle setup
     s32 xoff_{0}, yoff_{0};

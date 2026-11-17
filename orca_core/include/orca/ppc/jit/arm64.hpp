@@ -9,13 +9,26 @@
 #include <span>
 #include <vector>
 
+namespace orca::ppc { class Cpu; }
+
 namespace orca::ppc::jit {
+
+// Stable entry ABI for generated blocks. The first field is deliberately the
+// architectural state pointer: generated instructions continue to address
+// CpuState through x0 after the small entry thunk loads it. The owning Cpu is
+// available for future checked memory/helper calls without changing the ABI.
+struct ExecutionContext {
+    CpuState* state{};
+    Cpu* cpu{};
+};
 
 struct Block {
     u32 start_pc{};
     u32 end_pc{};
     std::size_t guest_instructions{};
     std::vector<u32> host_words; // little-endian AArch64 instruction words
+    bool requires_fp{false};
+    bool requires_paired{false};
 };
 
 // Decode a maximal straight-line prefix. Does not execute guest code.
@@ -33,7 +46,7 @@ public:
     ExecutableBlock(ExecutableBlock&& other) noexcept;
     ExecutableBlock& operator=(ExecutableBlock&& other) noexcept;
     bool valid() const noexcept { return memory_ != nullptr; }
-    bool execute(CpuState& state) const noexcept;
+    bool execute(CpuState& state, Cpu* cpu = nullptr) const noexcept;
 private:
     void* memory_{nullptr};
     std::size_t allocation_size_{0};
@@ -41,6 +54,6 @@ private:
 
 // Convenience one-shot entry point, primarily for tests. CPU execution uses
 // ExecutableBlock so generated pages remain cached.
-bool execute_arm64(const Block& block, CpuState& state) noexcept;
+bool execute_arm64(const Block& block, CpuState& state, Cpu* cpu = nullptr) noexcept;
 
 } // namespace orca::ppc::jit

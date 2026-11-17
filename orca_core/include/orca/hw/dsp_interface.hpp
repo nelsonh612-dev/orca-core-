@@ -135,6 +135,7 @@ private:
     u64 aid_generation_{0}; // invalidates scheduled block events after a stop
     ::orca::dsp::DspCore core_{*this};
     bool slice_pending_{false};
+    u64 dsp_generation_{0}; // invalidates stale slices after DSP reset
     u16 csr_{dsp::CSR_HALT}, ar_size_{0}, ar_refresh_{156};
     u32 mmaddr_{0}, araddr_{0}, cnt_{0};
     u16 aidma_h_{0}, aidma_l_{0}, aidma_ctrl_{0};
