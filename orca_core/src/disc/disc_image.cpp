@@ -11,7 +11,11 @@ u32 be32(const u8* p) { return (u32{p[0]} << 24U) | (u32{p[1]} << 16U) | (u32{p[
 
 bool MemoryDisc::read(u64 offset, std::span<u8> out) {
     if (offset > data_.size() || out.size() > data_.size() - offset) return false;
-    std::memcpy(out.data(), data_.data() + offset, out.size());
+    // A zero-length read is valid at any position up to EOF. Avoid pointer
+    // arithmetic on data() when the backing vector is empty and avoid passing
+    // a potentially null span::data() to memcpy, even with a zero byte count.
+    if (out.empty()) return true;
+    std::memcpy(out.data(), data_.data() + static_cast<std::size_t>(offset), out.size());
     return true;
 }
 
