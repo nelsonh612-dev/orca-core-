@@ -6,6 +6,7 @@ namespace orca::hw {
 namespace {
 u8 minimum_size(u8 id) noexcept {
     switch (id) {
+    case 0x20: return 7;  // buttons + status flags/reserved + battery
     case 0x30: return 3;  // buttons
     case 0x31: return 6;  // buttons + accelerometer
     case 0x33: return 18; // buttons + accelerometer + IR
@@ -40,7 +41,13 @@ bool decode_wii_remote_input_report(std::span<const u8> report,
     WiiRemoteState next{};
     next.report_id=id;
     next.buttons=static_cast<u16>((static_cast<u16>(report[1])<<8U)|report[2]);
-    if (id!=0x30U) {
+    if (id==0x20U) {
+        next.has_status=true;
+        next.led_mask=static_cast<u8>((report[3]>>4U)&0x0FU);
+        next.status_flags=static_cast<u8>(report[3]&0x0FU);
+        next.battery_level=report[6];
+    }
+    if (id!=0x30U && id!=0x20U) {
         next.has_accelerometer=true;
         next.accelerometer={report[3],report[4],report[5]};
     }
