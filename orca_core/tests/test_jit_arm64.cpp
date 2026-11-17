@@ -532,7 +532,8 @@ TEST_CASE(jit_arm64_differential_unconditional_branch_and_link_matches_interpret
 #endif
 
 TEST_CASE(jit_arm64_unsupported_first_instruction_produces_no_executable_block) {
-    const std::array<u32, 1> code{A::bclr(20, 0)};
+    // bcctr with BO[2] clear is architecturally invalid and must stay in fallback.
+    const std::array<u32, 1> code{A::bcctr(0, 0)};
     const Block b = compile_arm64(code, 0x1000U);
     CHECK_EQ(b.guest_instructions, 0U);
     CHECK(b.host_words.empty());
