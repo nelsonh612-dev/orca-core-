@@ -744,3 +744,19 @@ TEST_CASE(jit_dispatcher_fallback_preserves_unmapped_load_fault_and_retirement) 
              reference.cpu->instructions_retired());
     CHECK_EQ(candidate.cpu->last_stop().address, 0x0C000000U);
 }
+
+
+TEST_CASE(jit_arm64_translates_negate_without_overflow_enable) {
+    const u32 neg = (31U << 26U) | (3U << 21U) | (4U << 16U) | (104U << 1U);
+    const u32 neg_record = neg | 1U;
+    const std::array<u32,2> code{neg,neg_record};
+    const Block block=compile_arm64(code,0x1000U);
+    CHECK_EQ(block.guest_instructions,2U);
+    CHECK_EQ(block.end_pc,0x1008U);
+    CHECK_EQ(block.host_words.back(),0xD65F03C0U);
+    const u32 overflow_enabled = neg | 0x400U;
+    const std::array<u32,1> unsupported{overflow_enabled};
+    const Block fallback=compile_arm64(unsupported,0x1000U);
+    CHECK_EQ(fallback.guest_instructions,0U);
+    CHECK(fallback.host_words.empty());
+}
