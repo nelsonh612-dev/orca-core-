@@ -949,7 +949,6 @@ Block compile_arm64(std::span<const u32> words, u32 start_pc) {
 
         const unsigned guest_op = ins >> 26U;
         if (guest_op == 46U || guest_op == 47U) { // lmw/stmw
-            if (b.guest_instructions != 0U) break; // memory op starts its own guarded block
             const unsigned rt = (ins >> 21U) & 31U;
             const unsigned ra = (ins >> 16U) & 31U;
             const bool is_load = guest_op == 46U;
@@ -962,6 +961,8 @@ Block compile_arm64(std::span<const u32> words, u32 start_pc) {
             else b.host_words.push_back(ldr_w(9, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + ra * 4U)));
             load_imm(b.host_words, 10, static_cast<u32>(static_cast<s32>(static_cast<s16>(ins & 0xFFFFU))));
             b.host_words.push_back(add_w(20, 9, 10));
+            load_imm(b.host_words, 9, b.end_pc); // precise fallback PC: memory instruction
+            b.host_words.push_back(str_w(9, 0, static_cast<unsigned>(offsetof(CpuState, pc))));
             b.host_words.push_back(orr_x(16, 2, 31U));
             b.host_words.push_back(orr_w(2, 20, 31U));
             load_imm(b.host_words, 3, size);
@@ -992,6 +993,7 @@ Block compile_arm64(std::span<const u32> words, u32 start_pc) {
             b.host_words.push_back(ldr_x(30, 31U, 8U));
             b.host_words.push_back(add_sp_32());
             b.has_guarded_memory = true;
+            b.guarded_memory_prefix = b.guest_instructions;
             ++b.guest_instructions;
             b.end_pc += 4U;
             control_flow_exit = true;
@@ -999,7 +1001,6 @@ Block compile_arm64(std::span<const u32> words, u32 start_pc) {
         }
 
         if (guest_op >= 32U && guest_op <= 45U) {
-            if (b.guest_instructions != 0U) break; // avoid replaying earlier ops on resolver fallback
             const unsigned rt = (ins >> 21U) & 31U;
             const unsigned ra = (ins >> 16U) & 31U;
             const bool update = (guest_op & 1U) != 0U;
@@ -1023,6 +1024,8 @@ Block compile_arm64(std::span<const u32> words, u32 start_pc) {
             else b.host_words.push_back(ldr_w(9, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + ra * 4U)));
             load_imm(b.host_words, 10, static_cast<u32>(static_cast<s32>(static_cast<s16>(ins & 0xFFFFU))));
             b.host_words.push_back(add_w(20, 9, 10)); // effective address
+            load_imm(b.host_words, 9, b.end_pc);
+            b.host_words.push_back(str_w(9, 0, static_cast<unsigned>(offsetof(CpuState, pc))));
             b.host_words.push_back(orr_x(16, 2, 31U)); // resolver callback from ABI arg 3
             b.host_words.push_back(orr_w(2, 20, 31U)); // w2 = effective address
             load_imm(b.host_words, 3, size);
@@ -1076,7 +1079,6 @@ Block compile_arm64(std::span<const u32> words, u32 start_pc) {
             const bool is_store = xo == 151U || xo == 183U || xo == 215U || xo == 247U ||
                                   xo == 407U || xo == 439U || xo == 662U || xo == 918U;
             if (is_load || is_store) {
-                if (b.guest_instructions != 0U) break; // memory op starts its own guarded block
                 const unsigned rt = (ins >> 21U) & 31U;
                 const unsigned ra = (ins >> 16U) & 31U;
                 const unsigned rb = (ins >> 11U) & 31U;
@@ -1098,6 +1100,8 @@ Block compile_arm64(std::span<const u32> words, u32 start_pc) {
                 else b.host_words.push_back(ldr_w(9, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + ra * 4U)));
                 b.host_words.push_back(ldr_w(10, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + rb * 4U)));
                 b.host_words.push_back(add_w(20, 9, 10));
+                load_imm(b.host_words, 9, b.end_pc);
+                b.host_words.push_back(str_w(9, 0, static_cast<unsigned>(offsetof(CpuState, pc))));
                 b.host_words.push_back(orr_x(16, 2, 31U));
                 b.host_words.push_back(orr_w(2, 20, 31U));
                 load_imm(b.host_words, 3, size);
@@ -1137,6 +1141,7 @@ Block compile_arm64(std::span<const u32> words, u32 start_pc) {
                 b.host_words.push_back(ldr_x(30, 31U, 8U));
                 b.host_words.push_back(add_sp_32());
                 b.has_guarded_memory = true;
+                b.guarded_memory_prefix = b.guest_instructions;
                 ++b.guest_instructions;
                 b.end_pc += 4U;
                 control_flow_exit = true;
