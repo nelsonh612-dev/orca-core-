@@ -49,3 +49,36 @@ M026 conecta el dispatcher `Cpu::run_jit()` al bucle `System::run()` en compilac
 En hosts no AArch64, `run_jit()` conserva la semántica del intérprete y reporta el número de instrucciones completadas; la ruta de `System::run()` sigue siendo el paso individual de referencia. El traductor nativo continúa limitado a operaciones enteras soportadas y bloques lineales: las ramas y las operaciones de memoria/FPU/paired-single no se traducen todavía.
 
 **Verificación pendiente:** los tests host pueden comprobar la semántica de fallback y los límites de parada, pero no ejecutan bytes AArch64. El workflow M026 compila el núcleo con GCC/Clang y genera un APK ARM64; una compilación exitosa no sustituye una prueba diferencial en un dispositivo ARM64. No se afirman aún mejoras de FPS ni compatibilidad con juegos comerciales.
+
+
+## M030–M032 — ampliación de enteros y validación pendiente
+
+Los hitos M030–M032 amplían el subconjunto nativo sin cambiar el fallback arquitectónico:
+
+- Lógicas inmediatas andi. / andis. con actualización de CR0.
+- Formas X and, andc, nor, eqv, xor, orc, or y nand, incluidas las formas Rc=1.
+- Rotación y máscaras rlwinm, rlwimi y rlwnm; las formas con Rc=1 actualizan CR0.
+- Desplazamientos lógicos slw / srw, respetando el campo de seis bits del contador PPC.
+- cntlzw, extsb y extsh.
+
+Se añadieron pruebas de traducción para estas formas y pruebas diferenciales condicionadas a AArch64 que comparan el estado completo con el intérprete de referencia. Estas pruebas nuevas aún necesitan ejecutarse en CI/QEMU ARM64; la presencia de los tests no equivale a un resultado aprobado.
+
+Se mantienen deliberadamente en fallback las formas que aún no tienen semántica completa en el emisor, entre ellas sraw / srawi (XER[CA]), operaciones con overflow habilitado, saltos, accesos de memoria, FPU y paired-single.
+
+### Estado real después de M032
+
+| Área | Estado |
+|---|---|
+| Emisión de código ARM64 y política W^X | Implementada |
+| Dispatcher, caché, invalidación y fallback | Integrados; validación de plataforma pendiente |
+| Integración con el scheduler | Integrada en M026; validar temporización en hardware |
+| Aritmética y lógica entera | Parcial, ampliada en M030 |
+| Rotaciones, máscaras y desplazamientos lógicos | Ampliados en M031/M032 |
+| CR0 y XER | Parcial; no se traducen todas las formas que afectan flags |
+| Saltos y flujo de control nativo | Pendiente |
+| Load/store, MMU y excepciones desde bloques nativos | Pendiente; fallback actual |
+| FPU y paired-single | Pendiente; fallback actual |
+| Pruebas diferenciales ejecutadas en ARM64 | Pendiente de resultado CI/dispositivo |
+| Benchmarks frente al intérprete | Pendiente |
+
+No se declara completo el JIT ni se atribuyen mejoras de rendimiento hasta que las rutas nativas y sus efectos laterales superen las pruebas diferenciales y de rendimiento en ARM64.
