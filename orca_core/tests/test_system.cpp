@@ -380,10 +380,10 @@ TEST_MAIN("system")
 TEST_CASE(wii_remote_decodes_core_buttons_and_accelerometer_report) {
     hw::WiiRemoteState state{};
     std::string error;
-    const std::array<u8,6> report{0x31,0x10,0x88,0x7F,0x81,0xA2};
+    const std::array<u8,6> report{0x31,0x11,0x04,0x7F,0x81,0xA2};
     CHECK(hw::decode_wii_remote_input_report(report,state,error));
     CHECK_EQ(state.report_id,0x31U);
-    CHECK_EQ(state.buttons,0x1088U);
+    CHECK_EQ(state.buttons,0x1104U);
     CHECK((state.buttons & hw::WiiRemoteButtons::PLUS)!=0U);
     CHECK((state.buttons & hw::WiiRemoteButtons::UP)!=0U);
     CHECK((state.buttons & hw::WiiRemoteButtons::A)!=0U);
