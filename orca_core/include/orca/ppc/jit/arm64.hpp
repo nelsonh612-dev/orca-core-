@@ -16,6 +16,7 @@ struct Block {
     u32 end_pc{};
     std::size_t guest_instructions{};
     bool requires_fp{false};
+    bool requires_paired{false};
     std::vector<u32> host_words; // little-endian AArch64 instruction words
 };
 
