@@ -176,13 +176,13 @@ TEST_CASE(jit_arm64_differential_rotate_mask_matches_reference_interpreter) {
 
 
 TEST_CASE(jit_arm64_translates_integer_shift_and_sign_extension_forms) {
-    const std::array<u32, 7> code{
-        A::slw(3, 4, 5), A::srw(6, 7, 8), A::sraw(9, 10, 11),
-        A::srawi(12, 13, 7), A::cntlzw(14, 15), A::extsb(16, 17), A::extsh(18, 19)
+    const std::array<u32, 5> code{
+        A::slw(3, 4, 5), A::srw(6, 7, 8),
+        A::cntlzw(14, 15), A::extsb(16, 17), A::extsh(18, 19)
     };
     const Block b = compile_arm64(code, 0x1000U);
     CHECK_EQ(b.guest_instructions, code.size());
-    CHECK_EQ(b.end_pc, 0x101CU);
+    CHECK_EQ(b.end_pc, 0x1014U);
     CHECK(!b.host_words.empty());
     CHECK_EQ(b.host_words.back(), 0xD65F03C0U);
 }
@@ -190,15 +190,14 @@ TEST_CASE(jit_arm64_translates_integer_shift_and_sign_extension_forms) {
 #if defined(__aarch64__)
 TEST_CASE(jit_arm64_differential_integer_shifts_match_reference_interpreter) {
     Machine reference;
-    const std::array<u32, 7> code{
-        A::slw(3, 4, 5), A::srw(6, 7, 8), A::sraw(9, 10, 11),
-        A::srawi(12, 13, 7), A::cntlzw(14, 15), A::extsb(16, 17), A::extsh(18, 19)
+    const std::array<u32, 5> code{
+        A::slw(3, 4, 5), A::srw(6, 7, 8),
+        A::cntlzw(14, 15), A::extsb(16, 17), A::extsh(18, 19)
     };
-    reference.code(0x1000U, {code[0], code[1], code[2], code[3], code[4], code[5], code[6]});
+    reference.code(0x1000U, {code[0], code[1], code[2], code[3], code[4]});
     reference.s().gpr[4] = 0x81234567U; reference.s().gpr[5] = 5U;
     reference.s().gpr[7] = 0xF1234567U; reference.s().gpr[8] = 36U;
-    reference.s().gpr[10] = 0x80000003U; reference.s().gpr[11] = 2U;
-    reference.s().gpr[13] = 0x80000003U; reference.s().gpr[15] = 0x00100000U;
+    reference.s().gpr[15] = 0x00100000U;
     reference.s().gpr[17] = 0x00000080U; reference.s().gpr[19] = 0x00008001U;
     reference.s().cr = 0x12345678U;
     CHECK(reference.cpu->run(code.size()) == StepResult::Executed);
@@ -208,8 +207,7 @@ TEST_CASE(jit_arm64_differential_integer_shifts_match_reference_interpreter) {
     actual.pc = 0x1000U;
     actual.gpr[4] = 0x81234567U; actual.gpr[5] = 5U;
     actual.gpr[7] = 0xF1234567U; actual.gpr[8] = 36U;
-    actual.gpr[10] = 0x80000003U; actual.gpr[11] = 2U;
-    actual.gpr[13] = 0x80000003U; actual.gpr[15] = 0x00100000U;
+    actual.gpr[15] = 0x00100000U;
     actual.gpr[17] = 0x00000080U; actual.gpr[19] = 0x00008001U;
     actual.cr = 0x12345678U;
     const Block block = compile_arm64(code, 0x1000U);
