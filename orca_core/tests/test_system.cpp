@@ -437,3 +437,29 @@ TEST_CASE(system_exposes_frontend_controller_on_channel_zero) {
     CHECK_EQ((*reply)[2], static_cast<u8>(0x91U));
     CHECK_EQ((*reply)[3], static_cast<u8>(0x72U));
 }
+
+
+TEST_CASE(wii_remote_preserves_packed_ir_payload_for_camera_reports) {
+    hw::WiiRemoteState state{};
+    std::string error;
+    std::array<u8,18> basic_ir{};
+    basic_ir[0]=0x33;
+    for (std::size_t i=0;i<12U;++i) basic_ir[6U+i]=static_cast<u8>(0xA0U+i);
+    CHECK(hw::decode_wii_remote_input_report(basic_ir,state,error));
+    CHECK_EQ(state.ir_size,12U);
+    CHECK_EQ(state.ir_data[0],0xA0U);
+    CHECK_EQ(state.ir_data[11],0xABU);
+    CHECK_EQ(state.extension_size,0U);
+
+    std::array<u8,22> combined{};
+    combined[0]=0x37;
+    for (std::size_t i=0;i<10U;++i) combined[6U+i]=static_cast<u8>(0x30U+i);
+    for (std::size_t i=0;i<6U;++i) combined[16U+i]=static_cast<u8>(0x60U+i);
+    CHECK(hw::decode_wii_remote_input_report(combined,state,error));
+    CHECK_EQ(state.ir_size,10U);
+    CHECK_EQ(state.ir_data[0],0x30U);
+    CHECK_EQ(state.ir_data[9],0x39U);
+    CHECK_EQ(state.extension_size,6U);
+    CHECK_EQ(state.extension_data[0],0x60U);
+    CHECK_EQ(state.extension_data[5],0x65U);
+}
