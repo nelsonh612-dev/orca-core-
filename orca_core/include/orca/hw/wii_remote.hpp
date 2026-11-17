@@ -26,6 +26,9 @@ struct WiiRemoteState {
     u8 status_flags{}; // low nibble: flat battery, extension, speaker, IR
     u8 led_mask{};     // bits 0..3 correspond to LEDs 1..4
     u8 battery_level{};
+    bool has_acknowledgement{};
+    u8 acknowledged_report_id{};
+    u8 acknowledgement_error{};
 };
 // report includes its report ID as byte zero, as delivered by Android HID.
 // Build the 0x11 LED/rumble output report. led_mask bit 0..3 selects LEDs 1..4.
