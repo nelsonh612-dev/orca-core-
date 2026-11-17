@@ -106,6 +106,11 @@ private:
     bool phys_read(u32 pa, unsigned size, u64& value);
     bool phys_write(u32 pa, unsigned size, u64 value);
     Outcome translate_data(u32 ea, u32 size, bool write, u32& pa_lo, u32& pa_hi, u32& split, u8& wimg);
+    // Fast path resolver used only for contiguous ordinary RAM. Any MMU,
+    // MMIO, locked-cache, page-crossing or protection case returns null and
+    // the dispatcher retries the instruction through step()/the Bus.
+    static void* jit_memory_resolver(CpuState* state, void* context, u32 ea, u32 size, u32 write);
+    void* resolve_jit_ram(u32 ea, u32 size, bool write);
 
     // Instruction groups
     Outcome op_load_store_d(u32 ins, unsigned op);
@@ -159,6 +164,9 @@ private:
     struct JitBlockEntry;
     std::unordered_map<u32, std::unique_ptr<JitBlockEntry>> jit_blocks_;
     std::unordered_set<u32> jit_code_pages_;
+    bool jit_pending_write_{false};
+    u32 jit_pending_write_address_{0};
+    u32 jit_pending_write_size_{0};
 };
 
 } // namespace orca::ppc
