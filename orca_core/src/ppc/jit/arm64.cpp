@@ -671,13 +671,14 @@ bool translate_one(u32 ins, u32 guest_pc, std::vector<u32>& out, bool& terminate
             return true;
         }
         if(xo10==28U || xo10==444U || xo10==316U || xo10==60U ||
-           xo10==476U || xo10==124U || xo10==284U) {
+           xo10==412U || xo10==476U || xo10==124U || xo10==284U) {
             out.push_back(ldr_w(9,0,static_cast<unsigned>(offsetof(CpuState,gpr)+rt*4U)));
             out.push_back(ldr_w(10,0,static_cast<unsigned>(offsetof(CpuState,gpr)+rb*4U)));
             if(xo10==28U) out.push_back(and_w(11,9,10));
             else if(xo10==444U) out.push_back(orr_w(11,9,10));
             else if(xo10==316U) out.push_back(eor_w(11,9,10));
             else if(xo10==60U) { out.push_back(mvn_w(10,10)); out.push_back(and_w(11,9,10)); }
+            else if(xo10==412U) { out.push_back(mvn_w(10,10)); out.push_back(orr_w(11,9,10)); }
             else if(xo10==476U) { out.push_back(and_w(11,9,10)); out.push_back(mvn_w(11,11)); }
             else if(xo10==124U) { out.push_back(orr_w(11,9,10)); out.push_back(mvn_w(11,11)); }
             else { out.push_back(eor_w(11,9,10)); out.push_back(mvn_w(11,11)); }
