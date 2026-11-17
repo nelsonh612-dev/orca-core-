@@ -38,7 +38,6 @@ constexpr u32 subs_w(unsigned rd, unsigned rn, unsigned rm) { return 0x6B000000U
 constexpr u32 mrs_nzcv_x(unsigned rt) { return 0xD53B4200U | rt; }
 constexpr u32 msr_nzcv_x(unsigned rt) { return 0xD51B4200U | rt; }
 constexpr u32 adcs_w(unsigned rd, unsigned rn, unsigned rm) { return 0x3A000000U | (rm << 16U) | (rn << 5U) | rd; }
-constexpr u32 sbcs_w(unsigned rd, unsigned rn, unsigned rm) { return 0x7A000000U | (rm << 16U) | (rn << 5U) | rd; }
 constexpr u32 ubfx_w(unsigned rd, unsigned rn, unsigned lsb, unsigned width) {
     return 0x53000000U | (lsb << 16U) | ((lsb + width - 1U) << 10U) | (rn << 5U) | rd;
 }
