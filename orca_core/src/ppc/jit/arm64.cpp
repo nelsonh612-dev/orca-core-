@@ -35,17 +35,6 @@ void load_imm64(std::vector<u32>& out,unsigned reg,u64 value) {
         if(part!=0U) out.push_back(movk_x(reg,part,shift));
     }
 }
-void emit_cr1(std::vector<u32>& out) {
-    out.push_back(ldr_w(9,0,static_cast<unsigned>(offsetof(CpuState,fpscr))));
-    out.push_back(ubfx_w(11,9,28U,4U));
-    out.push_back(lsl_w(11,11,24U));
-    out.push_back(ldr_w(10,0,static_cast<unsigned>(offsetof(CpuState,cr))));
-    load_imm(out,12,~0x0F000000U);
-    out.push_back(and_w(10,10,12));
-    out.push_back(orr_w(10,10,11));
-    out.push_back(str_w(10,0,static_cast<unsigned>(offsetof(CpuState,cr))));
-}
-
 constexpr u32 ldr_w(unsigned rt, unsigned rn, unsigned byte_offset) {
     return 0xB9400000U | ((byte_offset / 4U) << 10U) | (rn << 5U) | rt;
 }
@@ -130,6 +119,17 @@ void emit_xer_overflow_bool(std::vector<u32>& out,unsigned overflow_reg) {
     out.push_back(orr_w(9,9,13));
     out.push_back(orr_w(9,9,14));
     out.push_back(str_w(9,0,static_cast<unsigned>(offsetof(CpuState,xer))));
+}
+
+void emit_cr1(std::vector<u32>& out) {
+    out.push_back(ldr_w(9,0,static_cast<unsigned>(offsetof(CpuState,fpscr))));
+    out.push_back(ubfx_w(11,9,28U,4U));
+    out.push_back(lsl_w(11,11,24U));
+    out.push_back(ldr_w(10,0,static_cast<unsigned>(offsetof(CpuState,cr))));
+    load_imm(out,12,~0x0F000000U);
+    out.push_back(and_w(10,10,12));
+    out.push_back(orr_w(10,10,11));
+    out.push_back(str_w(10,0,static_cast<unsigned>(offsetof(CpuState,cr))));
 }
 
 void emit_cr0(std::vector<u32>& out,unsigned result_reg) {
