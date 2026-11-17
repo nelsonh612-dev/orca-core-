@@ -84,6 +84,34 @@ TEST_CASE(jit_arm64_translates_addic_record_form_and_builds_cr0) {
     CHECK(has_word(0x5303098CU)); // LSL w12, w12, #29
 }
 
+TEST_CASE(jit_arm64_translates_overflow_enabled_division) {
+    const std::array<u32,2> code{A::divw(3U,4U,5U,true),A::divwu(6U,7U,8U,true)};
+    const Block block=compile_arm64(code,0x1000U);
+    CHECK_EQ(block.guest_instructions,2U);
+}
+
+#if defined(__aarch64__)
+TEST_CASE(jit_arm64_executes_overflow_enabled_division_and_xer_sticky_bits) {
+    Machine reference;
+    Machine candidate;
+    const std::array<u32,2> code{A::divw(3U,4U,5U,true),A::divwu(6U,7U,8U,true)};
+    reference.code(0x1000U,{code[0],code[1]});
+    candidate.code(0x1000U,{code[0],code[1]});
+    reference.s().gpr[4]=21U; candidate.s().gpr[4]=21U;
+    reference.s().gpr[5]=3U; candidate.s().gpr[5]=3U;
+    reference.s().gpr[7]=0xFFFFFFFFU; candidate.s().gpr[7]=0xFFFFFFFFU;
+    reference.s().gpr[8]=0U; candidate.s().gpr[8]=0U;
+    reference.s().xer=XER_SO|XER_OV; candidate.s().xer=XER_SO|XER_OV;
+    CHECK(reference.cpu->run(code.size())==StepResult::Executed);
+    CHECK(candidate.cpu->run_jit(code.size())==StepResult::Executed);
+    CHECK(candidate.s()==reference.s());
+    CHECK_EQ(candidate.s().gpr[3],7U);
+    CHECK_EQ(candidate.s().gpr[6],0U);
+    CHECK((candidate.s().xer&XER_OV)!=0U);
+    CHECK((candidate.s().xer&XER_SO)!=0U);
+}
+#endif
+
 TEST_CASE(jit_arm64_translates_overflow_enabled_add_subf_and_neg) {
     const std::array<u32,4> code{
         A::add(3U,4U,5U,true), A::subf(6U,7U,8U,true),
