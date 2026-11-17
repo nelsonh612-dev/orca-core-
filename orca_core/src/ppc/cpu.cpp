@@ -388,6 +388,7 @@ void* Cpu::resolve_jit_ram(u32 ea, u32 size, bool write) {
     if (!translated.ok() || split != size || (wimg & (WIMG_W | WIMG_I)) != 0U) return nullptr;
     u8* const pointer = bus_.ram_pointer(pa_lo, size);
     if (pointer == nullptr) return nullptr;
+    ++jit_memory_fastpath_hits_;
     if (write) {
         jit_pending_write_ = true;
         jit_pending_write_address_ = pa_lo;
