@@ -473,3 +473,17 @@ TEST_CASE(wii_remote_builds_led_and_rumble_output_report) {
     CHECK_EQ(off[0],0x11U);
     CHECK_EQ(off[1],0xA0U);
 }
+
+
+TEST_CASE(wii_remote_builds_report_mode_and_status_commands) {
+    const auto mode=hw::make_wii_remote_report_mode(0x37U,true,true);
+    CHECK_EQ(mode[0],0x12U);
+    CHECK_EQ(mode[1],0x05U); // continuous + rumble
+    CHECK_EQ(mode[2],0x37U);
+    const auto one_shot=hw::make_wii_remote_report_mode(0x30U,false,false);
+    CHECK_EQ(one_shot[1],0x00U);
+    CHECK_EQ(one_shot[2],0x30U);
+    const auto status=hw::make_wii_remote_status_request(true);
+    CHECK_EQ(status[0],0x15U);
+    CHECK_EQ(status[1],0x01U);
+}
