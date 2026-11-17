@@ -15,6 +15,11 @@ u8 minimum_size(u8 id) noexcept {
     }
 }
 }
+std::array<u8,2> make_wii_remote_led_report(u8 led_mask, bool rumble) noexcept {
+    const u8 status=static_cast<u8>(((led_mask&0x0FU)<<4U)|(rumble?1U:0U));
+    return {0x11U,status};
+}
+
 bool decode_wii_remote_input_report(std::span<const u8> report,
                                     WiiRemoteState& state,
                                     std::string& error) noexcept {
