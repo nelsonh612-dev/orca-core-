@@ -119,6 +119,20 @@ TEST_CASE(file_disc_reads_ranges) {
     CHECK(!d->read(0x1FFFFE, w));
     CHECK(d->read(0, w)); // still usable after a failed read
     CHECK_EQ(w[0], static_cast<u8>('O'));
+    std::span<u8> empty;
+    CHECK(d->read(d->size(), empty)); // zero bytes at EOF must not touch the stream
+    CHECK(!d->read(d->size() + 1U, empty));
+
+    const char* empty_path = "orca_test_empty_disc.gcm";
+    { std::ofstream f(empty_path, std::ios::binary); }
+    auto empty_disc = disc::FileDisc::open(empty_path, err);
+    CHECK(empty_disc != nullptr);
+    if (empty_disc) {
+        CHECK_EQ(empty_disc->size(), 0U);
+        CHECK(empty_disc->read(0, empty));
+        CHECK(!empty_disc->read(1, empty));
+    }
+    std::remove(empty_path);
     CHECK(disc::FileDisc::open("/nonexistent/disc.iso", err) == nullptr);
 }
 
