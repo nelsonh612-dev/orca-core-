@@ -1336,6 +1336,43 @@ TEST_CASE(jit_arm64_indexed_fpr_memory_falls_back_for_page_crossing_and_faults) 
     CHECK(jit_fault.s() == reference_fault.s());
 }
 
+TEST_CASE(jit_arm64_fpr_store_notifies_bus_and_clears_lwarx_reservation) {
+    const std::array<u32, 3> code{
+        A::lwarx(6, 3, 4),
+        A::stfdx(5, 3, 7),
+        A::stwcx_(8, 3, 4)
+    };
+    Machine reference;
+    Machine native_path;
+    for (Machine* m : {&reference, &native_path}) {
+        m->code(0x1000U, {code[0], code[1], code[2]});
+        m->s().msr = MSR_FP;
+        m->s().gpr[3] = 0x2000U;
+        m->s().gpr[4] = 0U;
+        m->s().gpr[7] = 8U; // FPR store remains in the same 32-byte reservation granule
+        m->s().gpr[8] = 0xA5A5A5A5U;
+        m->s().fpr[5].ps0 = 0x3FF123456789ABCDULL;
+        CHECK(m->bus.write32(0x2000U, 0x11223344U) == mem::BusStatus::Ok);
+    }
+
+    CHECK(reference.cpu->run(1U) == StepResult::Executed);
+    CHECK(native_path.cpu->run(1U) == StepResult::Executed);
+    CHECK(reference.s().reserve);
+    CHECK(native_path.s().reserve);
+
+    CHECK(reference.cpu->run(1U) == StepResult::Executed);
+    CHECK(native_path.cpu->run_jit(1U) == StepResult::Executed);
+    CHECK(native_path.cpu->jit_memory_fastpath_hits() >= 1U);
+    CHECK(!reference.s().reserve);
+    CHECK(!native_path.s().reserve);
+
+    CHECK(reference.cpu->run(1U) == StepResult::Executed);
+    CHECK(native_path.cpu->run(1U) == StepResult::Executed);
+    CHECK(native_path.s() == reference.s());
+    CHECK_EQ((native_path.s().cr >> 28U) & 0xFU, 0U); // stwcx. failed: EQ=0
+    CHECK_EQ(native_path.r32(0x2008U), reference.r32(0x2008U));
+}
+
 TEST_CASE(jit_arm64_differential_all_indexed_fpr_memory_forms_match_interpreter) {
     const std::array<u32, 8> instructions{
         A::lfsx(1, 3, 4), A::lfsux(2, 3, 4),
