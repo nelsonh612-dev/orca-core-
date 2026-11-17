@@ -760,3 +760,26 @@ TEST_CASE(jit_arm64_translates_negate_without_overflow_enable) {
     CHECK_EQ(fallback.guest_instructions,0U);
     CHECK(fallback.host_words.empty());
 }
+
+
+#if defined(__aarch64__)
+TEST_CASE(jit_arm64_executes_negate_and_matches_reference_interpreter) {
+    Machine reference;
+    Machine candidate;
+    const u32 neg = (31U << 26U) | (3U << 21U) | (4U << 16U) | (104U << 1U);
+    const u32 neg_record = (31U << 26U) | (6U << 21U) | (5U << 16U) | (104U << 1U) | 1U;
+    reference.code(0x1000U,{neg,neg_record});
+    candidate.code(0x1000U,{neg,neg_record});
+    reference.s().gpr[4]=0x80000000U;
+    candidate.s().gpr[4]=0x80000000U;
+    reference.s().gpr[5]=7U;
+    candidate.s().gpr[5]=7U;
+    reference.s().cr=0xA5C3F00FU;
+    candidate.s().cr=0xA5C3F00FU;
+    CHECK(reference.cpu->run(2U)==StepResult::Executed);
+    CHECK(candidate.cpu->run_jit(2U)==StepResult::Executed);
+    CHECK(candidate.s()==reference.s());
+    CHECK_EQ(candidate.s().gpr[3],0x80000000U);
+    CHECK_EQ(candidate.s().gpr[6],0xFFFFFFF9U);
+}
+#endif
