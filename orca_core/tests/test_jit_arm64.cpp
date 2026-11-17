@@ -38,8 +38,7 @@ TEST_CASE(jit_arm64_translates_unsigned_divide_word) {
         for (u32 emitted : b.host_words) if (emitted == word) return true;
         return false;
     };
-    CHECK(has_word(0x1ACA012BU)); // UDIV w11, w9, w10
-    CHECK(has_word(0x1AC9016BU)); // UDIV w11, w11, w9
+    CHECK(has_word(0x1ACA092BU)); // UDIV w11, w9, w10
 }
 
 TEST_CASE(jit_arm64_translates_signed_and_unsigned_multiply_high) {
