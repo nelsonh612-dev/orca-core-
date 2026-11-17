@@ -85,12 +85,13 @@ TEST_CASE(jit_arm64_translates_addic_record_form_and_builds_cr0) {
 }
 
 TEST_CASE(jit_arm64_translates_paired_single_sign_ops_and_merges) {
-    const std::array<u32,5> code{
+    const std::array<u32,8> code{
         A::ps_neg(3U,1U),A::ps_mr(4U,1U),A::ps_nabs(5U,1U),
-        A::ps_abs(6U,1U),A::ps_merge10(7U,1U,2U)
+        A::ps_abs(6U,1U),A::ps_merge00(8U,1U,2U),A::ps_merge01(9U,1U,2U),
+        A::ps_merge10(7U,1U,2U),A::ps_merge11(10U,1U,2U)
     };
     const Block block=compile_arm64(code,0x1000U);
-    CHECK_EQ(block.guest_instructions,5U);
+    CHECK_EQ(block.guest_instructions,8U);
     CHECK(block.requires_fp);
     CHECK(block.requires_paired);
 }
@@ -99,9 +100,10 @@ TEST_CASE(jit_arm64_translates_paired_single_sign_ops_and_merges) {
 TEST_CASE(jit_arm64_executes_paired_single_sign_ops_and_merge10) {
     Machine reference;
     Machine candidate;
-    const std::array<u32,5> code{
+    const std::array<u32,8> code{
         A::ps_neg(3U,1U),A::ps_mr(4U,1U),A::ps_nabs(5U,1U),
-        A::ps_abs(6U,1U),A::ps_merge10(7U,1U,2U)
+        A::ps_abs(6U,1U),A::ps_merge00(8U,1U,2U),A::ps_merge01(9U,1U,2U),
+        A::ps_merge10(7U,1U,2U),A::ps_merge11(10U,1U,2U)
     };
     reference.code(0x1000U,{code[0],code[1],code[2],code[3],code[4]});
     candidate.code(0x1000U,{code[0],code[1],code[2],code[3],code[4]});
@@ -120,8 +122,14 @@ TEST_CASE(jit_arm64_executes_paired_single_sign_ops_and_merge10) {
     CHECK_EQ(candidate.s().fpr[5].ps1,0xBFF0000000000000ULL);
     CHECK_EQ(candidate.s().fpr[6].ps0,0x3FF0000000000000ULL);
     CHECK_EQ(candidate.s().fpr[6].ps1,0x3FF0000000000000ULL);
+    CHECK_EQ(candidate.s().fpr[8].ps0,0x3FF0000000000000ULL);
+    CHECK_EQ(candidate.s().fpr[8].ps1,0x4000000000000000ULL);
+    CHECK_EQ(candidate.s().fpr[9].ps0,0x3FF0000000000000ULL);
+    CHECK_EQ(candidate.s().fpr[9].ps1,0xC000000000000000ULL);
     CHECK_EQ(candidate.s().fpr[7].ps0,0xBFF0000000000000ULL);
     CHECK_EQ(candidate.s().fpr[7].ps1,0x4000000000000000ULL);
+    CHECK_EQ(candidate.s().fpr[10].ps0,0xBFF0000000000000ULL);
+    CHECK_EQ(candidate.s().fpr[10].ps1,0xC000000000000000ULL);
 }
 #endif
 
