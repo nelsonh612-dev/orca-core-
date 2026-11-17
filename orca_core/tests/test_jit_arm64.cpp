@@ -89,6 +89,31 @@ TEST_CASE(jit_arm64_translates_adde_and_subfe_using_xer_carry_in) {
 }
 
 #if defined(__aarch64__)
+TEST_CASE(jit_arm64_differential_guarded_lmw_stmw) {
+    const u32 lmw = A::D(46, 28, 4, 0);
+    const u32 stmw = A::D(47, 28, 5, 0);
+    Machine reference;
+    reference.code(0x1000U, {lmw, stmw});
+    reference.s().gpr[4] = 0x2000U;
+    reference.s().gpr[5] = 0x2100U;
+    Machine native_path;
+    native_path.code(0x1000U, {lmw, stmw});
+    native_path.s().gpr[4] = 0x2000U;
+    native_path.s().gpr[5] = 0x2100U;
+    for (unsigned i = 0; i < 4U; ++i) {
+        const u32 value = 0xA0A00000U + i * 0x101U;
+        CHECK(reference.bus.write32(0x2000U + i * 4U, value) == mem::BusStatus::Ok);
+        CHECK(native_path.bus.write32(0x2000U + i * 4U, value) == mem::BusStatus::Ok);
+    }
+    CHECK(reference.cpu->run(2U) == StepResult::Executed);
+    u64 completed = 0;
+    CHECK(native_path.cpu->run_jit(2U, &completed) == StepResult::Executed);
+    CHECK_EQ(completed, 2U);
+    CHECK(native_path.s() == reference.s());
+    for (unsigned i = 0; i < 4U; ++i)
+        CHECK_EQ(native_path.r32(0x2100U + i * 4U), reference.r32(0x2100U + i * 4U));
+}
+
 TEST_CASE(jit_arm64_differential_d_form_update_load_store) {
     const u32 lwzu = A::D(33, 3, 4, 4);
     Machine reference_load;
