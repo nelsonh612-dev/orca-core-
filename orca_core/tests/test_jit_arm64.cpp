@@ -272,24 +272,27 @@ TEST_CASE(jit_arm64_translates_condition_register_logical_forms) {
 
 #if defined(__aarch64__)
 TEST_CASE(jit_arm64_differential_condition_register_logical_forms_match_interpreter) {
-    Machine reference;
     const std::array<u32, 8> code{
         A::crand(0, 1, 2), A::crandc(3, 4, 5), A::cror(6, 7, 8),
         A::crorc(9, 10, 11), A::crxor(12, 13, 14), A::crnand(15, 16, 17),
         A::crnor(18, 19, 20), A::creqv(21, 22, 23)
     };
-    reference.code(0x1000U, {code[0],code[1],code[2],code[3],code[4],code[5],code[6],code[7]});
-    reference.s().cr = 0xA5963CC3U;
-    CHECK(reference.cpu->run(code.size()) == StepResult::Executed);
-    const CpuState expected = reference.s();
+    for (u32 instruction : code) {
+        Machine reference;
+        reference.code(0x1000U, {instruction});
+        reference.s().cr = 0xA5963CC3U;
+        CHECK(reference.cpu->run(1U) == StepResult::Executed);
+        const CpuState expected = reference.s();
 
-    CpuState actual{};
-    actual.pc = 0x1000U;
-    actual.cr = 0xA5963CC3U;
-    const Block block = compile_arm64(code, 0x1000U);
-    CHECK_EQ(block.guest_instructions, code.size());
-    CHECK(execute_arm64(block, actual));
-    CHECK(actual == expected);
+        CpuState actual{};
+        actual.pc = 0x1000U;
+        actual.cr = 0xA5963CC3U;
+        const std::array<u32, 1> one{instruction};
+        const Block block = compile_arm64(one, 0x1000U);
+        CHECK_EQ(block.guest_instructions, 1U);
+        CHECK(execute_arm64(block, actual));
+        CHECK(actual == expected);
+    }
 }
 #endif
 
@@ -440,7 +443,7 @@ TEST_CASE(jit_arm64_differential_unconditional_branch_and_link_matches_interpret
 #endif
 
 TEST_CASE(jit_arm64_unsupported_first_instruction_produces_no_executable_block) {
-    const std::array<u32, 1> code{A::bc(20, 0, 4)};
+    const std::array<u32, 1> code{A::bclr(20, 0)};
     const Block b = compile_arm64(code, 0x1000U);
     CHECK_EQ(b.guest_instructions, 0U);
     CHECK(b.host_words.empty());
