@@ -164,3 +164,7 @@ CI completo aprobado en workflow 44009281338: GCC, Clang, QEMU ARM64 y APK Andro
 ## M049 — fsel y ps_sel
 
 Se emite selección bit-exact sin alterar FPSCR: la condición detecta signo, ±0 y NaN en el patrón IEEE-754, eligiendo C cuando A >= 0 y B en caso contrario. fsel afecta ps0; ps_sel procesa ambas lanes. Se respeta Rc→CR1 y los requisitos MSR[FP]/HID2[PSE]. Pruebas diferenciales para finitos positivos/negativos, -0, NaN y selección paired-single; CI pendiente.
+
+## M050 — lmw/stmw
+
+Se añaden lmw/stmw como accesos de bloque nativos sobre RAM contigua ordinaria, con traducción MMU/Bus y conversión big-endian por palabra. El resolver acepta spans hasta 128 bytes; si cruza página, no es RAM, la traducción falla o hay caché bloqueada/WIMG especial, se usa el intérprete. Prueba diferencial carga r28–r31 y los almacena en otra dirección. CI pendiente.
