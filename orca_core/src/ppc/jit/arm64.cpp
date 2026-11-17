@@ -188,7 +188,6 @@ void emit_fsel_lane(std::vector<u32>& out, unsigned a_reg, bool a_upper,
     out.push_back(ubfx_x(10, 9, 63U, 1U));
     out.push_back(cmp_zero_w(10));
     out.push_back(cset_w(11, 0U)); // sign bit clear
-    movz_x(12, 0x7FFFU, 48U);
     out.push_back(movz_x(12, 0x7FFFU, 48U));
     out.push_back(movk_x(12, 0xFFFFU, 32U));
     out.push_back(movk_x(12, 0xFFFFU, 16U));
@@ -448,11 +447,18 @@ bool translate_one(u32 ins, std::vector<u32>& out) {
     }
     if (op == 4U) {
         const unsigned xo = (ins >> 1U) & 0x3FFU;
-        if (xo == 40U || xo == 72U || xo == 136U || xo == 264U ||
+        if (xo == 23U || xo == 40U || xo == 72U || xo == 136U || xo == 264U ||
             xo == 528U || xo == 560U || xo == 592U || xo == 624U) {
             const unsigned frt = (ins >> 21U) & 31U;
             const unsigned fra = (ins >> 16U) & 31U;
             const unsigned frb = (ins >> 11U) & 31U;
+            const unsigned frc = (ins >> 6U) & 31U;
+            if (xo == 23U) {
+                emit_fsel_lane(out, fra, false, frb, false, frc, false, frt, false);
+                emit_fsel_lane(out, fra, true, frb, true, frc, true, frt, true);
+                if ((ins & 1U) != 0U) emit_cr1(out);
+                return true;
+            }
             auto slot_offset = [](unsigned reg, bool upper) {
                 return static_cast<unsigned>(offsetof(CpuState, fpr) + reg * sizeof(Fpr) +
                     (upper ? offsetof(Fpr, ps1) : offsetof(Fpr, ps0)));
@@ -496,6 +502,15 @@ bool translate_one(u32 ins, std::vector<u32>& out) {
 
     if (op == 63U) {
         const unsigned xo = (ins >> 1U) & 0x3FFU;
+        if (xo == 23U) {
+            const unsigned frt = (ins >> 21U) & 31U;
+            const unsigned fra = (ins >> 16U) & 31U;
+            const unsigned frb = (ins >> 11U) & 31U;
+            const unsigned frc = (ins >> 6U) & 31U;
+            emit_fsel_lane(out, fra, false, frb, false, frc, false, frt, false);
+            if ((ins & 1U) != 0U) emit_cr1(out);
+            return true;
+        }
         if (xo == 40U || xo == 72U || xo == 136U || xo == 264U) {
             // fneg/fmr/fnabs/fabs operate on the raw ps0 bit pattern only.
             // ps1 and FPSCR remain unchanged; Rc copies FPSCR[0:3] to CR1.
@@ -1078,11 +1093,11 @@ Block compile_arm64(std::span<const u32> words, u32 start_pc) {
         if (!translate_one(ins, b.host_words)) break;
         if (guest_op == 63U) {
             const unsigned fp_xo = (ins >> 1U) & 0x3FFU;
-            if (fp_xo == 40U || fp_xo == 72U || fp_xo == 136U || fp_xo == 264U)
+            if (fp_xo == 23U || fp_xo == 40U || fp_xo == 72U || fp_xo == 136U || fp_xo == 264U)
                 b.requires_fp = true;
         } else if (guest_op == 4U) {
             const unsigned ps_xo = (ins >> 1U) & 0x3FFU;
-            if (ps_xo == 40U || ps_xo == 72U || ps_xo == 136U || ps_xo == 264U ||
+            if (ps_xo == 23U || ps_xo == 40U || ps_xo == 72U || ps_xo == 136U || ps_xo == 264U ||
                 ps_xo == 528U || ps_xo == 560U || ps_xo == 592U || ps_xo == 624U) {
                 b.requires_fp = true;
                 b.requires_paired = true;
