@@ -248,6 +248,46 @@ TEST_CASE(jit_arm64_differential_overflow_enabled_integer_arithmetic) {
 }
 #endif
 
+TEST_CASE(jit_arm64_translates_mullw_and_overflow_check) {
+    const std::array<u32, 1> code{A::mullw(3, 4, 5, true, true)};
+    const Block block = compile_arm64(code, 0x1000U);
+    CHECK_EQ(block.guest_instructions, 1U);
+    CHECK(block.host_words.size() > 1U);
+    CHECK(block.host_words.back() == 0xD65F03C0U);
+}
+
+#if defined(__aarch64__)
+TEST_CASE(jit_arm64_differential_mullw_overflow_and_sticky_so) {
+    const std::array<std::array<u32, 2>, 3> operands{{
+        {{0x7FFFFFFFU, 2U}}, {{0xFFFFFFFEU, 3U}}, {{0x80000000U, 0xFFFFFFFFU}}
+    }};
+    for (const auto& pair : operands) {
+        for (u32 initial_xer : {0U, XER_SO | XER_OV}) {
+            const u32 instruction = A::mullw(3, 4, 5, true, true);
+            Machine reference;
+            reference.code(0x1000U, {instruction});
+            reference.s().gpr[4] = pair[0];
+            reference.s().gpr[5] = pair[1];
+            reference.s().xer = initial_xer;
+            reference.s().cr = 0xA5963CC3U;
+            CHECK(reference.cpu->run(1U) == StepResult::Executed);
+            const CpuState expected = reference.s();
+
+            CpuState actual{};
+            actual.pc = 0x1000U;
+            actual.gpr[4] = pair[0];
+            actual.gpr[5] = pair[1];
+            actual.xer = initial_xer;
+            actual.cr = 0xA5963CC3U;
+            const std::array<u32, 1> one{instruction};
+            const Block block = compile_arm64(one, 0x1000U);
+            CHECK(execute_arm64(block, actual));
+            CHECK(actual == expected);
+        }
+    }
+}
+#endif
+
 TEST_CASE(jit_arm64_translates_overflow_enabled_xo_arithmetic) {
     const std::array<u32, 4> code{
         A::add(3, 4, 5, true), A::addc(6, 7, 8, true),
