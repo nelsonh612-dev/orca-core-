@@ -4,6 +4,7 @@
 #include "test_framework.hpp"
 #include <array>
 #include <vector>
+#include <utility>
 using namespace orca;
 using namespace orca::ppc;
 using namespace orca::ppc::jit;
