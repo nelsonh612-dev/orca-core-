@@ -145,3 +145,6 @@ Se añaden fmr, fneg, fnabs y fabs como operaciones enteras nativas sobre el pat
 
 Se añade la multiplicación signed de 32 bits usando SMULL AArch64. El resultado arquitectónico conserva los 32 bits inferiores; con OE=1, se compara el producto completo de 64 bits con la extensión de signo del resultado para calcular overflow exacto y actualizar XER[OV]/XER[SO]. Rc actualiza CR0. Pruebas diferenciales cubren overflow positivo, producto negativo dentro de rango y el caso INT32_MIN × -1. CI pendiente.
 
+## M046 — paired-single bitwise y merge
+
+Se añaden ps_neg, ps_mr, ps_nabs, ps_abs y ps_merge00/01/10/11 como operaciones nativas sobre ambos slots FPR. No se alteran FPSCR ni los bits de datos fuera de los slots destino; Rc copia FPSCR[0:3] a CR1. Los bloques registran requires_paired y el dispatcher verifica MSR[FP] y HID2[PSE] antes de entrar; si falta la habilitación, se vuelve al intérprete para conservar la excepción programática correcta. Se agregaron pruebas diferenciales y de excepción pendiente de CI.
