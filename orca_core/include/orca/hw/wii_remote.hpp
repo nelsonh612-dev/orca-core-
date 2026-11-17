@@ -1,7 +1,7 @@
 // Orca Core — Nintendo Wii Remote HID input report decoding.
 // Host Bluetooth discovery, pairing, L2CAP and output reports are separate.
 #pragma once
-#include "orca/core/types.hpp"
+#include "orca/core/bits.hpp"
 #include <array>
 #include <span>
 #include <string>
