@@ -141,8 +141,13 @@ TEST_CASE(jit_arm64_run_jit_preserves_floating_point_unavailable_exception) {
     Machine native_path;
     native_path.code(0x1000U, {instruction});
     native_path.s().msr &= ~MSR_FP;
-    const StepResult actual_result = native_path.cpu->run_jit(1U);
-    CHECK(actual_result == expected_result);
+    u64 completed = 0;
+    const StepResult actual_result = native_path.cpu->run_jit(1U, &completed);
+    // run_jit reports Executed when the requested budget is consumed, while
+    // the exception delivery is reflected in CpuState and retirement count.
+    CHECK(expected_result == StepResult::ExceptionTaken);
+    CHECK(actual_result == StepResult::Executed);
+    CHECK_EQ(completed, 1U);
     CHECK(native_path.s() == expected);
 }
 #endif
