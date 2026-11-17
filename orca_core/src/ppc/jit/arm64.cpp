@@ -386,8 +386,8 @@ bool translate_one(u32 ins, u32 guest_pc, std::vector<u32>& out, bool& terminate
         const bool rc = (ins & 1U) != 0U;
         if (!oe && (xo9 == 138U || xo9 == 136U || xo9 == 202U ||
                     xo9 == 234U || xo9 == 200U || xo9 == 232U)) {
-            // Carry-consuming arithmetic: add/subtract extended and the
-            // zero/minus-one variants. AArch64 C is PPC XER[CA].
+            // Carry-consuming arithmetic. ADCS computes the exact PPC
+            // addend forms; subtraction forms add the one's-complement RA.
             out.push_back(ldr_w(12, 0, static_cast<unsigned>(offsetof(CpuState, xer))));
             out.push_back(ubfx_w(12, 12, 29, 1));
             out.push_back(lsl_w(12, 12, 29));
@@ -396,16 +396,15 @@ bool translate_one(u32 ins, u32 guest_pc, std::vector<u32>& out, bool& terminate
             if (xo9 == 138U || xo9 == 136U) {
                 out.push_back(ldr_w(10, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + rb * 4U)));
                 if (xo9 == 138U) out.push_back(adcs_w(11, 9, 10));
-                else out.push_back(sbcs_w(11, 10, 9)); // RB - RA - (1 - CA)
-            } else if (xo9 == 202U || xo9 == 234U) {
-                if (xo9 == 234U) out.push_back(mvn_w(10,31U));
-                else out.push_back(orr_w(10,31U,31U)); // zero
-                out.push_back(adcs_w(11,9,10)); // addze / addme
+                else {
+                    out.push_back(mvn_w(9,9));
+                    out.push_back(adcs_w(11,9,10)); // subfe = ~RA + RB + CA
+                }
             } else {
-                out.push_back(mvn_w(9,9));
-                if (xo9 == 232U) out.push_back(mvn_w(10,31U));
+                if (xo9 == 200U || xo9 == 232U) out.push_back(mvn_w(9,9));
+                if (xo9 == 234U || xo9 == 232U) out.push_back(mvn_w(10,31U));
                 else out.push_back(orr_w(10,31U,31U));
-                out.push_back(sbcs_w(11,10,9)); // subfze / subfme
+                out.push_back(adcs_w(11,9,10)); // addze/addme/subfze/subfme
             }
             out.push_back(str_w(11, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + rt * 4U)));
             out.push_back(mrs_nzcv_x(12));
