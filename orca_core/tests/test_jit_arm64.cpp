@@ -778,6 +778,30 @@ TEST_CASE(jit_arm64_executes_signed_divide_and_matches_interpreter) {
     CHECK_EQ(candidate.s().gpr[12],0xC0000000U);
 }
 
+TEST_CASE(jit_arm64_executes_addze_addme_subfze_and_subfme_with_carry) {
+    for (const u32 carry_in : {0U, XER_CA}) {
+        Machine reference;
+        Machine candidate;
+        const std::array<u32,4> code{
+            A::addze(3U,4U,false,true),
+            A::addme(5U,6U,false,true),
+            A::subfze(7U,8U,false,true),
+            A::subfme(9U,10U,false,true)
+        };
+        reference.code(0x1000U,{code[0],code[1],code[2],code[3]});
+        candidate.code(0x1000U,{code[0],code[1],code[2],code[3]});
+        reference.s().xer=XER_SO|carry_in; candidate.s().xer=XER_SO|carry_in;
+        reference.s().cr=0xA5C3F00FU; candidate.s().cr=0xA5C3F00FU;
+        reference.s().gpr[4]=0xFFFFFFFFU; candidate.s().gpr[4]=0xFFFFFFFFU;
+        reference.s().gpr[6]=0U; candidate.s().gpr[6]=0U;
+        reference.s().gpr[8]=0U; candidate.s().gpr[8]=0U;
+        reference.s().gpr[10]=1U; candidate.s().gpr[10]=1U;
+        CHECK(reference.cpu->run(code.size())==StepResult::Executed);
+        CHECK(candidate.cpu->run_jit(code.size())==StepResult::Executed);
+        CHECK(candidate.s()==reference.s());
+    }
+}
+
 TEST_CASE(jit_arm64_executes_unsigned_divide_and_matches_interpreter) {
     Machine reference;
     Machine candidate;
