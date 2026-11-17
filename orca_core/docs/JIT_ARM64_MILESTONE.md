@@ -148,3 +148,11 @@ Se añade la multiplicación signed de 32 bits usando SMULL AArch64. El resultad
 ## M046 — paired-single bitwise y merge
 
 Se añaden ps_neg, ps_mr, ps_nabs, ps_abs y ps_merge00/01/10/11 como operaciones nativas sobre ambos slots FPR. No se alteran FPSCR ni los bits de datos fuera de los slots destino; Rc copia FPSCR[0:3] a CR1. Los bloques registran requires_paired y el dispatcher verifica MSR[FP] y HID2[PSE] antes de entrar; si falta la habilitación, se vuelve al intérprete para conservar la excepción programática correcta. Se agregaron pruebas diferenciales y de excepción pendiente de CI.
+
+## M047 — D-form integer load/store guarded fast path
+
+Se añaden lwz/lwzu, lbz/lbzu, lhz/lhzu, lha/lhau, stw/stwu, stb/stbu y sth/sthu sobre RAM física contigua. El código ARM64 calcula EA y realiza la carga/store; un resolver de runtime usa MMU/BAT y Bus para entregar un puntero sólo si el acceso es RAM ordinaria, de una sola página, sin locked cache y con WIMG soportado. El emisor corrige el endianess big-endian con REV/REV16 y hace sign extension para LHA. Si no es seguro (MMIO, traducción especial/fallida, page crossing, no RAM, locked cache), el bloque sale sin cambiar PC y el dispatcher reintenta exactamente la instrucción con el intérprete. Stores notifican al Bus después de completar para invalidar código y avisar a observadores. Workflow 44008955212: GCC, Clang, QEMU ARM64 y APK Android aprobados; QEMU 52 tests / 469 checks / 0 failures.
+
+## M048 — indexed integer load/store y byte-reverse
+
+Se añaden lwzx/lwzux, lbzx/lbzux, lhzx/lhzux, lhax/lhaux, stwx/stwux, stbx/stbux, sthx/sthux, más lwbrx/lhbrx/stwbrx/sthbrx. Se reutiliza el mismo resolver guarded Bus/MMU; los reverse forms omiten REV para conservar la inversión de bytes definida por PowerPC. Pruebas cubren indexed/update, loads sign-extended, byte-reverse, write invalidation, unmapped y page-crossing fallback. CI pendiente.
