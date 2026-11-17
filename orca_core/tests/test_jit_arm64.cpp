@@ -1139,11 +1139,11 @@ TEST_CASE(jit_arm64_differential_double_precision_fpr_memory_matches_interpreter
 #endif
 
 TEST_CASE(jit_arm64_translates_all_scalar_fpr_memory_forms) {
-    const std::array<u32, 16> code{
+    const std::array<u32, 17> code{
         A::lfs(1, 0, 3), A::lfsu(2, 4, 3), A::lfd(3, 8, 3), A::lfdu(4, 12, 3),
         A::stfs(5, 16, 3), A::stfsu(6, 20, 3), A::stfd(7, 24, 3), A::stfdu(8, 28, 3),
         A::lfsx(9, 3, 4), A::lfsux(10, 3, 4), A::lfdx(11, 3, 4), A::lfdux(12, 3, 4),
-        A::stfsx(13, 3, 4), A::stfsux(14, 3, 4), A::stfdx(15, 3, 4), A::stfdux(16, 3, 4)
+        A::stfsx(13, 3, 4), A::stfsux(14, 3, 4), A::stfdx(15, 3, 4), A::stfdux(16, 3, 4), A::stfiwx(17, 3, 4)
     };
     for (u32 ins : code) {
         const std::array<u32, 1> one{ins};
@@ -1178,6 +1178,25 @@ TEST_CASE(jit_arm64_differential_single_precision_fpr_memory_matches_interpreter
     CHECK(native_path.s() == reference.s());
     for (u32 address : {0x2004U, 0x200CU})
         CHECK_EQ(native_path.r32(address), reference.r32(address));
+}
+TEST_CASE(jit_arm64_differential_stfiwx_stores_low_fpr_word) {
+    const u32 instruction = A::stfiwx(3, 4, 5);
+    Machine reference;
+    Machine native_path;
+    reference.code(0x1000U, {instruction});
+    native_path.code(0x1000U, {instruction});
+    for (Machine* m : {&reference, &native_path}) {
+        m->s().msr = MSR_FP;
+        m->s().gpr[4] = 0x2000U;
+        m->s().gpr[5] = 0x10U;
+        m->s().fpr[3].ps0 = 0xA1B2C3D4E5F60718ULL;
+    }
+    CHECK(reference.cpu->run(1U) == StepResult::Executed);
+    CHECK(native_path.cpu->run_jit(1U) == StepResult::Executed);
+    CHECK(native_path.cpu->jit_memory_fastpath_hits() >= 1U);
+    CHECK(native_path.s() == reference.s());
+    CHECK_EQ(native_path.r32(0x2010U), reference.r32(0x2010U));
+    CHECK_EQ(native_path.r32(0x2010U), 0xE5F60718U);
 }
 #endif
 
