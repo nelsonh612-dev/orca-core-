@@ -136,7 +136,6 @@ TEST_CASE(jit_arm64_native_store_invalidates_cached_guest_code) {
     CHECK_EQ(native_path.r32(0x1004U), new_instruction);
 }
 
-#if defined(__aarch64__)
 TEST_CASE(jit_arm64_differential_guarded_d_form_ram_load_store) {
     const std::array<u32, 6> code{
         A::D(32, 3, 4, 0), A::D(40, 5, 4, 4), A::D(42, 6, 4, 6),
@@ -172,7 +171,6 @@ TEST_CASE(jit_arm64_differential_guarded_d_form_ram_load_store) {
     CHECK_EQ(native_path.r16(0x200EU), reference.r16(0x200EU));
 }
 
-#if defined(__aarch64__)
 TEST_CASE(jit_arm64_differential_guarded_indexed_load_store_and_reverse_forms) {
     const std::array<u32, 7> code{
         A::X(23, 3, 4, 5), A::X(279, 6, 4, 7), A::X(343, 8, 4, 9),
@@ -210,7 +208,6 @@ TEST_CASE(jit_arm64_differential_guarded_indexed_load_store_and_reverse_forms) {
     CHECK_EQ(native_path.r32(0x201CU), reference.r32(0x201CU));
     CHECK_EQ(native_path.r32(0x2020U), reference.r32(0x2020U));
 }
-#endif
 
 TEST_CASE(jit_arm64_guarded_memory_falls_back_for_unmapped_and_page_crossing) {
     const u32 instruction = A::D(32, 3, 4, 0);
