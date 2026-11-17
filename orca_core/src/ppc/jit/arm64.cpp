@@ -539,6 +539,41 @@ bool translate_one(u32 ins, u32 guest_pc, std::vector<u32>& out, bool& terminate
     }
 
 
+    if(op==4U) { // Bit-exact paired-single moves, sign ops and lane merges.
+        const unsigned xo=(ins>>1U)&0x3FFU;
+        const unsigned fd=rt, fa=ra, fb=rb;
+        const auto slot=[](unsigned f,unsigned lane) {
+            return static_cast<unsigned>(offsetof(CpuState,fpr)+f*sizeof(Fpr)+
+                (lane==0U?offsetof(Fpr,ps0):offsetof(Fpr,ps1)));
+        };
+        if(xo==40U || xo==72U || xo==136U || xo==264U) {
+            for(unsigned lane=0;lane<2U;++lane) {
+                out.push_back(ldr_x(9,0,slot(fb,lane)));
+                if(xo==40U || xo==136U) {
+                    load_imm64(out,10,0x8000000000000000ULL);
+                    out.push_back(xo==40U?eor_x(11,9,10):orr_x(11,9,10));
+                } else if(xo==264U) {
+                    load_imm64(out,10,0x7FFFFFFFFFFFFFFFULL);
+                    out.push_back(and_x(11,9,10));
+                } else out.push_back(orr_x(11,9,9));
+                out.push_back(str_x(11,0,slot(fd,lane)));
+            }
+            if((ins&1U)!=0U) emit_cr1(out);
+            return true;
+        }
+        if(xo==528U || xo==560U || xo==592U || xo==624U) {
+            const unsigned a_lane=(xo==592U || xo==624U)?1U:0U;
+            const unsigned b_lane=(xo==560U || xo==624U)?1U:0U;
+            out.push_back(ldr_x(9,0,slot(fa,a_lane)));
+            out.push_back(ldr_x(10,0,slot(fb,b_lane)));
+            out.push_back(str_x(9,0,slot(fd,0U)));
+            out.push_back(str_x(10,0,slot(fd,1U)));
+            if((ins&1U)!=0U) emit_cr1(out);
+            return true;
+        }
+        return false;
+    }
+
     if(op==63U) { // Native bit-exact unary FPR moves/sign operations.
         const unsigned xo=(ins>>1U)&0x3FFU;
         if(xo!=40U && xo!=72U && xo!=136U && xo!=264U) return false;
@@ -845,6 +880,7 @@ Block compile_arm64(std::span<const u32> words, u32 start_pc) {
         if(!translate_one(ins,b.end_pc,b.host_words,instruction_terminates)) break;
         ++b.guest_instructions;
         if((ins>>26U)==63U) b.requires_fp=true;
+        if((ins>>26U)==4U) { b.requires_fp=true; b.requires_paired=true; }
         b.end_pc += 4U;
         if(instruction_terminates) { terminated=true; break; }
     }
