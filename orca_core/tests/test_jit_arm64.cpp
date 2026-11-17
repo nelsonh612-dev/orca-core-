@@ -245,6 +245,90 @@ TEST_CASE(jit_arm64_guarded_memory_falls_back_for_unmapped_and_page_crossing) {
 }
 #endif
 
+TEST_CASE(jit_arm64_translates_fsel_and_ps_sel) {
+    const std::array<u32, 1> fsel{A::fsel(1, 2, 3, 4, true)};
+    const Block scalar = compile_arm64(fsel, 0x1000U);
+    CHECK_EQ(scalar.guest_instructions, 1U);
+    CHECK(scalar.requires_fp);
+    const std::array<u32, 1> pssel{A::psA(1, 2, 3, 4, 23, true)};
+    const Block paired = compile_arm64(pssel, 0x1000U);
+    CHECK_EQ(paired.guest_instructions, 1U);
+    CHECK(paired.requires_fp);
+    CHECK(paired.requires_paired);
+}
+
+#if defined(__aarch64__)
+TEST_CASE(jit_arm64_differential_fsel_ieee_zero_and_nan_selection) {
+    const std::array<u32, 5> code{
+        A::fsel(1, 2, 3, 4, true), A::fsel(5, 6, 7, 8),
+        A::fsel(9, 10, 11, 12), A::fsel(13, 14, 15, 16),
+        A::fsel(17, 18, 19, 20)
+    };
+    Machine reference;
+    reference.code(0x1000U, {code[0],code[1],code[2],code[3],code[4]});
+    reference.s().msr |= MSR_FP;
+    reference.s().fpscr = 0xA0000000U;
+    reference.s().cr = 0x5963CC3U;
+    const std::array<u64, 5> conditions{
+        0x3FF0000000000000ULL, 0xBFF0000000000000ULL,
+        0x8000000000000000ULL, 0x7FF8000000000001ULL, 0xFFF8000000000001ULL
+    };
+    for (unsigned i = 0; i < conditions.size(); ++i) {
+        reference.s().fpr[2U + i * 4U].ps0 = conditions[i];
+        reference.s().fpr[3U + i * 4U].ps0 = 0x4000000000000000ULL + i;
+        reference.s().fpr[4U + i * 4U].ps0 = 0xC000000000000000ULL + i;
+    }
+    CHECK(reference.cpu->run(code.size()) == StepResult::Executed);
+    const CpuState expected = reference.s();
+
+    CpuState actual{};
+    actual.pc = 0x1000U;
+    actual.msr = MSR_FP;
+    actual.fpscr = 0xA0000000U;
+    actual.cr = 0x05963CC3U;
+    for (unsigned i = 0; i < conditions.size(); ++i) {
+        actual.fpr[2U + i * 4U].ps0 = conditions[i];
+        actual.fpr[3U + i * 4U].ps0 = 0x4000000000000000ULL + i;
+        actual.fpr[4U + i * 4U].ps0 = 0xC000000000000000ULL + i;
+    }
+    const Block block = compile_arm64(code, 0x1000U);
+    CHECK(execute_arm64(block, actual));
+    CHECK(actual == expected);
+}
+
+TEST_CASE(jit_arm64_differential_ps_sel_for_both_paired_lanes) {
+    const u32 instruction = A::psA(1, 2, 3, 4, 23, true);
+    Machine reference;
+    reference.code(0x1000U, {instruction});
+    reference.s().msr |= MSR_FP;
+    reference.s().hid2 |= HID2_PSE;
+    reference.s().fpscr = 0x50000000U;
+    reference.s().cr = 0xA5963CC3U;
+    reference.s().fpr[2].ps0 = 0x8000000000000000ULL; // -0 selects C
+    reference.s().fpr[2].ps1 = 0xBFF0000000000000ULL; // negative selects B
+    reference.s().fpr[3].ps0 = 0xC000000000000001ULL;
+    reference.s().fpr[3].ps1 = 0xC000000000000002ULL;
+    reference.s().fpr[4].ps0 = 0x4000000000000001ULL;
+    reference.s().fpr[4].ps1 = 0x4000000000000002ULL;
+    CHECK(reference.cpu->run(1U) == StepResult::Executed);
+    const CpuState expected = reference.s();
+
+    CpuState actual{};
+    actual.pc = 0x1000U;
+    actual.msr = MSR_FP;
+    actual.hid2 = HID2_PSE;
+    actual.fpscr = 0x50000000U;
+    actual.cr = 0xA5963CC3U;
+    actual.fpr[2] = reference.s().fpr[2];
+    actual.fpr[3] = reference.s().fpr[3];
+    actual.fpr[4] = reference.s().fpr[4];
+    const std::array<u32, 1> one{instruction};
+    const Block block = compile_arm64(one, 0x1000U);
+    CHECK(execute_arm64(block, actual));
+    CHECK(actual == expected);
+}
+#endif
+
 TEST_CASE(jit_arm64_translates_paired_single_unary_and_merge_operations) {
     const std::array<u32, 8> code{
         A::psX(40, 1, 0, 2, true), A::psX(72, 3, 0, 4),
