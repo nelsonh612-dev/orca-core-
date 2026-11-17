@@ -306,8 +306,9 @@ StepResult Cpu::run_jit(u64 budget, u64* completed, const u32* stop_pc) {
             ++done;
             continue;
         }
-        if (it->second->block.requires_fp && (state_.msr & MSR_FP) == 0U) {
-            // Preserve FloatingPointUnavailable at the exact guest PC.
+        if ((it->second->block.requires_fp && (state_.msr & MSR_FP) == 0U) ||
+            (it->second->block.requires_paired && (state_.hid2 & HID2_PSE) == 0U)) {
+            // Preserve FP-unavailable / paired-single-disabled exceptions at the exact guest PC.
             const StepResult r = step();
             if (r != StepResult::Executed && r != StepResult::ExceptionTaken) {
                 if (completed != nullptr) *completed = done;
