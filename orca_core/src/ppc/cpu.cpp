@@ -385,14 +385,14 @@ Cpu::Outcome Cpu::translate_data(u32 ea, u32 size, bool write, u32& pa_lo, u32& 
     return Outcome::done();
 }
 
-void* Cpu::resolve_jit_ram(u32 ea, u32 size, bool write) {
+void* Cpu::resolve_jit_ram(u32 ea, u32 size, bool write, bool floating_point) {
     const auto decline = [this]() -> void* {
         jit_memory_fallback_ = true;
         return nullptr;
     };
     if ((size != 1U && size != 2U && size != 4U && size != 8U &&
          (size > 128U || (size & 3U) != 0U)) ||
-        (size == 8U && (ea & 3U) != 0U) || !locked_cache_.empty()) return decline();
+        (floating_point && (ea & 3U) != 0U) || !locked_cache_.empty()) return decline();
     u32 pa_lo = 0, pa_hi = 0, split = 0;
     u8 wimg = 0;
     const Outcome translated = translate_data(ea, size, write, pa_lo, pa_hi, split, wimg);
@@ -408,14 +408,14 @@ void* Cpu::resolve_jit_ram(u32 ea, u32 size, bool write) {
     return pointer;
 }
 
-void* Cpu::jit_memory_resolver(CpuState* state, void* context, u32 ea, u32 size, u32 write) {
+void* Cpu::jit_memory_resolver(CpuState* state, void* context, u32 ea, u32 size, u32 access_flags) {
     auto* const cpu = static_cast<Cpu*>(context);
     if (cpu == nullptr) return nullptr;
     if (state != &cpu->state_) {
         cpu->jit_memory_fallback_ = true;
         return nullptr;
     }
-    return cpu->resolve_jit_ram(ea, size, write != 0U);
+    return cpu->resolve_jit_ram(ea, size, (access_flags & 1U) != 0U, (access_flags & 2U) != 0U);
 }
 
 bool Cpu::locked_cache_line(u32 physical, std::array<u8, 32>& out) const {
