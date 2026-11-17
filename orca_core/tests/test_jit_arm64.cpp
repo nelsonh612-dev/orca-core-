@@ -1124,7 +1124,7 @@ TEST_CASE(jit_arm64_differential_double_precision_fpr_memory_matches_interpreter
         m->s().msr = MSR_FP;
         m->s().gpr[3] = 0x2000U;
         m->s().gpr[4] = 0x18U;
-        m->s().fpr[1].ps1 = 0x3FF0000000000000ULL;
+        m->s().fpr[1].ps0 = 0x3FF0000000000000ULL;
         CHECK(m->bus.write(0x2000U, 8U, 0x400921FB54442D18ULL) == mem::BusStatus::Ok);
         CHECK(m->bus.write(0x2010U, 8U, 0xC005BF0A8B145769ULL) == mem::BusStatus::Ok);
     }
