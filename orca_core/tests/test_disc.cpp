@@ -75,6 +75,13 @@ TEST_CASE(disc_header_and_apploader_parsing) {
     std::vector<u8> out(16);
     CHECK(d.read(0x1FFFF0, out));
     CHECK(!d.read(0x1FFFF1, out));
+    std::span<u8> empty;
+    CHECK(d.read(d.size(), empty)); // zero bytes at EOF is a valid read
+    CHECK(!d.read(d.size() + 1U, empty));
+
+    disc::MemoryDisc empty_disc(std::vector<u8>{});
+    CHECK(empty_disc.read(0, empty));
+    CHECK(!empty_disc.read(1, empty));
 }
 
 TEST_CASE(disc_rejections) {
