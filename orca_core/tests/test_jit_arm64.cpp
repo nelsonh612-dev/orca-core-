@@ -84,6 +84,45 @@ TEST_CASE(jit_arm64_translates_addic_record_form_and_builds_cr0) {
     CHECK(has_word(0x5303098CU)); // LSL w12, w12, #29
 }
 
+TEST_CASE(jit_arm64_translates_overflow_enabled_add_subf_and_neg) {
+    const std::array<u32,4> code{
+        A::add(3U,4U,5U,true), A::subf(6U,7U,8U,true),
+        A::neg(9U,10U,true), A::addze(11U,12U,true)
+    };
+    const Block block=compile_arm64(code,0x1000U);
+    CHECK_EQ(block.guest_instructions,4U);
+    CHECK_EQ(block.end_pc,0x1010U);
+}
+
+#if defined(__aarch64__)
+TEST_CASE(jit_arm64_executes_overflow_enabled_add_subf_neg_and_addze) {
+    Machine reference;
+    Machine candidate;
+    const std::array<u32,4> code{
+        A::add(3U,4U,5U,true), A::subf(6U,7U,8U,true),
+        A::neg(9U,10U,true), A::addze(11U,12U,true)
+    };
+    reference.code(0x1000U,{code[0],code[1],code[2],code[3]});
+    candidate.code(0x1000U,{code[0],code[1],code[2],code[3]});
+    reference.s().gpr[4]=0x7FFFFFFFU; candidate.s().gpr[4]=0x7FFFFFFFU;
+    reference.s().gpr[5]=1U; candidate.s().gpr[5]=1U;
+    reference.s().gpr[7]=2U; candidate.s().gpr[7]=2U;
+    reference.s().gpr[8]=5U; candidate.s().gpr[8]=5U;
+    reference.s().gpr[10]=0x80000000U; candidate.s().gpr[10]=0x80000000U;
+    reference.s().gpr[12]=0x7FFFFFFFU; candidate.s().gpr[12]=0x7FFFFFFFU;
+    reference.s().xer=XER_CA; candidate.s().xer=XER_CA;
+    CHECK(reference.cpu->run(code.size())==StepResult::Executed);
+    CHECK(candidate.cpu->run_jit(code.size())==StepResult::Executed);
+    CHECK(candidate.s()==reference.s());
+    CHECK_EQ(candidate.s().gpr[3],0x80000000U);
+    CHECK_EQ(candidate.s().gpr[6],3U);
+    CHECK_EQ(candidate.s().gpr[9],0x80000000U);
+    CHECK_EQ(candidate.s().gpr[11],0x80000000U);
+    CHECK((candidate.s().xer&XER_OV)!=0U);
+    CHECK((candidate.s().xer&XER_SO)!=0U);
+}
+#endif
+
 TEST_CASE(jit_arm64_translates_add_addc_subf_subfc_without_overflow_enable) {
     const std::array<u32, 4> code{A::add(3, 4, 5), A::addc(6, 7, 8),
                                   A::subf(9, 10, 11), A::subfc(12, 13, 14)};
