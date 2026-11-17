@@ -101,6 +101,62 @@ std::optional<std::vector<WiiPartition>> parse_wii_partition_table(DiscReader& d
     return partitions;
 }
 
+
+std::optional<WiiPartitionHeader> parse_wii_partition_header(
+    DiscReader& disc, const WiiPartition& partition, std::string& error) {
+    constexpr u64 kTicketSize = 0x2A4U;
+    constexpr u64 kMetadataSize = 0x1CU;
+    constexpr u64 kH3Size = 0x18000U;
+    if (partition.offset > disc.size() ||
+        kTicketSize + kMetadataSize > disc.size() - partition.offset) {
+        error = "Wii partition: ticket or metadata block is truncated";
+        return std::nullopt;
+    }
+
+    std::array<u8, kMetadataSize> raw{};
+    if (!disc.read(partition.offset + kTicketSize, raw)) {
+        error = "Wii partition: cannot read metadata block";
+        return std::nullopt;
+    }
+
+    WiiPartitionHeader result;
+    result.tmd_size = be32(&raw[0x00]);
+    result.tmd_offset = u64{be32(&raw[0x04])} * 4U;
+    result.cert_size = be32(&raw[0x08]);
+    result.cert_offset = u64{be32(&raw[0x0C])} * 4U;
+    result.h3_offset = u64{be32(&raw[0x10])} * 4U;
+    result.data_offset = u64{be32(&raw[0x14])} * 4U;
+    result.data_size = u64{be32(&raw[0x18])} * 4U;
+
+    const u64 partition_size = disc.size() - partition.offset;
+    const auto range_in_partition = [partition_size](u64 offset, u64 length) {
+        return offset <= partition_size && length <= partition_size - offset;
+    };
+    if (result.tmd_size == 0U || !range_in_partition(result.tmd_offset, result.tmd_size)) {
+        error = "Wii partition: TMD range is empty or outside the image";
+        return std::nullopt;
+    }
+    if (result.cert_size != 0U && !range_in_partition(result.cert_offset, result.cert_size)) {
+        error = "Wii partition: certificate chain extends outside the image";
+        return std::nullopt;
+    }
+    if (!range_in_partition(result.h3_offset, kH3Size)) {
+        error = "Wii partition: H3 table extends outside the image";
+        return std::nullopt;
+    }
+    if (result.data_size == 0U || !range_in_partition(result.data_offset, result.data_size)) {
+        error = "Wii partition: encrypted data range is empty or outside the image";
+        return std::nullopt;
+    }
+    if (result.data_offset < kTicketSize + kMetadataSize ||
+        result.tmd_offset < kTicketSize + kMetadataSize ||
+        (result.cert_size != 0U && result.cert_offset < kTicketSize + kMetadataSize)) {
+        error = "Wii partition: metadata overlaps the ticket/header";
+        return std::nullopt;
+    }
+    return result;
+}
+
 std::optional<DiscHeader> parse_header(DiscReader& disc, std::string& error) {
     std::array<u8, 0x440> h{};
     if (!disc.read(0, h)) { error = "disc: image smaller than the 0x440-byte header"; return std::nullopt; }
