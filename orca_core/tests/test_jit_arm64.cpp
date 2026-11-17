@@ -402,6 +402,37 @@ TEST_CASE(jit_arm64_differential_conditional_branch_matches_interpreter) {
 }
 #endif
 
+TEST_CASE(jit_arm64_translates_indirect_branch_forms_as_block_exits) {
+    const std::array<u32, 2> code{A::bclr(20, 0), A::bcctr(20, 0, true)};
+    const Block block = compile_arm64(code, 0x1000U);
+    CHECK_EQ(block.guest_instructions, 1U);
+    CHECK_EQ(block.end_pc, 0x1004U);
+    CHECK_EQ(block.host_words.back(), 0xD65F03C0U);
+}
+
+#if defined(__aarch64__)
+TEST_CASE(jit_arm64_differential_bclr_and_bcctr_match_interpreter) {
+    for (u32 instruction : {A::bclr(20, 0), A::bcctr(20, 0, true)}) {
+        Machine reference;
+        reference.code(0x1000U, {instruction});
+        reference.s().lr = 0x2003U;
+        reference.s().ctr = 0x3003U;
+        CHECK(reference.cpu->run(1U) == StepResult::Executed);
+        const CpuState expected = reference.s();
+
+        CpuState actual{};
+        actual.pc = 0x1000U;
+        actual.lr = 0x2003U;
+        actual.ctr = 0x3003U;
+        const std::array<u32, 1> one{instruction};
+        const Block block = compile_arm64(one, 0x1000U);
+        CHECK_EQ(block.guest_instructions, 1U);
+        CHECK(execute_arm64(block, actual));
+        CHECK(actual == expected);
+    }
+}
+#endif
+
 TEST_CASE(jit_arm64_translates_conditional_branch_as_block_exit) {
     const std::array<u32, 1> code{A::bc(12, 2, -8, true, false)};
     const Block block = compile_arm64(code, 0x1000U);
