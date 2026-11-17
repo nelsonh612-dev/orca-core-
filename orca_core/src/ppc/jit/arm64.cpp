@@ -50,9 +50,6 @@ constexpr u32 lslv_w(unsigned rd, unsigned rn, unsigned rm) {
 constexpr u32 lsrv_w(unsigned rd, unsigned rn, unsigned rm) {
     return 0x1AC02400U | (rm << 16U) | (rn << 5U) | rd;
 }
-constexpr u32 asrv_w(unsigned rd, unsigned rn, unsigned rm) {
-    return 0x1AC02800U | (rm << 16U) | (rn << 5U) | rd;
-}
 constexpr u32 clz_w(unsigned rd, unsigned rn) {
     return 0x5AC01000U | (rn << 5U) | rd;
 }
