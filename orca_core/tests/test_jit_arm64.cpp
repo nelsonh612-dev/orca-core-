@@ -133,7 +133,7 @@ TEST_CASE(jit_arm64_paired_single_blocks_fall_back_when_pse_disabled) {
     candidate.code(0x1000U,{ins});
     reference.s().msr|=MSR_FP; candidate.s().msr|=MSR_FP;
     CHECK(reference.cpu->step()==StepResult::ExceptionTaken);
-    CHECK(candidate.cpu->run_jit(1U)==StepResult::ExceptionTaken);
+    CHECK(candidate.cpu->run_jit(1U)==StepResult::Executed);
     CHECK(candidate.s()==reference.s());
 }
 
@@ -1105,7 +1105,7 @@ TEST_CASE(jit_arm64_executes_unsigned_divide_and_matches_interpreter) {
     CHECK_EQ(candidate.s().gpr[12],3U);
 }
 
-TEST_CASE(jit_arm64_translates_negate_without_overflow_enable) {
+TEST_CASE(jit_arm64_translates_negate_with_and_without_overflow_enable) {
     const u32 neg = (31U << 26U) | (3U << 21U) | (4U << 16U) | (104U << 1U);
     const u32 neg_record = neg | 1U;
     const std::array<u32,2> code{neg,neg_record};
@@ -1114,10 +1114,10 @@ TEST_CASE(jit_arm64_translates_negate_without_overflow_enable) {
     CHECK_EQ(block.end_pc,0x1008U);
     CHECK_EQ(block.host_words.back(),0xD65F03C0U);
     const u32 overflow_enabled = neg | 0x400U;
-    const std::array<u32,1> unsupported{overflow_enabled};
-    const Block fallback=compile_arm64(unsupported,0x1000U);
-    CHECK_EQ(fallback.guest_instructions,0U);
-    CHECK(fallback.host_words.empty());
+    const std::array<u32,1> supported{overflow_enabled};
+    const Block native=compile_arm64(supported,0x1000U);
+    CHECK_EQ(native.guest_instructions,1U);
+    CHECK(!native.host_words.empty());
 }
 
 
