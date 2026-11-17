@@ -976,7 +976,7 @@ Block compile_arm64(std::span<const u32> words, u32 start_pc) {
             b.host_words.push_back(orr_x(16, 2, 31U));
             b.host_words.push_back(orr_w(2, 20, 31U));
             load_imm(b.host_words, 3, size);
-            load_imm(b.host_words, 4, is_load ? 0U : 1U);
+            load_imm(b.host_words, 4, is_load ? 2U : 3U); // bit 1 marks FP access; bit 0 marks write
             b.host_words.push_back(blr_x16());
             const std::size_t fallback_branch = b.host_words.size();
             b.host_words.push_back(cbz_x(0, 0U));
