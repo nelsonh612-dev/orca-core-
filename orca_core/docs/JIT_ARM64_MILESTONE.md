@@ -86,3 +86,10 @@ Se mantienen deliberadamente en fallback las formas que aún no tienen semántic
 | APK Android ARM64 | Compilado y publicado como artefacto CI; no probado en dispositivo físico |\n| Benchmarks frente al intérprete | Pendiente |
 
 No se declara completo el JIT ni se atribuyen mejoras de rendimiento. El resultado QEMU cubre las instrucciones incluidas en los tests diferenciales; no acredita cobertura total, rendimiento real ni compatibilidad con juegos. El APK debe probarse en hardware ARM64 y las familias pendientes deben implementarse y validarse antes de cerrar el proyecto.
+
+
+## M036 — salto inmediato incondicional nativo
+
+Se añade traducción de opcode 18 (b / bl) como terminador de bloque. El destino relativo o absoluto se calcula con desplazamiento PowerPC de 26 bits con signo; la forma con LK guarda la dirección de retorno en LR. El bloque escribe el PC de destino y termina inmediatamente, de modo que el dispatcher vuelve a buscar/traducir desde el destino. Se mantienen en fallback bc, bclr y bcctr: requieren evaluación precisa de BO/BI, decremento de CTR, captura de LR/CTR y condiciones CR.
+
+Se añadieron pruebas de traducción y una prueba diferencial AArch64 para b+LK frente al intérprete. El CI de este nuevo commit debe completar antes de considerar validado M036.
