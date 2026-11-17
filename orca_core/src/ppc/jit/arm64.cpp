@@ -44,11 +44,11 @@ constexpr u32 cset_w(unsigned rd, unsigned condition) {
 }
 constexpr u32 ret() { return 0xD65F03C0U; }
 
-constexpr u32 lslv_w(unsigned rd, unsigned rn, unsigned rm) {
-    return 0x1AC02000U | (rm << 16U) | (rn << 5U) | rd;
+constexpr u32 lslv_x(unsigned rd, unsigned rn, unsigned rm) {
+    return 0x9AC02000U | (rm << 16U) | (rn << 5U) | rd;
 }
-constexpr u32 lsrv_w(unsigned rd, unsigned rn, unsigned rm) {
-    return 0x1AC02400U | (rm << 16U) | (rn << 5U) | rd;
+constexpr u32 lsrv_x(unsigned rd, unsigned rn, unsigned rm) {
+    return 0x9AC02400U | (rm << 16U) | (rn << 5U) | rd;
 }
 constexpr u32 clz_w(unsigned rd, unsigned rn) {
     return 0x5AC01000U | (rn << 5U) | rd;
@@ -315,11 +315,10 @@ bool translate_one(u32 ins, std::vector<u32>& out) {
             out.push_back(ldr_w(9, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + rt * 4U)));
             if (xo == 24U || xo == 536U) {
                 out.push_back(ldr_w(10, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + rb * 4U)));
-                // PPC uses six shift bits; AArch64 W-register variable
-                // shifts return zero for counts in the 32..63 range.
-                load_imm(out, 12, 63U);
-                out.push_back(and_w(10, 10, 12));
-                out.push_back(xo == 24U ? lslv_w(11, 9, 10) : lsrv_w(11, 9, 10));
+                // PPC uses six shift bits. Use the X-register variable-shift
+                // form on zero-extended 32-bit operands: counts 32..63 then
+                // naturally produce zero, while the stored low word is exact.
+                out.push_back(xo == 24U ? lslv_x(11, 9, 10) : lsrv_x(11, 9, 10));
             } else if (xo == 26U) {
                 out.push_back(clz_w(11, 9));
             } else if (xo == 954U) {
