@@ -61,7 +61,7 @@ BenchResult run_bench(u32 iterations, bool fp, bool jit) {
 
 void print_result(const char* label, const BenchResult& r, const char* loop) {
     const double mips = r.seconds > 0.0 ? static_cast<double>(r.retired) / r.seconds / 1e6 : 0.0;
-    std::printf("%s: stop=%s retired=%llu r3=%u time=%.3fs throughput=%.2f M instr/s (%s loop)\n",
+    std::printf("%s: stop=%s retired=%llu r3=%u time=%.3fs throughput=%.2f M instr/s ram_fastpath_hits=%llu (%s loop)\n",
                 label, to_string(r.result), static_cast<unsigned long long>(r.retired),
                 r.r3, r.seconds, mips, static_cast<unsigned long long>(r.ram_fastpath_hits), loop);
 }
