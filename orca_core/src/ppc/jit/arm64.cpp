@@ -44,6 +44,26 @@ constexpr u32 cset_w(unsigned rd, unsigned condition) {
 }
 constexpr u32 ret() { return 0xD65F03C0U; }
 
+constexpr u32 lslv_w(unsigned rd, unsigned rn, unsigned rm) {
+    return 0x1AC02000U | (rm << 16U) | (rn << 5U) | rd;
+}
+constexpr u32 lsrv_w(unsigned rd, unsigned rn, unsigned rm) {
+    return 0x1AC02400U | (rm << 16U) | (rn << 5U) | rd;
+}
+constexpr u32 asrv_w(unsigned rd, unsigned rn, unsigned rm) {
+    return 0x1AC02800U | (rm << 16U) | (rn << 5U) | rd;
+}
+constexpr u32 clz_w(unsigned rd, unsigned rn) {
+    return 0x5AC01000U | (rn << 5U) | rd;
+}
+constexpr u32 sxtb_w(unsigned rd, unsigned rn) {
+    return 0x13001C00U | (rn << 5U) | rd;
+}
+constexpr u32 sxth_w(unsigned rd, unsigned rn) {
+    return 0x13003C00U | (rn << 5U) | rd;
+}
+
+
 constexpr u32 rorv_w(unsigned rd, unsigned rn, unsigned rm) {
     return 0x1AC02C00U | (rm << 16U) | (rn << 5U) | rd;
 }
@@ -293,6 +313,35 @@ bool translate_one(u32 ins, std::vector<u32>& out) {
     if (op == 31U) {
         const unsigned xo = (ins >> 1U) & 0x3FFU;
         const bool rc = (ins & 1U) != 0U;
+
+        if (xo == 24U || xo == 536U || xo == 792U || xo == 824U ||
+            xo == 26U || xo == 954U || xo == 922U) {
+            out.push_back(ldr_w(9, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + rt * 4U)));
+            if (xo == 824U) {
+                const unsigned sh = rb;
+                out.push_back(sh == 0U ? 0x2A0903EBU : 0x13000000U); // replaced below for nonzero shift
+                if (sh == 0U) out.pop_back();
+                else {
+                    // ASR immediate alias: SBFM W11,W9,#SH,#31.
+                    out.back() = 0x13000000U | (sh << 16U) | (31U << 10U) | (9U << 5U) | 11U;
+                }
+            } else if (xo == 24U || xo == 536U || xo == 792U) {
+                out.push_back(ldr_w(10, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + rb * 4U)));
+                load_imm(out, 12, 31U);
+                out.push_back(and_w(10, 10, 12));
+                out.push_back(xo == 24U ? lslv_w(11, 9, 10) :
+                              (xo == 536U ? lsrv_w(11, 9, 10) : asrv_w(11, 9, 10)));
+            } else if (xo == 26U) {
+                out.push_back(clz_w(11, 9));
+            } else if (xo == 954U) {
+                out.push_back(sxtb_w(11, 9));
+            } else {
+                out.push_back(sxth_w(11, 9));
+            }
+            out.push_back(str_w(11, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + ra * 4U)));
+            if (rc) emit_cr0(out, 11);
+            return true;
+        }
         if (xo == 28U || xo == 60U || xo == 124U || xo == 284U ||
             xo == 316U || xo == 412U || xo == 444U || xo == 476U) {
             // X-form logical operations: RS is encoded in the RT field and RA is the destination.
