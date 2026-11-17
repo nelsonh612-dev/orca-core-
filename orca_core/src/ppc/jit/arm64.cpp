@@ -82,6 +82,19 @@ void emit_xer_overflow(std::vector<u32>& out,unsigned nzcv_reg) {
     out.push_back(str_w(9,0,static_cast<unsigned>(offsetof(CpuState,xer))));
 }
 
+void emit_xer_overflow_bool(std::vector<u32>& out,unsigned overflow_reg) {
+    out.push_back(lsl_w(13,overflow_reg,30U));
+    out.push_back(ldr_w(9,0,static_cast<unsigned>(offsetof(CpuState,xer))));
+    out.push_back(ubfx_w(14,9,31U,1U));
+    out.push_back(orr_w(14,14,overflow_reg));
+    out.push_back(lsl_w(14,14,31U));
+    load_imm(out,15,~(XER_OV|XER_SO));
+    out.push_back(and_w(9,9,15));
+    out.push_back(orr_w(9,9,13));
+    out.push_back(orr_w(9,9,14));
+    out.push_back(str_w(9,0,static_cast<unsigned>(offsetof(CpuState,xer))));
+}
+
 void emit_cr0(std::vector<u32>& out,unsigned result_reg) {
     out.push_back(cmp_zero_w(result_reg));
     out.push_back(cset_w(12,0xBU)); // LT
@@ -580,19 +593,18 @@ bool translate_one(u32 ins, u32 guest_pc, std::vector<u32>& out, bool& terminate
             if(record) emit_cr0(out,11);
             return true;
         }
-        if(xo10==459U) { // divwu RT,RA,RB (OE=0)
-            if((ins&0x400U)!=0U) return false;
+        if(xo9==459U) { // divwu
+            const bool oe=(ins&0x400U)!=0U;
             out.push_back(ldr_w(9,0,static_cast<unsigned>(offsetof(CpuState,gpr)+ra*4U)));
             out.push_back(ldr_w(10,0,static_cast<unsigned>(offsetof(CpuState,gpr)+rb*4U)));
-            // AArch64 UDIV returns zero for a zero divisor, matching the
-            // interpreter's currently modelled PowerPC result.
             out.push_back(udiv_w(11,9,10));
             out.push_back(str_w(11,0,static_cast<unsigned>(offsetof(CpuState,gpr)+rt*4U)));
+            if(oe) { out.push_back(cmp_zero_w(10)); out.push_back(cset_w(12,0U)); emit_xer_overflow_bool(out,12); }
             if((ins&1U)!=0U) emit_cr0(out,11);
             return true;
         }
-        if(xo10==491U) { // divw RT,RA,RB (OE=0)
-            if((ins&0x400U)!=0U) return false;
+        if(xo9==491U) { // divw
+            const bool oe=(ins&0x400U)!=0U;
             out.push_back(ldr_w(9,0,static_cast<unsigned>(offsetof(CpuState,gpr)+ra*4U)));
             out.push_back(ldr_w(10,0,static_cast<unsigned>(offsetof(CpuState,gpr)+rb*4U)));
             out.push_back(sdiv_w(11,9,10));
@@ -612,6 +624,7 @@ bool translate_one(u32 ins, u32 guest_pc, std::vector<u32>& out, bool& terminate
             out.push_back(cmp_zero_w(12));
             out.push_back(csel_w(11,11,15,0U)); // normal quotient if no special case
             out.push_back(str_w(11,0,static_cast<unsigned>(offsetof(CpuState,gpr)+rt*4U)));
+            if(oe) emit_xer_overflow_bool(out,12);
             if((ins&1U)!=0U) emit_cr0(out,11);
             return true;
         }
