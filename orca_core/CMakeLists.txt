@@ -84,14 +84,16 @@ endif()
 
 # Android JNI entry point. The Kotlin GLSurfaceView owns the EGL window/context;
 # this library probes the real device and initializes the GLES backend on that thread.
-if(ANDROID)
-    if(NOT ORCA_GLES)
-        message(FATAL_ERROR "Android build requires ORCA_GLES=ON and EGL/GLESv3 from the NDK")
-    endif()
+if(ANDROID AND ORCA_GLES)
+    # Build the JNI/GLES frontend only when explicitly requested. Android
+    # command-line tools (for example the standalone JIT benchmark) link
+    # orca_core directly and must not require a graphics stack.
     add_library(orca_android SHARED android/app/src/main/cpp/orca_jni.cpp)
     target_include_directories(orca_android PRIVATE include)
     target_link_libraries(orca_android PRIVATE orca_gles log android)
     target_compile_options(orca_android PRIVATE $<$<CXX_COMPILER_ID:GNU,Clang>:${ORCA_WARNINGS}>)
+elseif(ANDROID)
+    message(STATUS "Android JNI/GLES frontend disabled; building headless core tools only")
 endif()
 
 if(ORCA_BUILD_TESTS)
