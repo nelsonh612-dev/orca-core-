@@ -494,6 +494,27 @@ bool translate_one(u32 ins, u32 guest_pc, std::vector<u32>& out, bool& terminate
             out.push_back(str_w(9,0,static_cast<unsigned>(offsetof(CpuState,gpr)+rt*4U)));
             return true;
         }
+        if(xo10==339U || xo10==467U) { // mfspr/mtspr: directly resident LR/CTR/XER state
+            // PowerPC encodes the two five-bit SPR halves in reversed order.
+            const unsigned spr_number=(((ins>>16U)&31U)<<5U)|((ins>>11U)&31U);
+            unsigned state_offset=0U;
+            if(spr_number==1U) {
+                if(xo10==467U) return false; // XER writes require architectural reserved-bit masking.
+                state_offset=static_cast<unsigned>(offsetof(CpuState,xer));
+            } else if(spr_number==8U) {
+                state_offset=static_cast<unsigned>(offsetof(CpuState,lr));
+            } else if(spr_number==9U) {
+                state_offset=static_cast<unsigned>(offsetof(CpuState,ctr));
+            } else return false;
+            if(xo10==339U) {
+                out.push_back(ldr_w(9,0,state_offset));
+                out.push_back(str_w(9,0,static_cast<unsigned>(offsetof(CpuState,gpr)+rt*4U)));
+            } else {
+                out.push_back(ldr_w(9,0,static_cast<unsigned>(offsetof(CpuState,gpr)+rt*4U)));
+                out.push_back(str_w(9,0,state_offset));
+            }
+            return true;
+        }
         if(xo10==144U) { // mtcrf FXM,RS
             const unsigned fxm=(ins>>12U)&0xFFU;
             if(fxm==0U) return true;
