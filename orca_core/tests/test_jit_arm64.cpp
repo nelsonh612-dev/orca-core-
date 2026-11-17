@@ -84,6 +84,50 @@ TEST_CASE(jit_arm64_translates_addic_record_form_and_builds_cr0) {
     CHECK(has_word(0x5303098CU)); // LSL w12, w12, #29
 }
 
+TEST_CASE(jit_arm64_translates_bit_exact_fpr_unary_operations) {
+    const std::array<u32,4> code{
+        A::fneg(2U,1U),A::fmr(3U,1U),A::fnabs(4U,1U),A::fabs_(5U,1U)
+    };
+    const Block block=compile_arm64(code,0x1000U);
+    CHECK_EQ(block.guest_instructions,4U);
+    CHECK(block.requires_fp);
+}
+
+#if defined(__aarch64__)
+TEST_CASE(jit_arm64_executes_bit_exact_fpr_unary_operations) {
+    Machine reference;
+    Machine candidate;
+    const std::array<u32,4> code{
+        A::fneg(2U,1U,true),A::fmr(3U,1U),A::fnabs(4U,1U),A::fabs_(5U,1U)
+    };
+    reference.code(0x1000U,{code[0],code[1],code[2],code[3]});
+    candidate.code(0x1000U,{code[0],code[1],code[2],code[3]});
+    reference.s().msr|=MSR_FP; candidate.s().msr|=MSR_FP;
+    reference.s().fpscr=0xA0000000U; candidate.s().fpscr=0xA0000000U;
+    reference.s().cr=0x12345678U; candidate.s().cr=0x12345678U;
+    reference.s().fpr[1].ps0=0xFFF8123456789ABCULL;
+    candidate.s().fpr[1].ps0=0xFFF8123456789ABCULL;
+    CHECK(reference.cpu->run(code.size())==StepResult::Executed);
+    CHECK(candidate.cpu->run_jit(code.size())==StepResult::Executed);
+    CHECK(candidate.s()==reference.s());
+    CHECK_EQ(candidate.s().fpr[2].ps0,0x7FF8123456789ABCULL);
+    CHECK_EQ(candidate.s().fpr[3].ps0,0xFFF8123456789ABCULL);
+    CHECK_EQ(candidate.s().fpr[4].ps0,0x7FF8123456789ABCULL);
+    CHECK_EQ(candidate.s().fpr[5].ps0,0x7FF8123456789ABCULL);
+}
+#endif
+
+TEST_CASE(jit_arm64_fpr_blocks_fall_back_for_fp_unavailable_exception) {
+    Machine reference;
+    Machine candidate;
+    const u32 ins=A::fmr(3U,1U);
+    reference.code(0x1000U,{ins});
+    candidate.code(0x1000U,{ins});
+    CHECK(reference.cpu->run(1U)==StepResult::ExceptionTaken);
+    CHECK(candidate.cpu->run_jit(1U)==StepResult::ExceptionTaken);
+    CHECK(candidate.s()==reference.s());
+}
+
 TEST_CASE(jit_arm64_translates_overflow_enabled_division) {
     const std::array<u32,2> code{A::divw(3U,4U,5U,true),A::divwu(6U,7U,8U,true)};
     const Block block=compile_arm64(code,0x1000U);
