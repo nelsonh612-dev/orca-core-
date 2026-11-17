@@ -495,7 +495,7 @@ bool translate_one(u32 ins, u32 guest_pc, std::vector<u32>& out, bool& terminate
             return true;
         }
         if(xo10==371U) { // mftb: read the architecturally modelled time-base halves
-            const unsigned tbr=(((ins>>16U)&31U)<<5U)|((ins>>11U)&31U);
+            const unsigned tbr=(((ins>>11U)&31U)<<5U)|((ins>>16U)&31U);
             if(tbr!=268U && tbr!=269U) return false;
             const unsigned offset=static_cast<unsigned>(offsetof(CpuState,tb)+(tbr==269U?4U:0U));
             out.push_back(ldr_w(9,0,offset));
@@ -504,7 +504,7 @@ bool translate_one(u32 ins, u32 guest_pc, std::vector<u32>& out, bool& terminate
         }
         if(xo10==339U || xo10==467U) { // mfspr/mtspr: directly resident LR/CTR/XER state
             // PowerPC encodes the two five-bit SPR halves in reversed order.
-            const unsigned spr_number=(((ins>>16U)&31U)<<5U)|((ins>>11U)&31U);
+            const unsigned spr_number=(((ins>>11U)&31U)<<5U)|((ins>>16U)&31U);
             unsigned state_offset=0U;
             if(spr_number==1U) {
                 if(xo10==467U) return false; // XER writes require architectural reserved-bit masking.
