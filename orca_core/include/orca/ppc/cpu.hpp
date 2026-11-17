@@ -166,6 +166,7 @@ private:
     std::unordered_map<u32, std::unique_ptr<JitBlockEntry>> jit_blocks_;
     std::unordered_set<u32> jit_code_pages_;
     bool jit_pending_write_{false};
+    bool jit_memory_fallback_{false};
     u32 jit_pending_write_address_{0};
     u32 jit_pending_write_size_{0};
     u64 jit_memory_fastpath_hits_{0};
