@@ -258,6 +258,35 @@ TEST_CASE(jit_arm64_differential_logical_record_forms_match_reference_interprete
 #endif
 
 
+TEST_CASE(jit_arm64_translates_cr_field_moves_and_gpr_transfers) {
+    const std::array<u32, 3> code{A::mcrf(2, 5), A::mfcr(7), A::mtcrf(0xA5, 8)};
+    const Block block = compile_arm64(code, 0x1000U);
+    CHECK_EQ(block.guest_instructions, code.size());
+    CHECK_EQ(block.end_pc, 0x100CU);
+    CHECK_EQ(block.host_words.back(), 0xD65F03C0U);
+}
+
+#if defined(__aarch64__)
+TEST_CASE(jit_arm64_differential_cr_field_moves_and_gpr_transfers) {
+    const std::array<u32, 3> code{A::mcrf(2, 5), A::mfcr(7), A::mtcrf(0xA5, 8)};
+    Machine reference;
+    reference.code(0x1000U, {code[0],code[1],code[2]});
+    reference.s().cr = 0xA5963CC3U;
+    reference.s().gpr[8] = 0x5AA5F00FU;
+    CHECK(reference.cpu->run(code.size()) == StepResult::Executed);
+    const CpuState expected = reference.s();
+
+    CpuState actual{};
+    actual.pc = 0x1000U;
+    actual.cr = 0xA5963CC3U;
+    actual.gpr[8] = 0x5AA5F00FU;
+    const Block block = compile_arm64(code, 0x1000U);
+    CHECK_EQ(block.guest_instructions, code.size());
+    CHECK(execute_arm64(block, actual));
+    CHECK(actual == expected);
+}
+#endif
+
 TEST_CASE(jit_arm64_translates_condition_register_logical_forms) {
     const std::array<u32, 8> code{
         A::crand(0, 1, 2), A::crandc(3, 4, 5), A::cror(6, 7, 8),
