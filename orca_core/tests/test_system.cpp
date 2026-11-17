@@ -463,3 +463,13 @@ TEST_CASE(wii_remote_preserves_packed_ir_payload_for_camera_reports) {
     CHECK_EQ(state.extension_data[0],0x60U);
     CHECK_EQ(state.extension_data[5],0x65U);
 }
+
+
+TEST_CASE(wii_remote_builds_led_and_rumble_output_report) {
+    const auto report=hw::make_wii_remote_led_report(0x05U,true);
+    CHECK_EQ(report[0],0x11U);
+    CHECK_EQ(report[1],0x51U);
+    const auto off=hw::make_wii_remote_led_report(0x0AU,false);
+    CHECK_EQ(off[0],0x11U);
+    CHECK_EQ(off[1],0xA0U);
+}
