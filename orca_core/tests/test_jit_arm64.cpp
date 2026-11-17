@@ -110,7 +110,7 @@ TEST_CASE(jit_arm64_translates_adde_and_subfe_using_xer_carry_in) {
     };
     CHECK(has_word(0xD51B420CU)); // MSR NZCV, x12 (carry-in)
     CHECK(has_word(0x3A0A012BU)); // ADCS w11,w9,w10
-    CHECK(has_word(0x7A09014BU)); // SBCS w11,w10,w9
+    CHECK(has_word(0x2A2903E9U)); // MVN w9,w9 for subfe
     CHECK(has_word(0xD53B420CU)); // MRS NZCV (carry-out)
 }
 
