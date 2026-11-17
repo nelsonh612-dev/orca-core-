@@ -110,8 +110,8 @@ private:
     // Fast path resolver used only for contiguous ordinary RAM. Any MMU,
     // MMIO, locked-cache, page-crossing or protection case returns null and
     // the dispatcher retries the instruction through step()/the Bus.
-    static void* jit_memory_resolver(CpuState* state, void* context, u32 ea, u32 size, u32 write);
-    void* resolve_jit_ram(u32 ea, u32 size, bool write);
+    static void* jit_memory_resolver(CpuState* state, void* context, u32 ea, u32 size, u32 access_flags);
+    void* resolve_jit_ram(u32 ea, u32 size, bool write, bool floating_point);
 
     // Instruction groups
     Outcome op_load_store_d(u32 ins, unsigned op);
