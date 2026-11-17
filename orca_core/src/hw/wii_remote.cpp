@@ -20,6 +20,16 @@ std::array<u8,2> make_wii_remote_led_report(u8 led_mask, bool rumble) noexcept {
     return {0x11U,status};
 }
 
+std::array<u8,3> make_wii_remote_report_mode(u8 report_id, bool continuous,
+                                             bool rumble) noexcept {
+    const u8 flags=static_cast<u8>((continuous?0x04U:0U)|(rumble?0x01U:0U));
+    return {0x12U,flags,report_id};
+}
+
+std::array<u8,2> make_wii_remote_status_request(bool rumble) noexcept {
+    return {0x15U,static_cast<u8>(rumble?0x01U:0U)};
+}
+
 bool decode_wii_remote_input_report(std::span<const u8> report,
                                     WiiRemoteState& state,
                                     std::string& error) noexcept {
