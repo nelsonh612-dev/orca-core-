@@ -560,13 +560,14 @@ TEST_CASE(jit_arm64_executes_srawi_with_exact_xer_carry) {
 TEST_CASE(jit_arm64_executes_sign_extend_clz_and_logical_xo_operations) {
     Machine reference;
     Machine candidate;
-    const std::array<u32,7> code{
+    const std::array<u32,8> code{
         A::extsb(3U,4U,true), A::extsh(5U,6U,true), A::cntlzw(7U,8U,true),
         A::nand(9U,10U,11U,true), A::nor(12U,13U,14U,true),
-        A::eqv(15U,16U,17U,true), A::andc(18U,19U,20U,true)
+        A::eqv(15U,16U,17U,true), A::andc(18U,19U,20U,true),
+        A::orc(21U,22U,23U,true)
     };
-    reference.code(0x1000U,{code[0],code[1],code[2],code[3],code[4],code[5],code[6]});
-    candidate.code(0x1000U,{code[0],code[1],code[2],code[3],code[4],code[5],code[6]});
+    reference.code(0x1000U,{code[0],code[1],code[2],code[3],code[4],code[5],code[6],code[7]});
+    candidate.code(0x1000U,{code[0],code[1],code[2],code[3],code[4],code[5],code[6],code[7]});
     reference.s().gpr[4]=0x00000080U; candidate.s().gpr[4]=0x00000080U;
     reference.s().gpr[6]=0x00008001U; candidate.s().gpr[6]=0x00008001U;
     reference.s().gpr[8]=1U; candidate.s().gpr[8]=1U;
@@ -578,6 +579,8 @@ TEST_CASE(jit_arm64_executes_sign_extend_clz_and_logical_xo_operations) {
     reference.s().gpr[17]=0xFFFF0000U; candidate.s().gpr[17]=0xFFFF0000U;
     reference.s().gpr[19]=0xFF00FF00U; candidate.s().gpr[19]=0xFF00FF00U;
     reference.s().gpr[20]=0x0F0F0F0FU; candidate.s().gpr[20]=0x0F0F0F0FU;
+    reference.s().gpr[22]=0x12345678U; candidate.s().gpr[22]=0x12345678U;
+    reference.s().gpr[23]=0xFFFF0000U; candidate.s().gpr[23]=0xFFFF0000U;
     CHECK(reference.cpu->run(code.size())==StepResult::Executed);
     CHECK(candidate.cpu->run_jit(code.size())==StepResult::Executed);
     CHECK(candidate.s()==reference.s());
