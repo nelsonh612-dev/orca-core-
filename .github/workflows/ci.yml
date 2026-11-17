@@ -57,10 +57,12 @@ jobs:
           EOF
       - name: Configure AArch64 tests
         run: cmake -S orca_core -B orca_core/build-aarch64 -G Ninja -DCMAKE_TOOLCHAIN_FILE="$RUNNER_TEMP/aarch64-toolchain.cmake" -DORCA_BUILD_TESTS=ON -DORCA_GLES=OFF -DORCA_WERROR=ON
-      - name: Build JIT differential tests
-        run: cmake --build orca_core/build-aarch64 --target orca_test_jit_arm64 --parallel 2
+      - name: Build JIT differential tests and benchmark
+        run: cmake --build orca_core/build-aarch64 --target orca_test_jit_arm64 orca_bench_interpreter --parallel 2
       - name: Execute generated AArch64 machine code
         run: qemu-aarch64 -L /usr/aarch64-linux-gnu orca_core/build-aarch64/orca_test_jit_arm64
+      - name: Smoke-test interpreter versus JIT benchmark under QEMU
+        run: qemu-aarch64 -L /usr/aarch64-linux-gnu orca_core/build-aarch64/orca_bench_interpreter 10000 i compare
 
   android-arm64:
     name: Android ARM64 debug APK
