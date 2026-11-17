@@ -18,6 +18,7 @@ struct Block {
     bool requires_fp{false};
     bool requires_paired{false};
     bool has_guarded_memory{false};
+    u32 guarded_memory_prefix{0};
     std::vector<u32> host_words; // little-endian AArch64 instruction words
 };
 
