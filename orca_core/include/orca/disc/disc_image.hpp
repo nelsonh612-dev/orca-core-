@@ -75,6 +75,15 @@ struct ApploaderHeader {
     u32 trailer_size{0};
 };
 
+// Wii disc partition table (all on-disc offsets are stored in 4-byte words).
+inline constexpr u64 kWiiPartitionInfoOffset = 0x40000U;
+inline constexpr u32 kWiiPartitionGroupCount = 4U;
+struct WiiPartition {
+    u64 offset{0};
+    u32 type{0}; // 0 = data, 1 = update, other values are reserved
+};
+std::optional<std::vector<WiiPartition>> parse_wii_partition_table(DiscReader& disc, std::string& error);
+
 std::optional<DiscHeader> parse_header(DiscReader& disc, std::string& error);
 std::optional<ApploaderHeader> parse_apploader_header(DiscReader& disc, std::string& error);
 
