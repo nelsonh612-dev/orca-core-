@@ -159,7 +159,6 @@ bool translate_one(u32 ins, std::vector<u32>& out) {
             out.push_back(ldr_w(10, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + rb * 4U)));
             load_imm(out, 12, 0U);
             out.push_back(sub_w(12, 12, 10)); // -(RB & 31), equivalent to 32-sh modulo 32
-            out.push_back(and_w(12, 12, 13)); // masked below after materialising 31
             load_imm(out, 13, 31U);
             out.push_back(and_w(12, 12, 13));
             out.push_back(rorv_w(11, 9, 12));
