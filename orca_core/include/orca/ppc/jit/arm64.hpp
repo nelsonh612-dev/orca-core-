@@ -27,6 +27,7 @@ struct Block {
     u32 end_pc{};
     std::size_t guest_instructions{};
     std::vector<u32> host_words; // little-endian AArch64 instruction words
+    bool requires_fp{false};
 };
 
 // Decode a maximal straight-line prefix. Does not execute guest code.
