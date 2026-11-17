@@ -411,6 +411,42 @@ bool translate_one(u32 ins, std::vector<u32>& out) {
             }
             return true;
         }
+        if (!oe && (xo9 == 202U || xo9 == 234U || xo9 == 200U || xo9 == 232U || xo9 == 104U)) {
+            // addze/addme/subfze/subfme consume XER[CA] and replace it with
+            // the carry/no-borrow result. neg is the non-carry 0 - RA form.
+            out.push_back(ldr_w(9, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + ra * 4U)));
+            if (xo9 == 104U) {
+                out.push_back(sub_w(11, 31U, 9U)); // neg: 0 - RA
+            } else {
+                out.push_back(ldr_w(12, 0, static_cast<unsigned>(offsetof(CpuState, xer))));
+                out.push_back(ubfx_w(12, 12, 29U, 1U));
+                out.push_back(lsl_w(12, 12, 29U));
+                out.push_back(msr_nzcv_x(12));
+                if (xo9 == 202U) {
+                    out.push_back(adcs_w(11, 9U, 31U)); // RA + CA
+                } else if (xo9 == 234U) {
+                    load_imm(out, 10, 0xFFFFFFFFU);
+                    out.push_back(adcs_w(11, 9U, 10U)); // RA - 1 + CA
+                } else if (xo9 == 200U) {
+                    out.push_back(sbcs_w(11, 31U, 9U)); // 0 - RA - (1 - CA)
+                } else {
+                    load_imm(out, 10, 0xFFFFFFFFU);
+                    out.push_back(sbcs_w(11, 10U, 9U)); // -1 - RA - (1 - CA)
+                }
+                out.push_back(mrs_nzcv_x(12));
+                out.push_back(ubfx_w(12, 12, 29U, 1U));
+                out.push_back(lsl_w(12, 12, 29U));
+                load_imm(out, 13, XER_CA);
+                out.push_back(ldr_w(9, 0, static_cast<unsigned>(offsetof(CpuState, xer))));
+                out.push_back(bic_w(9, 9, 13));
+                out.push_back(orr_w(9, 9, 12));
+                out.push_back(str_w(9, 0, static_cast<unsigned>(offsetof(CpuState, xer))));
+                out.push_back(ldr_w(9, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + ra * 4U)));
+            }
+            out.push_back(str_w(11, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + rt * 4U)));
+            if (rc) emit_cr0(out, 11);
+            return true;
+        }
         if (!oe && (xo9 == 266U || xo9 == 10U || xo9 == 40U || xo9 == 8U)) {
             out.push_back(ldr_w(9, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + ra * 4U)));
             out.push_back(ldr_w(10, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + rb * 4U)));
