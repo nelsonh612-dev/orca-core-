@@ -949,6 +949,7 @@ Block compile_arm64(std::span<const u32> words, u32 start_pc) {
 
         const unsigned guest_op = ins >> 26U;
         if (guest_op == 46U || guest_op == 47U) { // lmw/stmw
+            if (b.guest_instructions != 0U) break; // memory op starts its own guarded block
             const unsigned rt = (ins >> 21U) & 31U;
             const unsigned ra = (ins >> 16U) & 31U;
             const bool is_load = guest_op == 46U;
@@ -998,6 +999,7 @@ Block compile_arm64(std::span<const u32> words, u32 start_pc) {
         }
 
         if (guest_op >= 32U && guest_op <= 45U) {
+            if (b.guest_instructions != 0U) break; // avoid replaying earlier ops on resolver fallback
             const unsigned rt = (ins >> 21U) & 31U;
             const unsigned ra = (ins >> 16U) & 31U;
             const bool update = (guest_op & 1U) != 0U;
@@ -1074,6 +1076,7 @@ Block compile_arm64(std::span<const u32> words, u32 start_pc) {
             const bool is_store = xo == 151U || xo == 183U || xo == 215U || xo == 247U ||
                                   xo == 407U || xo == 439U || xo == 662U || xo == 918U;
             if (is_load || is_store) {
+                if (b.guest_instructions != 0U) break; // memory op starts its own guarded block
                 const unsigned rt = (ins >> 21U) & 31U;
                 const unsigned ra = (ins >> 16U) & 31U;
                 const unsigned rb = (ins >> 11U) & 31U;
