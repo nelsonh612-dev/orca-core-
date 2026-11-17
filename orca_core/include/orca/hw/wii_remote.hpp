@@ -8,9 +8,9 @@
 
 namespace orca::hw {
 struct WiiRemoteButtons {
-    static constexpr u16 TWO=0x8000, ONE=0x0001, B=0x0002, A=0x0004;
-    static constexpr u16 MINUS=0x0008, HOME=0x0010, LEFT=0x0800;
-    static constexpr u16 RIGHT=0x0400, DOWN=0x0200, UP=0x0100, PLUS=0x1000;
+    static constexpr u16 TWO=0x0001, ONE=0x0002, B=0x0004, A=0x0008;
+    static constexpr u16 MINUS=0x0010, HOME=0x0080, LEFT=0x0100;
+    static constexpr u16 RIGHT=0x0200, DOWN=0x0400, UP=0x0800, PLUS=0x1000;
 };
 struct WiiRemoteState {
     u16 buttons{};
@@ -22,6 +22,10 @@ struct WiiRemoteState {
     u8 ir_size{};
     std::array<u8,21> extension_data{};
     u8 extension_size{};
+    bool has_status{};
+    u8 status_flags{}; // low nibble: flat battery, extension, speaker, IR
+    u8 led_mask{};     // bits 0..3 correspond to LEDs 1..4
+    u8 battery_level{};
 };
 // report includes its report ID as byte zero, as delivered by Android HID.
 // Build the 0x11 LED/rumble output report. led_mask bit 0..3 selects LEDs 1..4.
