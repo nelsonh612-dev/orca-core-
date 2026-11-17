@@ -515,3 +515,26 @@ TEST_CASE(wii_remote_decodes_output_report_acknowledgement) {
     CHECK(!state.has_status);
     CHECK(!state.has_accelerometer);
 }
+
+
+
+TEST_CASE(wii_remote_status_and_acknowledgement_survive_input_reports) {
+    hw::WiiRemoteState state{};
+    std::string error;
+    const std::array<u8,7> status{0x20,0x00,0x00,0xA2,0x00,0x00,0x70};
+    CHECK(hw::decode_wii_remote_input_report(status,state,error));
+    const std::array<u8,5> ack{0x22,0x00,0x00,0x12,0x00};
+    CHECK(hw::decode_wii_remote_input_report(ack,state,error));
+    CHECK(state.has_status);
+    CHECK_EQ(state.battery_level,0x70U);
+    CHECK(state.has_acknowledgement);
+    CHECK_EQ(state.acknowledged_report_id,0x12U);
+
+    const std::array<u8,3> buttons{0x30,0x18,0x08};
+    CHECK(hw::decode_wii_remote_input_report(buttons,state,error));
+    CHECK_EQ(state.buttons,0x1808U);
+    CHECK(state.has_status);
+    CHECK_EQ(state.led_mask,0x0AU);
+    CHECK(state.has_acknowledgement);
+    CHECK_EQ(state.acknowledgement_error,0U);
+}
