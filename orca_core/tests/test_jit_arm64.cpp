@@ -258,6 +258,35 @@ TEST_CASE(jit_arm64_differential_logical_record_forms_match_reference_interprete
 #endif
 
 
+TEST_CASE(jit_arm64_translates_mcrxr) {
+    const std::array<u32, 1> code{A::mcrxr(3)};
+    const Block block = compile_arm64(code, 0x1000U);
+    CHECK_EQ(block.guest_instructions, 1U);
+    CHECK_EQ(block.end_pc, 0x1004U);
+    CHECK_EQ(block.host_words.back(), 0xD65F03C0U);
+}
+
+#if defined(__aarch64__)
+TEST_CASE(jit_arm64_differential_mcrxr_matches_interpreter) {
+    const std::array<u32, 1> code{A::mcrxr(3)};
+    Machine reference;
+    reference.code(0x1000U, {code[0]});
+    reference.s().xer = 0xF1234567U;
+    reference.s().cr = 0xA5963CC3U;
+    CHECK(reference.cpu->run(1U) == StepResult::Executed);
+    const CpuState expected = reference.s();
+
+    CpuState actual{};
+    actual.pc = 0x1000U;
+    actual.xer = 0xF1234567U;
+    actual.cr = 0xA5963CC3U;
+    const Block block = compile_arm64(code, 0x1000U);
+    CHECK_EQ(block.guest_instructions, 1U);
+    CHECK(execute_arm64(block, actual));
+    CHECK(actual == expected);
+}
+#endif
+
 TEST_CASE(jit_arm64_translates_cr_field_moves_and_gpr_transfers) {
     const std::array<u32, 3> code{A::mcrf(2, 5), A::mfcr(7), A::mtcrf(0xA5, 8)};
     const Block block = compile_arm64(code, 0x1000U);
