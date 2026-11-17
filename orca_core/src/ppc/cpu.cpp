@@ -358,6 +358,28 @@ Cpu::Outcome Cpu::translate_data(u32 ea, u32 size, bool write, u32& pa_lo, u32& 
     return Outcome::done();
 }
 
+void* Cpu::resolve_jit_ram(u32 ea, u32 size, bool write) {
+    if ((size != 1U && size != 2U && size != 4U) || !locked_cache_.empty()) return nullptr;
+    u32 pa_lo = 0, pa_hi = 0, split = 0;
+    u8 wimg = 0;
+    const Outcome translated = translate_data(ea, size, write, pa_lo, pa_hi, split, wimg);
+    if (!translated.ok() || split != size || wimg != 0U) return nullptr;
+    u8* const pointer = bus_.ram_pointer(pa_lo, size);
+    if (pointer == nullptr) return nullptr;
+    if (write) {
+        jit_pending_write_ = true;
+        jit_pending_write_address_ = pa_lo;
+        jit_pending_write_size_ = size;
+    }
+    return pointer;
+}
+
+void* Cpu::jit_memory_resolver(CpuState* state, void* context, u32 ea, u32 size, u32 write) {
+    auto* const cpu = static_cast<Cpu*>(context);
+    if (cpu == nullptr || state != &cpu->state_) return nullptr;
+    return cpu->resolve_jit_ram(ea, size, write != 0U);
+}
+
 bool Cpu::locked_cache_line(u32 physical, std::array<u8, 32>& out) const {
     const auto it = locked_cache_.find(physical & ~31U);
     if (it == locked_cache_.end()) return false;
