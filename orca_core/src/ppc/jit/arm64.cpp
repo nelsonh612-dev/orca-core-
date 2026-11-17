@@ -31,6 +31,18 @@ constexpr u32 add_sp_32() { return 0x910083FFU; }
 constexpr u32 movz_x(unsigned rd, u32 imm16, unsigned shift) {
     return 0xD2800000U | ((shift / 16U) << 21U) | ((imm16 & 0xFFFFU) << 5U) | rd;
 }
+constexpr u32 movk_x(unsigned rd, u32 imm16, unsigned shift) {
+    return 0xF2800000U | ((shift / 16U) << 21U) | ((imm16 & 0xFFFFU) << 5U) | rd;
+}
+constexpr u32 ubfx_x(unsigned rd, unsigned rn, unsigned lsb, unsigned width) {
+    return 0xD3400000U | (lsb << 16U) | ((lsb + width - 1U) << 10U) | (rn << 5U) | rd;
+}
+constexpr u32 cmp_imm_x(unsigned rn, unsigned imm12) {
+    return 0xF100001FU | (imm12 << 10U) | (rn << 5U);
+}
+constexpr u32 csel_x(unsigned rd, unsigned rn, unsigned rm, unsigned condition) {
+    return 0x9A800000U | (rm << 16U) | (condition << 12U) | (rn << 5U) | rd;
+}
 constexpr u32 eor_x(unsigned rd, unsigned rn, unsigned rm) {
     return 0xCA000000U | (rm << 16U) | (rn << 5U) | rd;
 }
