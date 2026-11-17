@@ -90,6 +90,7 @@ public:
     Exception last_exception() const noexcept { return last_exception_; }
     const StopInfo& last_stop() const noexcept { return last_stop_; }
     u64 instructions_retired() const noexcept { return retired_; }
+    u64 jit_memory_fastpath_hits() const noexcept { return jit_memory_fastpath_hits_; }
 
 private:
     struct Outcome;
@@ -167,6 +168,7 @@ private:
     bool jit_pending_write_{false};
     u32 jit_pending_write_address_{0};
     u32 jit_pending_write_size_{0};
+    u64 jit_memory_fastpath_hits_{0};
 };
 
 } // namespace orca::ppc
