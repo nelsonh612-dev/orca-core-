@@ -317,14 +317,35 @@ StepResult Cpu::run_jit(u64 budget, u64* completed, const u32* stop_pc) {
             ++done;
             continue;
         }
-        if (!it->second->executable.execute(state_)) {
+        jit_pending_write_ = false;
+        if (!it->second->executable.execute(state_, this, &Cpu::jit_memory_resolver)) {
             const StepResult r = step();
             if (r != StepResult::Executed && r != StepResult::ExceptionTaken) { if (completed != nullptr) *completed = done; return r; }
             ++done;
             continue;
         }
+        if (it->second->block.has_guarded_memory && state_.pc == pc) {
+            // Resolver declined (MMIO, non-contiguous mapping, fault, cache,
+            // or special WIMG): retry exactly once through the reference path.
+            jit_pending_write_ = false;
+            const StepResult r = step();
+            if (r != StepResult::Executed && r != StepResult::ExceptionTaken) {
+                if (completed != nullptr) *completed = done;
+                return r;
+            }
+            ++done;
+            continue;
+        }
+        const bool notify_write = jit_pending_write_;
+        const u32 written_address = jit_pending_write_address_;
+        const u32 written_size = jit_pending_write_size_;
+        jit_pending_write_ = false;
         retired_ += count;
         done += count;
+        // This may invalidate and destroy the just-executed cached block, so
+        // it must be the last operation that can reference the cache iterator.
+        if (notify_write)
+            bus_.notify_external_write(written_address, written_size, mem::AccessSource::Cpu);
     }
     if (completed != nullptr) *completed = done;
     return StepResult::Executed;
