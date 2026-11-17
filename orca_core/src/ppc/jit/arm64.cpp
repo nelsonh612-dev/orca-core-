@@ -71,6 +71,9 @@ constexpr u32 mul_w(unsigned rd, unsigned rn, unsigned rm) { return 0x1B007C00U 
 constexpr u32 smull_x(unsigned rd, unsigned rn, unsigned rm) {
     return 0x9B207C00U | (rm << 16U) | (rn << 5U) | rd;
 }
+constexpr u32 umull_x(unsigned rd, unsigned rn, unsigned rm) {
+    return 0x9BA07C00U | (rm << 16U) | (rn << 5U) | rd;
+}
 constexpr u32 cmp_x(unsigned rn, unsigned rm) {
     return 0xEB00001FU | (rm << 16U) | (rn << 5U);
 }
@@ -593,6 +596,16 @@ bool translate_one(u32 ins, std::vector<u32>& out) {
                 out.push_back(str_w(9, 0, static_cast<unsigned>(offsetof(CpuState, xer))));
             }
             if ((ins & 1U) != 0U) emit_cr0(out, 11);
+            return true;
+        }
+        if (xo9 == 75U || xo9 == 11U) { // mulhw / mulhwu: high word of 32x32 product
+            out.push_back(ldr_w(9, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + ra * 4U)));
+            out.push_back(ldr_w(10, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + rb * 4U)));
+            if (xo9 == 75U) out.push_back(smull_x(11, 9, 10));
+            else out.push_back(umull_x(11, 9, 10));
+            out.push_back(ubfx_x(12, 11, 32U, 32U));
+            out.push_back(str_w(12, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + rt * 4U)));
+            if ((ins & 1U) != 0U) emit_cr0(out, 12);
             return true;
         }
         if (xo9 == 19U && (ins & 1U) == 0U) { // mfcr
