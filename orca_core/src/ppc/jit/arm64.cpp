@@ -945,6 +945,81 @@ Block compile_arm64(std::span<const u32> words, u32 start_pc) {
             break;
         }
 
+        if (guest_op == 31U) {
+            const unsigned xo = (ins >> 1U) & 0x3FFU;
+            const bool is_load = xo == 23U || xo == 55U || xo == 87U || xo == 119U ||
+                                 xo == 279U || xo == 311U || xo == 343U || xo == 375U ||
+                                 xo == 534U || xo == 790U;
+            const bool is_store = xo == 151U || xo == 183U || xo == 215U || xo == 247U ||
+                                  xo == 407U || xo == 439U || xo == 662U || xo == 918U;
+            if (is_load || is_store) {
+                const unsigned rt = (ins >> 21U) & 31U;
+                const unsigned ra = (ins >> 16U) & 31U;
+                const unsigned rb = (ins >> 11U) & 31U;
+                const bool update = xo == 55U || xo == 119U || xo == 311U || xo == 375U ||
+                                    xo == 183U || xo == 247U || xo == 439U;
+                const bool reverse = xo == 534U || xo == 790U || xo == 662U || xo == 918U;
+                const bool sign = xo == 343U || xo == 375U;
+                const unsigned size = (xo == 23U || xo == 55U || xo == 151U || xo == 183U ||
+                                       xo == 534U || xo == 662U) ? 4U :
+                                      ((xo == 87U || xo == 119U || xo == 215U || xo == 247U) ? 1U : 2U);
+                if (update && ra == 0U) break;
+                if (update && is_load && ra == rt) break;
+
+                b.host_words.push_back(sub_sp_32());
+                b.host_words.push_back(str_x(0, 31U, 0U));
+                b.host_words.push_back(str_x(30, 31U, 8U));
+                b.host_words.push_back(str_x(20, 31U, 24U));
+                if (ra == 0U) load_imm(b.host_words, 9, 0U);
+                else b.host_words.push_back(ldr_w(9, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + ra * 4U)));
+                b.host_words.push_back(ldr_w(10, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + rb * 4U)));
+                b.host_words.push_back(add_w(20, 9, 10));
+                b.host_words.push_back(orr_x(16, 2, 31U));
+                b.host_words.push_back(orr_w(2, 20, 31U));
+                load_imm(b.host_words, 3, size);
+                load_imm(b.host_words, 4, is_load ? 0U : 1U);
+                b.host_words.push_back(blr_x16());
+                const std::size_t fallback_branch = b.host_words.size();
+                b.host_words.push_back(cbz_x(0, 0U));
+                b.host_words.push_back(ldr_x(17, 31U, 0U));
+                if (is_load) {
+                    if (size == 1U) b.host_words.push_back(ldrb_w(11, 0U));
+                    else if (size == 2U) {
+                        b.host_words.push_back(ldrh_w(11, 0U));
+                        if (!reverse) b.host_words.push_back(rev16_w(11, 11));
+                        if (sign) b.host_words.push_back(sxth_w(11, 11));
+                    } else {
+                        b.host_words.push_back(ldr_w(11, 0U, 0U));
+                        if (!reverse) b.host_words.push_back(rev_w(11, 11));
+                    }
+                    b.host_words.push_back(str_w(11, 17, static_cast<unsigned>(offsetof(CpuState, gpr) + rt * 4U)));
+                } else {
+                    b.host_words.push_back(ldr_w(11, 17, static_cast<unsigned>(offsetof(CpuState, gpr) + rt * 4U)));
+                    if (!reverse && size == 2U) b.host_words.push_back(rev16_w(11, 11));
+                    else if (!reverse && size == 4U) b.host_words.push_back(rev_w(11, 11));
+                    if (size == 1U) b.host_words.push_back(strb_w(11, 0U));
+                    else if (size == 2U) b.host_words.push_back(strh_w(11, 0U));
+                    else b.host_words.push_back(str_w(11, 0U, 0U));
+                }
+                if (update)
+                    b.host_words.push_back(str_w(20, 17, static_cast<unsigned>(offsetof(CpuState, gpr) + ra * 4U)));
+                load_imm(b.host_words, 9, b.end_pc + 4U);
+                b.host_words.push_back(str_w(9, 17, static_cast<unsigned>(offsetof(CpuState, pc))));
+                const std::size_t epilogue = b.host_words.size();
+                const std::size_t branch_words = epilogue - fallback_branch;
+                if (branch_words >= (1U << 18U)) break;
+                b.host_words[fallback_branch] = cbz_x(0, static_cast<unsigned>(branch_words));
+                b.host_words.push_back(ldr_x(20, 31U, 24U));
+                b.host_words.push_back(ldr_x(30, 31U, 8U));
+                b.host_words.push_back(add_sp_32());
+                b.has_guarded_memory = true;
+                ++b.guest_instructions;
+                b.end_pc += 4U;
+                control_flow_exit = true;
+                break;
+            }
+        }
+
         if (!translate_one(ins, b.host_words)) break;
         if (guest_op == 63U) {
             const unsigned fp_xo = (ins >> 1U) & 0x3FFU;
