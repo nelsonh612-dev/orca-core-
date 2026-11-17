@@ -380,14 +380,18 @@ Cpu::Outcome Cpu::translate_data(u32 ea, u32 size, bool write, u32& pa_lo, u32& 
 }
 
 void* Cpu::resolve_jit_ram(u32 ea, u32 size, bool write) {
+    const auto decline = [this]() -> void* {
+        jit_memory_fallback_ = true;
+        return nullptr;
+    };
     if ((size != 1U && size != 2U && size != 4U &&
-         (size > 128U || (size & 3U) != 0U)) || !locked_cache_.empty()) return nullptr;
+         (size > 128U || (size & 3U) != 0U)) || !locked_cache_.empty()) return decline();
     u32 pa_lo = 0, pa_hi = 0, split = 0;
     u8 wimg = 0;
     const Outcome translated = translate_data(ea, size, write, pa_lo, pa_hi, split, wimg);
-    if (!translated.ok() || split != size || (wimg & (WIMG_W | WIMG_I)) != 0U) return nullptr;
+    if (!translated.ok() || split != size || (wimg & (WIMG_W | WIMG_I)) != 0U) return decline();
     u8* const pointer = bus_.ram_pointer(pa_lo, size);
-    if (pointer == nullptr) return nullptr;
+    if (pointer == nullptr) return decline();
     ++jit_memory_fastpath_hits_;
     if (write) {
         jit_pending_write_ = true;
@@ -399,7 +403,11 @@ void* Cpu::resolve_jit_ram(u32 ea, u32 size, bool write) {
 
 void* Cpu::jit_memory_resolver(CpuState* state, void* context, u32 ea, u32 size, u32 write) {
     auto* const cpu = static_cast<Cpu*>(context);
-    if (cpu == nullptr || state != &cpu->state_) return nullptr;
+    if (cpu == nullptr) return nullptr;
+    if (state != &cpu->state_) {
+        cpu->jit_memory_fallback_ = true;
+        return nullptr;
+    }
     return cpu->resolve_jit_ram(ea, size, write != 0U);
 }
 
