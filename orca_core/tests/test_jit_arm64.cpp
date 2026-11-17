@@ -14,8 +14,8 @@ TEST_CASE(jit_arm64_translates_supported_integer_prefix_and_stops_at_branch) {
     const std::array<u32, 5> code{A::addi(3, 0, -7), A::addis(4, 3, 2), A::ori(4, 4, 0x1234), A::b(8), A::addi(5, 0, 1)};
     const Block b = compile_arm64(code, 0x1000);
     CHECK_EQ(b.start_pc, 0x1000U);
-    CHECK_EQ(b.guest_instructions, 3U);
-    CHECK_EQ(b.end_pc, 0x100CU);
+    CHECK_EQ(b.guest_instructions, 4U);
+    CHECK_EQ(b.end_pc, 0x1010U);
     CHECK(!b.host_words.empty());
     CHECK_EQ(b.host_words.back(), 0xD65F03C0U); // RET
 }
@@ -306,9 +306,36 @@ TEST_CASE(jit_arm64_differential_compare_forms_match_reference_interpreter) {
 }
 #endif
 
+TEST_CASE(jit_arm64_translates_unconditional_branch_and_link_as_block_exit) {
+    const std::array<u32, 2> code{A::addi(3, 0, 7), A::b(8, false, true)};
+    const Block b = compile_arm64(code, 0x1000U);
+    CHECK_EQ(b.guest_instructions, 2U);
+    CHECK_EQ(b.end_pc, 0x1008U);
+    CHECK_EQ(b.host_words.back(), 0xD65F03C0U);
+}
+
+#if defined(__aarch64__)
+TEST_CASE(jit_arm64_differential_unconditional_branch_and_link_matches_interpreter) {
+    Machine reference;
+    const std::array<u32, 1> code{A::b(12, false, true)};
+    reference.code(0x1000U, {code[0]});
+    reference.s().lr = 0xDEADBEEFU;
+    CHECK(reference.cpu->run(1U) == StepResult::Executed);
+    const CpuState expected = reference.s();
+
+    CpuState actual{};
+    actual.pc = 0x1000U;
+    actual.lr = 0xDEADBEEFU;
+    const Block block = compile_arm64(code, 0x1000U);
+    CHECK_EQ(block.guest_instructions, 1U);
+    CHECK(execute_arm64(block, actual));
+    CHECK(actual == expected);
+}
+#endif
+
 TEST_CASE(jit_arm64_unsupported_first_instruction_produces_no_executable_block) {
-    const std::array<u32, 1> code{A::b(4)};
-    const Block b = compile_arm64(code, 0x1000);
+    const std::array<u32, 1> code{A::bc(20, 0, 4)};
+    const Block b = compile_arm64(code, 0x1000U);
     CHECK_EQ(b.guest_instructions, 0U);
     CHECK(b.host_words.empty());
 }
