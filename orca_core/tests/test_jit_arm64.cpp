@@ -71,8 +71,7 @@ TEST_CASE(jit_arm64_translates_add_addc_subf_subfc_without_overflow_enable) {
     };
     CHECK(has_word(0x0B0A012BU)); // ADD w11,w9,w10
     CHECK(has_word(0x2B0A012BU)); // ADDS w11,w9,w10 (addc)
-    CHECK(has_word(0x2A2903E9U)); // MVN w9,w9 (subf/subfc source inversion)
-    CHECK(has_word(0x6B09014BU)); // SUBS w11,w10,w9 (subfc)
+    CHECK(has_word(0x6B09014BU)); // SUBS w11,w10,w9 (subf/subfc)
 }
 
 TEST_CASE(jit_arm64_translates_adde_and_subfe_using_xer_carry_in) {
