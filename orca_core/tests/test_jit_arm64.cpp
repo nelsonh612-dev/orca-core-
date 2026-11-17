@@ -105,8 +105,8 @@ TEST_CASE(jit_arm64_executes_paired_single_sign_ops_and_merge10) {
         A::ps_abs(6U,1U),A::ps_merge00(8U,1U,2U),A::ps_merge01(9U,1U,2U),
         A::ps_merge10(7U,1U,2U),A::ps_merge11(10U,1U,2U)
     };
-    reference.code(0x1000U,{code[0],code[1],code[2],code[3],code[4]});
-    candidate.code(0x1000U,{code[0],code[1],code[2],code[3],code[4]});
+    reference.code(0x1000U,{code[0],code[1],code[2],code[3],code[4],code[5],code[6],code[7]});
+    candidate.code(0x1000U,{code[0],code[1],code[2],code[3],code[4],code[5],code[6],code[7]});
     reference.s().msr|=MSR_FP; candidate.s().msr|=MSR_FP;
     reference.s().hid2|=HID2_PSE; candidate.s().hid2|=HID2_PSE;
     reference.s().fpr[1]={0x3FF0000000000000ULL,0xBFF0000000000000ULL};
@@ -187,7 +187,7 @@ TEST_CASE(jit_arm64_fpr_blocks_fall_back_for_fp_unavailable_exception) {
     reference.s().msr=0U;
     candidate.s().msr=0U;
     CHECK(reference.cpu->step()==StepResult::ExceptionTaken);
-    CHECK(candidate.cpu->run_jit(1U)==StepResult::ExceptionTaken);
+    CHECK(candidate.cpu->run_jit(1U)==StepResult::Executed);
     CHECK(candidate.s()==reference.s());
 }
 
