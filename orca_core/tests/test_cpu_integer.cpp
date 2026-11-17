@@ -442,6 +442,19 @@ TEST_CASE(reservation_lwarx_stwcx) {
     CHECK(m.cpu->last_exception() == Exception::Alignment);
 }
 
+TEST_CASE(reservation_is_cancelled_by_cpu_store_to_same_granule) {
+    Machine m;
+    m.bus.write32(0x2000, 5);
+    m.s().gpr[4] = 0x2000;
+    m.s().gpr[6] = 77;
+    m.code(0x1000, {A::lwarx(3, 0, 4), A::stw(6, 4, 4), A::stwcx_(6, 0, 4)});
+    CHECK(m.cpu->run(3) == StepResult::Executed);
+    CHECK_EQ(m.r32(0x2000), 5U);   // failed stwcx. must not update target
+    CHECK_EQ(m.r32(0x2004), 77U);  // ordinary CPU store did complete
+    CHECK_EQ(CR0(m.s().cr), 0U);   // intervening CPU store cancelled reservation
+    CHECK(!m.s().reserve);
+}
+
 TEST_CASE(bus_error_stops_without_side_effects) {
     Machine m;
     m.s().gpr[4] = 0x01800000U; // first byte past MEM1
