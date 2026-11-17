@@ -47,6 +47,60 @@ bool FileDisc::read(u64 offset, std::span<u8> out) {
     return static_cast<std::size_t>(file_.gcount()) == out.size();
 }
 
+std::optional<std::vector<WiiPartition>> parse_wii_partition_table(DiscReader& disc, std::string& error) {
+    // The four group descriptors occupy 0x20 bytes at 0x40000. Each
+    // descriptor contains a partition count and a byte offset divided by 4.
+    constexpr u64 kGroupTableBytes = kWiiPartitionGroupCount * 8U;
+    if (disc.size() < kWiiPartitionInfoOffset ||
+        kGroupTableBytes > disc.size() - kWiiPartitionInfoOffset) {
+        error = "Wii disc: partition information table is truncated";
+        return std::nullopt;
+    }
+    std::array<u8, kGroupTableBytes> groups{};
+    if (!disc.read(kWiiPartitionInfoOffset, groups)) {
+        error = "Wii disc: cannot read partition group table";
+        return std::nullopt;
+    }
+
+    constexpr u32 kMaxPartitions = 4096U;
+    std::vector<WiiPartition> partitions;
+    for (u32 group = 0; group < kWiiPartitionGroupCount; ++group) {
+        const u32 count = be32(&groups[group * 8U]);
+        const u32 offset_words = be32(&groups[group * 8U + 4U]);
+        if (count == 0U) continue;
+        if (count > kMaxPartitions || partitions.size() > kMaxPartitions - count) {
+            error = "Wii disc: unreasonable partition count";
+            return std::nullopt;
+        }
+        const u64 table_offset = u64{offset_words} * 4U;
+        const u64 table_bytes = u64{count} * 8U;
+        if (table_offset > disc.size() || table_bytes > disc.size() - table_offset) {
+            error = "Wii disc: partition entry table extends past the image";
+            return std::nullopt;
+        }
+
+        std::vector<u8> entries(static_cast<std::size_t>(table_bytes));
+        if (!disc.read(table_offset, entries)) {
+            error = "Wii disc: cannot read partition entries";
+            return std::nullopt;
+        }
+        for (u32 i = 0; i < count; ++i) {
+            const u64 partition_offset = u64{be32(&entries[i * 8U])} * 4U;
+            const u32 type = be32(&entries[i * 8U + 4U]);
+            if (partition_offset >= disc.size()) {
+                error = "Wii disc: partition offset outside the image";
+                return std::nullopt;
+            }
+            partitions.push_back({partition_offset, type});
+        }
+    }
+    if (partitions.empty()) {
+        error = "Wii disc: partition table contains no partitions";
+        return std::nullopt;
+    }
+    return partitions;
+}
+
 std::optional<DiscHeader> parse_header(DiscReader& disc, std::string& error) {
     std::array<u8, 0x440> h{};
     if (!disc.read(0, h)) { error = "disc: image smaller than the 0x440-byte header"; return std::nullopt; }
