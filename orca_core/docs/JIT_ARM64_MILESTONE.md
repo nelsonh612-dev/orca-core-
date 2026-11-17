@@ -163,12 +163,12 @@ CI completo aprobado en workflow 44009281338: GCC, Clang, QEMU ARM64 y APK Andro
 
 ## M049 — fsel y ps_sel
 
-Se emite selección bit-exact sin alterar FPSCR: la condición detecta signo, ±0 y NaN en el patrón IEEE-754, eligiendo C cuando A >= 0 y B en caso contrario. fsel afecta ps0; ps_sel procesa ambas lanes. Se respeta Rc→CR1 y los requisitos MSR[FP]/HID2[PSE]. Pruebas diferenciales para finitos positivos/negativos, -0, NaN y selección paired-single; CI pendiente.
+Se emite selección bit-exact sin alterar FPSCR: la condición detecta signo, ±0 y NaN en el patrón IEEE-754, eligiendo C cuando A >= 0 y B en caso contrario. fsel afecta ps0; ps_sel procesa ambas lanes. Se respeta Rc→CR1 y los requisitos MSR[FP]/HID2[PSE]. Pruebas diferenciales para finitos positivos/negativos, -0, NaN y selección paired-single. Workflow 44009754403 aprobado: GCC, Clang, QEMU y APK; QEMU 58 tests / 509 checks / 0 failures.
 
 ## M050 — lmw/stmw
 
-Se añaden lmw/stmw como accesos de bloque nativos sobre RAM contigua ordinaria, con traducción MMU/Bus y conversión big-endian por palabra. El resolver acepta spans hasta 128 bytes; si cruza página, no es RAM, la traducción falla o hay caché bloqueada/WIMG especial, se usa el intérprete. Prueba diferencial carga r28–r31 y los almacena en otra dirección. CI pendiente.
+Se añaden lmw/stmw como accesos de bloque nativos sobre RAM contigua ordinaria, con traducción MMU/Bus y conversión big-endian por palabra. El resolver acepta spans hasta 128 bytes; si cruza página, no es RAM, la traducción falla o hay caché bloqueada/WIMG especial, se usa el intérprete. Prueba diferencial carga r28–r31 y los almacena en otra dirección. Workflow 44009852639 aprobado: GCC, Clang, QEMU y APK; QEMU 59 tests / 525 checks / 0 failures.
 
 ## M051 — harness comparativo para Android ARM64
 
-Se amplía tools/bench_interpreter.cpp para aceptar modo interpreter, jit o compare. El modo compare ejecuta el mismo loop guest en dos CPUs/Buses independientes, imprime instrucciones retiradas, tiempo, MIPS y speedup, e incluye el coste de compilación del primer bloque. El loop entero cubre addi/lwz/stw/rlwinm/bdnz; el loop FP actual se etiqueta explícitamente como fallback porque sus operaciones aritméticas aún no están traducidas. Este harness permite medir en el dispositivo real, pero todavía no se ha ejecutado en un Android físico: no hay resultados de hardware ni speedup publicado.
+Se amplía tools/bench_interpreter.cpp para aceptar modo interpreter, jit o compare. El modo compare ejecuta el mismo loop guest en dos CPUs/Buses independientes, imprime instrucciones retiradas, tiempo, MIPS y speedup, e incluye el coste de compilación del primer bloque. El loop entero cubre addi/lwz/stw/rlwinm/bdnz; el loop FP actual se etiqueta explícitamente como fallback porque sus operaciones aritméticas aún no están traducidas. Este harness permite medir en el dispositivo real, pero todavía no se ha ejecutado en un Android físico: no hay resultados de hardware ni speedup publicado. CI añade un binario ARM64 standalone como artefacto descargable para ejecutar con adb shell; la compilación/artefacto está pendiente de validar.
