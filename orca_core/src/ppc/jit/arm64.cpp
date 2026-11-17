@@ -67,6 +67,21 @@ void load_imm(std::vector<u32>& out, unsigned reg, u32 value) {
     if ((value >> 16U) != 0U) out.push_back(movk_w(reg, value >> 16U));
 }
 
+void emit_xer_overflow(std::vector<u32>& out,unsigned nzcv_reg) {
+    out.push_back(ubfx_w(13,nzcv_reg,28U,1U));
+    out.push_back(lsl_w(13,13,30U));
+    out.push_back(ldr_w(9,0,static_cast<unsigned>(offsetof(CpuState,xer))));
+    out.push_back(ubfx_w(14,9,31U,1U));
+    out.push_back(ubfx_w(15,nzcv_reg,28U,1U));
+    out.push_back(orr_w(14,14,15));
+    out.push_back(lsl_w(14,14,31U));
+    load_imm(out,15,~(XER_OV|XER_SO));
+    out.push_back(and_w(9,9,15));
+    out.push_back(orr_w(9,9,13));
+    out.push_back(orr_w(9,9,14));
+    out.push_back(str_w(9,0,static_cast<unsigned>(offsetof(CpuState,xer))));
+}
+
 void emit_cr0(std::vector<u32>& out,unsigned result_reg) {
     out.push_back(cmp_zero_w(result_reg));
     out.push_back(cset_w(12,0xBU)); // LT
@@ -383,8 +398,8 @@ bool translate_one(u32 ins, u32 guest_pc, std::vector<u32>& out, bool& terminate
         const unsigned xo9 = (ins >> 1U) & 0x1FFU;
         const bool oe = (ins & 0x400U) != 0U;
         const bool rc = (ins & 1U) != 0U;
-        if (!oe && (xo9 == 138U || xo9 == 136U || xo9 == 202U ||
-                    xo9 == 234U || xo9 == 200U || xo9 == 232U)) {
+        if (xo9 == 138U || xo9 == 136U || xo9 == 202U ||
+            xo9 == 234U || xo9 == 200U || xo9 == 232U) {
             // Carry-consuming arithmetic. ADCS computes the exact PPC
             // addend forms; subtraction forms add the one's-complement RA.
             out.push_back(ldr_w(12, 0, static_cast<unsigned>(offsetof(CpuState, xer))));
@@ -406,43 +421,49 @@ bool translate_one(u32 ins, u32 guest_pc, std::vector<u32>& out, bool& terminate
                 out.push_back(adcs_w(11,9,10)); // addze/addme/subfze/subfme
             }
             out.push_back(str_w(11, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + rt * 4U)));
-            out.push_back(mrs_nzcv_x(12));
-            out.push_back(ubfx_w(12, 12, 29, 1));
+            out.push_back(mrs_nzcv_x(16));
+            out.push_back(ubfx_w(12, 16, 29, 1));
             out.push_back(lsl_w(12, 12, 29));
             load_imm(out, 13, XER_CA);
             out.push_back(ldr_w(9, 0, static_cast<unsigned>(offsetof(CpuState, xer))));
             out.push_back(bic_w(9, 9, 13));
             out.push_back(orr_w(9, 9, 12));
             out.push_back(str_w(9, 0, static_cast<unsigned>(offsetof(CpuState, xer))));
+            if (oe) emit_xer_overflow(out,16);
             if (rc) emit_cr0(out,11);
             return true;
         }
-        if (!oe && (xo9 == 266U || xo9 == 10U || xo9 == 40U || xo9 == 8U)) {
+        if (xo9 == 266U || xo9 == 10U || xo9 == 40U || xo9 == 8U) {
             out.push_back(ldr_w(9, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + ra * 4U)));
             out.push_back(ldr_w(10, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + rb * 4U)));
-            if (xo9 == 266U) out.push_back(add_w(11, 9, 10));
-            else if (xo9 == 10U) out.push_back(adds_w(11, 9, 10));
+            if (xo9 == 266U) out.push_back(oe ? adds_w(11,9,10) : add_w(11,9,10));
+            else if (xo9 == 10U) out.push_back(adds_w(11,9,10));
             else if (xo9 == 40U) {
-                // subf RT,RA,RB = RB - RA = RB + ~RA + 1.
-                out.push_back(mvn_w(9, 9));
-                load_imm(out, 12, 1U);
-                out.push_back(add_w(11, 9, 10));
-                out.push_back(add_w(11, 11, 12));
+                if (oe) out.push_back(subs_w(11,10,9));
+                else {
+                    out.push_back(mvn_w(9,9));
+                    load_imm(out,12,1U);
+                    out.push_back(add_w(11,9,10));
+                    out.push_back(add_w(11,11,12));
+                }
             } else {
                 // subfc RT,RA,RB = RB - RA; SUBS sets C=1 when no borrow.
                 out.push_back(subs_w(11, 10, 9));
             }
             out.push_back(str_w(11, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + rt * 4U)));
             if (xo9 == 10U || xo9 == 8U) {
-                out.push_back(mrs_nzcv_x(12));
-                out.push_back(ubfx_w(12, 12, 29, 1));
+                out.push_back(mrs_nzcv_x(16));
+                out.push_back(ubfx_w(12, 16, 29, 1));
                 out.push_back(lsl_w(12, 12, 29));
                 load_imm(out, 13, XER_CA);
                 out.push_back(ldr_w(9, 0, static_cast<unsigned>(offsetof(CpuState, xer))));
                 out.push_back(bic_w(9, 9, 13));
                 out.push_back(orr_w(9, 9, 12));
                 out.push_back(str_w(9, 0, static_cast<unsigned>(offsetof(CpuState, xer))));
+            } else if (oe) {
+                out.push_back(mrs_nzcv_x(16));
             }
+            if (oe) emit_xer_overflow(out,16);
             if (rc) {
                 out.push_back(cmp_zero_w(11));
                 out.push_back(cset_w(12, 0xBU));
@@ -549,12 +570,13 @@ bool translate_one(u32 ins, u32 guest_pc, std::vector<u32>& out, bool& terminate
             emit_cr_compare(out,bf,xo10==0U?0xBU:0x3U,xo10==0U?0xCU:0x8U,0U);
             return true;
         }
-        if(xo10==104U) { // neg RT,RA (OE=0)
-            if((ins&0x400U)!=0U) return false;
+        if(xo10==104U) { // neg RT,RA
+            const bool oe=(ins&0x400U)!=0U;
             const bool record=(ins&1U)!=0U;
             out.push_back(ldr_w(9,0,static_cast<unsigned>(offsetof(CpuState,gpr)+ra*4U)));
-            out.push_back(sub_w(11,31U,9)); // 0 - GPR[RA]
+            out.push_back(oe?subs_w(11,31U,9):sub_w(11,31U,9));
             out.push_back(str_w(11,0,static_cast<unsigned>(offsetof(CpuState,gpr)+rt*4U)));
+            if(oe) { out.push_back(mrs_nzcv_x(16)); emit_xer_overflow(out,16); }
             if(record) emit_cr0(out,11);
             return true;
         }
