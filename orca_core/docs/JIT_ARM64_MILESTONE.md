@@ -168,3 +168,7 @@ Se emite selección bit-exact sin alterar FPSCR: la condición detecta signo, ±
 ## M050 — lmw/stmw
 
 Se añaden lmw/stmw como accesos de bloque nativos sobre RAM contigua ordinaria, con traducción MMU/Bus y conversión big-endian por palabra. El resolver acepta spans hasta 128 bytes; si cruza página, no es RAM, la traducción falla o hay caché bloqueada/WIMG especial, se usa el intérprete. Prueba diferencial carga r28–r31 y los almacena en otra dirección. CI pendiente.
+
+## M051 — harness comparativo para Android ARM64
+
+Se amplía tools/bench_interpreter.cpp para aceptar modo interpreter, jit o compare. El modo compare ejecuta el mismo loop guest en dos CPUs/Buses independientes, imprime instrucciones retiradas, tiempo, MIPS y speedup, e incluye el coste de compilación del primer bloque. El loop entero cubre addi/lwz/stw/rlwinm/bdnz; el loop FP actual se etiqueta explícitamente como fallback porque sus operaciones aritméticas aún no están traducidas. Este harness permite medir en el dispositivo real, pero todavía no se ha ejecutado en un Android físico: no hay resultados de hardware ni speedup publicado.
