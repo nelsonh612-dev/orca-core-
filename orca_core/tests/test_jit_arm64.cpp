@@ -150,21 +150,23 @@ TEST_CASE(jit_arm64_translates_adde_and_subfe_using_xer_carry_in) {
     CHECK(has_word(0xD51B420CU)); // MSR NZCV, x12 (carry-in)
     CHECK(has_word(0x3A0A012BU)); // ADCS w11,w9,w10
     CHECK(has_word(0x2A2903E9U)); // MVN w9,w9 for subfe
-    CHECK(has_word(0xD53B420CU)); // MRS NZCV (carry-out)
+    CHECK(has_word(0xD53B4210U)); // MRS x16, NZCV (carry-out preserved for CA and OV)
 }
 
-TEST_CASE(jit_arm64_does_not_translate_overflow_enabled_xo_arithmetic_yet) {
-    const std::array<u32, 4> code{
-        A::add(3, 4, 5, true, false),
-        A::XO(75U, 3U, 4U, 5U, true, false),
-        A::XO(11U, 3U, 4U, 5U, true, false),
-        A::mullw(3U, 4U, 5U, true, false)
+TEST_CASE(jit_arm64_translates_supported_overflow_enabled_add_but_defers_overflow_multiply) {
+    const std::array<u32,4> code{
+        A::add(3U,4U,5U,true,false),
+        A::XO(75U,3U,4U,5U,true,false),
+        A::XO(11U,3U,4U,5U,true,false),
+        A::mullw(3U,4U,5U,true,false)
     };
-    for (u32 ins : code) {
-        const std::array<u32,1> one{ins};
-        const Block b = compile_arm64(one, 0x1000U);
-        CHECK_EQ(b.guest_instructions, 0U);
-        CHECK(b.host_words.empty());
+    const Block add_block=compile_arm64(std::span<const u32>(code.data(),1U),0x1000U);
+    CHECK_EQ(add_block.guest_instructions,1U);
+    for(std::size_t i=1;i<code.size();++i) {
+        const std::array<u32,1> one{code[i]};
+        const Block block=compile_arm64(one,0x1000U);
+        CHECK_EQ(block.guest_instructions,0U);
+        CHECK(block.host_words.empty());
     }
 }
 
