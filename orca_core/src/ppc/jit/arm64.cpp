@@ -143,7 +143,7 @@ void emit_cr1(std::vector<u32>& out) {
     out.push_back(ubfx_w(10, 9, 28U, 4U));
     out.push_back(lsl_w(10, 10, 24U));
     out.push_back(ldr_w(9, 0, static_cast<unsigned>(offsetof(CpuState, cr))));
-    load_imm(out, 11, 0xF00FFFFFU);
+    load_imm(out, 11, 0xF0FFFFFFU);
     out.push_back(and_w(9, 9, 11));
     out.push_back(orr_w(9, 9, 10));
     out.push_back(str_w(9, 0, static_cast<unsigned>(offsetof(CpuState, cr))));
