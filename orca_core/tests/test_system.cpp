@@ -1,6 +1,7 @@
 // Scheduler, Processor Interface, gather pipe, executable loaders, system run loop.
 #include "orca/core/scheduler.hpp"
 #include "orca/hw/processor_interface.hpp"
+#include "orca/hw/wii_remote.hpp"
 #include "orca/loader/executable.hpp"
 #include "orca/memory/console_maps.hpp"
 #include "orca/system/system.hpp"
@@ -375,6 +376,50 @@ TEST_CASE(cpu_access_to_pi_and_gather_pipe_through_mmu) {
 }
 
 TEST_MAIN("system")
+
+TEST_CASE(wii_remote_decodes_core_buttons_and_accelerometer_report) {
+    hw::WiiRemoteState state{};
+    std::string error;
+    const std::array<u8,6> report{0x31,0x10,0x88,0x7F,0x81,0xA2};
+    CHECK(hw::decode_wii_remote_input_report(report,state,error));
+    CHECK_EQ(state.report_id,0x31U);
+    CHECK_EQ(state.buttons,0x1088U);
+    CHECK((state.buttons & hw::WiiRemoteButtons::PLUS)!=0U);
+    CHECK((state.buttons & hw::WiiRemoteButtons::UP)!=0U);
+    CHECK((state.buttons & hw::WiiRemoteButtons::A)!=0U);
+    CHECK(state.has_accelerometer);
+    CHECK_EQ(state.accelerometer[0],0x7FU);
+    CHECK_EQ(state.accelerometer[1],0x81U);
+    CHECK_EQ(state.accelerometer[2],0xA2U);
+    CHECK(state.extension_size==0U);
+}
+
+TEST_CASE(wii_remote_preserves_extension_bytes_from_combined_reports) {
+    hw::WiiRemoteState state{};
+    std::string error;
+    std::array<u8,22> report{};
+    report[0]=0x35; report[1]=0x02; report[2]=0x08;
+    for (std::size_t i=0;i<16U;++i) report[6U+i]=static_cast<u8>(i+1U);
+    CHECK(hw::decode_wii_remote_input_report(report,state,error));
+    CHECK_EQ(state.extension_size,16U);
+    CHECK_EQ(state.extension_data[0],1U);
+    CHECK_EQ(state.extension_data[15],16U);
+    CHECK_EQ(state.buttons,0x0208U);
+}
+
+TEST_CASE(wii_remote_rejects_unknown_and_truncated_reports_without_mutating_state) {
+    hw::WiiRemoteState state{};
+    state.buttons=0x1234U;
+    std::string error;
+    const std::array<u8,2> truncated{0x31,0xFF};
+    CHECK(!hw::decode_wii_remote_input_report(truncated,state,error));
+    CHECK(error.find("truncated")!=std::string::npos);
+    CHECK_EQ(state.buttons,0x1234U);
+    const std::array<u8,3> unknown{0x3F,0,0};
+    CHECK(!hw::decode_wii_remote_input_report(unknown,state,error));
+    CHECK(error.find("unsupported")!=std::string::npos);
+    CHECK_EQ(state.buttons,0x1234U);
+}
 
 TEST_CASE(system_exposes_frontend_controller_on_channel_zero) {
     system::System sys({});
