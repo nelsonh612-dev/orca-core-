@@ -1094,6 +1094,50 @@ TEST_CASE(jit_arm64_differential_unconditional_branch_and_link_matches_interpret
 }
 #endif
 
+TEST_CASE(jit_arm64_translates_guarded_double_precision_fpr_memory_forms) {
+    const std::array<u32, 8> code{
+        A::lfd(1, 0, 3), A::stfd(1, 8, 3), A::lfdu(2, 16, 3),
+        A::stfdu(2, 24, 3), A::lfdx(4, 3, 5), A::stfdx(4, 3, 6),
+        A::lfdux(7, 3, 8), A::stfdux(7, 3, 9)
+    };
+    for (u32 ins : code) {
+        const std::array<u32, 1> one{ins};
+        const Block block = compile_arm64(one, 0x1000U);
+        CHECK_EQ(block.guest_instructions, 1U);
+        CHECK(block.requires_fp);
+        CHECK(block.has_guarded_memory);
+        CHECK_EQ(block.guarded_memory_prefix, 0U);
+        CHECK_EQ(block.host_words.back(), 0xD65F03C0U);
+    }
+}
+
+#if defined(__aarch64__)
+TEST_CASE(jit_arm64_differential_double_precision_fpr_memory_matches_interpreter) {
+    Machine reference;
+    Machine candidate;
+    const std::array<u32, 4> code{
+        A::lfd(1, 0, 3), A::stfd(1, 8, 3), A::lfdu(2, 16, 3), A::stfdx(2, 3, 4)
+    };
+    reference.code(0x1000U, {code[0], code[1], code[2], code[3]});
+    candidate.code(0x1000U, {code[0], code[1], code[2], code[3]});
+    for (Machine* m : {&reference, &candidate}) {
+        m->s().msr = MSR_FP;
+        m->s().gpr[3] = 0x2000U;
+        m->s().gpr[4] = 0x18U;
+        m->s().fpr[1].ps1 = 0x3FF0000000000000ULL;
+        CHECK(m->bus.write(0x2000U, 8U, 0x400921FB54442D18ULL) == mem::BusStatus::Ok);
+        CHECK(m->bus.write(0x2010U, 8U, 0xC005BF0A8B145769ULL) == mem::BusStatus::Ok);
+    }
+    CHECK(reference.cpu->run(code.size()) == StepResult::Executed);
+    CHECK(candidate.cpu->run_jit(code.size()) == StepResult::Executed);
+    CHECK(candidate.s() == reference.s());
+    u64 reference_store = 0, candidate_store = 0;
+    CHECK(reference.bus.read(0x2008U, 8U, reference_store) == mem::BusStatus::Ok);
+    CHECK(candidate.bus.read(0x2008U, 8U, candidate_store) == mem::BusStatus::Ok);
+    CHECK_EQ(candidate_store, reference_store);
+}
+#endif
+
 TEST_CASE(jit_arm64_unsupported_first_instruction_produces_no_executable_block) {
     // bcctr with BO[2] clear is architecturally invalid and must stay in fallback.
     const std::array<u32, 1> code{A::bcctr(0, 0)};
