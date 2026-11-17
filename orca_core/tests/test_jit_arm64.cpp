@@ -1321,4 +1321,44 @@ TEST_CASE(jit_arm64_differential_integer_state_matches_reference_interpreter) {
 }
 #endif
 
+
+#if defined(__aarch64__)
+TEST_CASE(jit_arm64_misaligned_lfs_uses_interpreter_alignment_exception) {
+    Machine reference;
+    Machine candidate;
+    const u32 instruction = A::lfs(1, 0, 3);
+    reference.code(0x1000U, {instruction});
+    candidate.code(0x1000U, {instruction});
+    for (Machine* m : {&reference, &candidate}) {
+        m->s().msr = MSR_FP;
+        m->s().gpr[3] = 0x2001U; // scalar FP accesses require 4-byte alignment
+        CHECK(m->bus.write32(0x2001U, 0x3F800000U) == mem::BusStatus::Ok);
+    }
+    CHECK(reference.cpu->run(1U) == StepResult::ExceptionTaken);
+    CHECK(candidate.cpu->run_jit(1U) == StepResult::ExceptionTaken);
+    CHECK_EQ(candidate.cpu->jit_memory_fastpath_hits(), 0U);
+    CHECK(candidate.s() == reference.s());
+}
+
+TEST_CASE(jit_arm64_misaligned_stfsx_uses_interpreter_alignment_exception) {
+    Machine reference;
+    Machine candidate;
+    const u32 instruction = A::stfsx(1, 3, 4);
+    reference.code(0x1000U, {instruction});
+    candidate.code(0x1000U, {instruction});
+    for (Machine* m : {&reference, &candidate}) {
+        m->s().msr = MSR_FP;
+        m->s().gpr[3] = 0x2000U;
+        m->s().gpr[4] = 1U;
+        m->s().fpr[1].ps0 = 0x3FF0000000000000ULL;
+        CHECK(m->bus.write32(0x2000U, 0xA5A5A5A5U) == mem::BusStatus::Ok);
+    }
+    CHECK(reference.cpu->run(1U) == StepResult::ExceptionTaken);
+    CHECK(candidate.cpu->run_jit(1U) == StepResult::ExceptionTaken);
+    CHECK_EQ(candidate.cpu->jit_memory_fastpath_hits(), 0U);
+    CHECK(candidate.s() == reference.s());
+    CHECK_EQ(candidate.r32(0x2000U), 0xA5A5A5A5U);
+}
+#endif
+
 TEST_MAIN("jit_arm64")
