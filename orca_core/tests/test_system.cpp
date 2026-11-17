@@ -380,13 +380,14 @@ TEST_MAIN("system")
 TEST_CASE(wii_remote_decodes_core_buttons_and_accelerometer_report) {
     hw::WiiRemoteState state{};
     std::string error;
-    const std::array<u8,6> report{0x31,0x11,0x04,0x7F,0x81,0xA2};
+    const std::array<u8,6> report{0x31,0x18,0x08,0x7F,0x81,0xA2};
     CHECK(hw::decode_wii_remote_input_report(report,state,error));
     CHECK_EQ(state.report_id,0x31U);
-    CHECK_EQ(state.buttons,0x1104U);
+    CHECK_EQ(state.buttons,0x1808U);
     CHECK((state.buttons & hw::WiiRemoteButtons::PLUS)!=0U);
     CHECK((state.buttons & hw::WiiRemoteButtons::UP)!=0U);
     CHECK((state.buttons & hw::WiiRemoteButtons::A)!=0U);
+    CHECK((state.buttons & hw::WiiRemoteButtons::TWO)==0U);
     CHECK(state.has_accelerometer);
     CHECK_EQ(state.accelerometer[0],0x7FU);
     CHECK_EQ(state.accelerometer[1],0x81U);
@@ -486,4 +487,18 @@ TEST_CASE(wii_remote_builds_report_mode_and_status_commands) {
     const auto status=hw::make_wii_remote_status_request(true);
     CHECK_EQ(status[0],0x15U);
     CHECK_EQ(status[1],0x01U);
+}
+
+
+TEST_CASE(wii_remote_decodes_status_report_battery_leds_and_extension_flags) {
+    hw::WiiRemoteState state{};
+    std::string error;
+    const std::array<u8,7> report{0x20,0x01,0x08,0xA2,0x00,0x00,0x7F};
+    CHECK(hw::decode_wii_remote_input_report(report,state,error));
+    CHECK(state.has_status);
+    CHECK_EQ(state.buttons,0x0108U);
+    CHECK_EQ(state.led_mask,0x0AU);
+    CHECK_EQ(state.status_flags,0x02U);
+    CHECK_EQ(state.battery_level,0x7FU);
+    CHECK(!state.has_accelerometer);
 }
