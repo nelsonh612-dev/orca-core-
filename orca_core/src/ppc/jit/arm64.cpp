@@ -23,6 +23,7 @@ constexpr u32 eor_w(unsigned rd, unsigned rn, unsigned rm) { return 0x4A000000U 
 constexpr u32 and_w(unsigned rd, unsigned rn, unsigned rm) { return 0x0A000000U | (rm << 16U) | (rn << 5U) | rd; }
 constexpr u32 mul_w(unsigned rd, unsigned rn, unsigned rm) { return 0x1B007C00U | (rm << 16U) | (rn << 5U) | rd; }
 constexpr u32 udiv_w(unsigned rd, unsigned rn, unsigned rm) { return 0x1AC00800U | (rm << 16U) | (rn << 5U) | rd; }
+constexpr u32 sdiv_w(unsigned rd, unsigned rn, unsigned rm) { return 0x1AC00C00U | (rm << 16U) | (rn << 5U) | rd; }
 constexpr u32 smull_x(unsigned rd,unsigned rn,unsigned rm) { return 0x9B207C00U | (rm << 16U) | (rn << 5U) | rd; }
 constexpr u32 umull_x(unsigned rd,unsigned rn,unsigned rm) { return 0x9BA07C00U | (rm << 16U) | (rn << 5U) | rd; }
 constexpr u32 lsr_x(unsigned rd,unsigned rn,unsigned shift) { return 0xD3400000U | (shift << 16U) | (63U << 10U) | (rn << 5U) | rd; }
@@ -543,6 +544,30 @@ bool translate_one(u32 ins, u32 guest_pc, std::vector<u32>& out, bool& terminate
             // AArch64 UDIV returns zero for a zero divisor, matching the
             // interpreter's currently modelled PowerPC result.
             out.push_back(udiv_w(11,9,10));
+            out.push_back(str_w(11,0,static_cast<unsigned>(offsetof(CpuState,gpr)+rt*4U)));
+            if((ins&1U)!=0U) emit_cr0(out,11);
+            return true;
+        }
+        if(xo10==491U) { // divw RT,RA,RB (OE=0)
+            if((ins&0x400U)!=0U) return false;
+            out.push_back(ldr_w(9,0,static_cast<unsigned>(offsetof(CpuState,gpr)+ra*4U)));
+            out.push_back(ldr_w(10,0,static_cast<unsigned>(offsetof(CpuState,gpr)+rb*4U)));
+            out.push_back(sdiv_w(11,9,10));
+            // The interpreter models the 750-family undefined cases as
+            // sign-fill: divisor zero or INT_MIN / -1.
+            out.push_back(cmp_zero_w(10));
+            out.push_back(cset_w(12,0U)); // divisor == 0
+            load_imm(out,13,0x80000000U);
+            out.push_back(subs_w(31U,9,13));
+            out.push_back(cset_w(14,0U)); // numerator == INT_MIN
+            load_imm(out,15,0xFFFFFFFFU);
+            out.push_back(subs_w(31U,10,15));
+            out.push_back(cset_w(15,0U)); // divisor == -1
+            out.push_back(and_w(14,14,15));
+            out.push_back(orr_w(12,12,14));
+            out.push_back(asr_w(15,9,31U)); // fallback: -1 for negative, 0 otherwise
+            out.push_back(cmp_zero_w(12));
+            out.push_back(csel_w(11,11,15,0U)); // normal quotient if no special case
             out.push_back(str_w(11,0,static_cast<unsigned>(offsetof(CpuState,gpr)+rt*4U)));
             if((ins&1U)!=0U) emit_cr0(out,11);
             return true;
