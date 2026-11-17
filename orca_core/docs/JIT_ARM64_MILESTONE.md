@@ -119,3 +119,24 @@ Se añaden terminadores de bloque nativos para bclr y bcctr. El destino LR/CTR s
 ## M041 — mcrxr
 
 Se añade mcrxr como operación nativa: copia XER[SO|OV|CA] al nibble CR indicado y limpia esos bits del XER, preservando los 28 bits inferiores. Su decodificación utiliza el XO completo de 10 bits (512), no el XO de 9 bits empleado por las instrucciones XO/OE. Incluye prueba diferencial de CpuState completo; CI pendiente para este commit.
+
+## M042 — acarreo entero extendido
+
+Se añaden formas nativas addze, addme, subfze, subfme y neg. Las cuatro primeras consumen y actualizan XER[CA]; las formas Rc actualizan CR0 con el SO adhesivo. Se incorporaron pruebas diferenciales contra el intérprete para ambos valores iniciales de CA. Workflow 44005781291: GCC, Clang, QEMU ARM64 y APK Android completados correctamente.
+
+## M043 — overflow habilitado y XER[OV]/XER[SO]
+
+Se amplía la aritmética XO para OE=1 en add, addc, adde, addze, addme, subf, subfc, subfe, subfze, subfme y neg. El emisor obtiene el overflow signed de NZCV[V], reemplaza XER[OV] y hace sticky XER[SO]. Se conserva XER[CA] para las formas con carry y Rc actualiza CR0 usando el SO resultante. Se añadieron pruebas diferenciales para los once casos y distintos estados iniciales de XER. CI del commit más reciente pendiente.
+
+## M044 — operaciones unarias bit-exact de FPR
+
+Se añaden fmr, fneg, fnabs y fabs como operaciones enteras nativas sobre el patrón binario de FPR[ps0]. No se altera ps1 ni FPSCR; Rc copia FPSCR[0:3] a CR1. Los bloques marcan requires_fp y Cpu::run_jit conserva el camino de excepción FloatingPointUnavailable cuando MSR[FP]=0. Se añaden pruebas diferenciales con NaN/patrones de signo y una prueba del límite MSR[FP] en AArch64/QEMU. CI pendiente.
+
+## Áreas que continúan sin implementación nativa
+
+- Load/store enteros y FP/paired-single todavía terminan el bloque y se ejecutan mediante el intérprete. La ruta del intérprete sí aplica traducción MMU/BAT/segmentos, endianess big-endian, accesos Bus/MMIO, reservas, alineación y excepciones DSI/ISI; todavía no existe un ABI de contexto JIT seguro que permita emitir accesos nativos sin saltarse esas reglas.
+- Aritmética FPU y paired-single, FPSCR completo, operaciones cuantizadas y sus excepciones siguen en fallback.
+- No está completa toda la ISA CR/XER ni las formas de multiplicación/división con OE; las formas no emitidas permanecen en fallback.
+- Las comprobaciones de interrupción y el scheduler siguen limitando los lotes del dispatcher, pero falta validación temporal en hardware bajo carga real.
+- La invalidación por escrituras del Bus e icbi está conectada a la caché de bloques; se necesita más estrés diferencial con DMA, alias de memoria y cambios de BAT/PTE.
+- QEMU ARM64 y el APK CI no equivalen a pruebas en un dispositivo físico. No se ha ejecutado una sesión física en el dispositivo del usuario ni se han obtenido benchmarks comparativos fiables.
