@@ -59,12 +59,13 @@ Los hitos M030–M032 amplían el subconjunto nativo sin cambiar el fallback arq
 - Formas X and, andc, nor, eqv, xor, orc, or y nand, incluidas las formas Rc=1.
 - Rotación y máscaras rlwinm, rlwimi y rlwnm; las formas con Rc=1 actualizan CR0.
 - Desplazamientos lógicos slw / srw, respetando el campo de seis bits del contador PPC.
+- Desplazamientos aritméticos sraw / srawi con actualización de XER[CA] y CR0 cuando Rc=1 (M035).
 - cntlzw, extsb y extsh.
 - Comparaciones signed/unsigned cmpwi, cmplwi, cmpw y cmplw con actualización del campo CR seleccionado y XER[SO].
 
 Se añadieron pruebas de traducción para estas formas y pruebas diferenciales condicionadas a AArch64 que comparan el estado completo con el intérprete de referencia. Estas pruebas nuevas aún necesitan ejecutarse en CI/QEMU ARM64; la presencia de los tests no equivale a un resultado aprobado.
 
-Se mantienen deliberadamente en fallback las formas que aún no tienen semántica completa en el emisor, entre ellas sraw / srawi (XER[CA]), operaciones con overflow habilitado, saltos, accesos de memoria, FPU y paired-single.
+Se mantienen deliberadamente en fallback las formas que aún no tienen semántica completa en el emisor, entre ellas operaciones con overflow habilitado, saltos, accesos de memoria, FPU y paired-single.
 
 ### Estado real después de M032
 
@@ -75,6 +76,7 @@ Se mantienen deliberadamente en fallback las formas que aún no tienen semántic
 | Integración con el scheduler | Integrada en M026; validar temporización en hardware |
 | Aritmética y lógica entera | Parcial, ampliada en M030 |
 | Rotaciones, máscaras y desplazamientos lógicos | Ampliados en M031/M032 |
+| Desplazamientos aritméticos y XER[CA] | sraw/srawi añadidos en M035; validar diferencialmente en ARM64 |
 | Comparaciones signed/unsigned | cmpwi, cmplwi, cmpw y cmplw añadidas en M034 |
 | CR0, campos CR y XER | Parcial; comparaciones y CR0 cubiertos en las formas indicadas, otras formas de flags pendientes |
 | Saltos y flujo de control nativo | Pendiente |
