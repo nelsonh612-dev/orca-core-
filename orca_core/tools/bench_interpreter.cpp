@@ -89,7 +89,7 @@ int main(int argc, char** argv) {
                     jit_mips > 0.0 ? jit_mips / interpreter_mips : 0.0);
         return interpreter.result == StepResult::UnsupportedInstruction &&
                jit.result == StepResult::UnsupportedInstruction &&
-               interpreter.r3 == iterations && jit.r3 == iterations ? 0 : 1;
+               interpreter.r3 == iterations && jit.r3 == iterations && (fp || jit.ram_fastpath_hits >= static_cast<u64>(iterations) * 2U) ? 0 : 1;
 #else
         std::printf("JIT comparison unavailable: this binary is not running on AArch64.\n");
         return 2;
