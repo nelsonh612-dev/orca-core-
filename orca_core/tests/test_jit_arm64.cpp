@@ -124,6 +124,46 @@ TEST_CASE(jit_arm64_differential_guarded_d_form_ram_load_store) {
     CHECK_EQ(native_path.r16(0x200EU), reference.r16(0x200EU));
 }
 
+#if defined(__aarch64__)
+TEST_CASE(jit_arm64_differential_guarded_indexed_load_store_and_reverse_forms) {
+    const std::array<u32, 7> code{
+        A::X(23, 3, 4, 5), A::X(279, 6, 4, 7), A::X(343, 8, 4, 9),
+        A::X(534, 10, 4, 11), A::X(151, 12, 4, 13),
+        A::X(662, 14, 4, 15), A::X(55, 16, 4, 17)
+    };
+    auto prepare = [&](Machine& machine) {
+        machine.code(0x1000U, {code[0],code[1],code[2],code[3],code[4],code[5],code[6]});
+        machine.s().gpr[4] = 0x2000U;
+        machine.s().gpr[5] = 0x10U;
+        machine.s().gpr[7] = 0x14U;
+        machine.s().gpr[9] = 0x16U;
+        machine.s().gpr[11] = 0x18U;
+        machine.s().gpr[13] = 0x1CU;
+        machine.s().gpr[14] = 0x0BADF00DU;
+        machine.s().gpr[15] = 0x20U;
+        machine.s().gpr[17] = 0x24U;
+        CHECK(machine.bus.write32(0x2010U, 0x12345678U) == mem::BusStatus::Ok);
+        CHECK(machine.bus.write16(0x2014U, 0xABCDU) == mem::BusStatus::Ok);
+        CHECK(machine.bus.write16(0x2016U, 0x8001U) == mem::BusStatus::Ok);
+        CHECK(machine.bus.write32(0x2018U, 0x12345678U) == mem::BusStatus::Ok);
+        CHECK(machine.bus.write32(0x2024U, 0xAABBCCDDU) == mem::BusStatus::Ok);
+    };
+    Machine reference;
+    Machine native_path;
+    prepare(reference);
+    prepare(native_path);
+    reference.s().gpr[12] = 0xDEADBEEFU;
+    native_path.s().gpr[12] = 0xDEADBEEFU;
+    CHECK(reference.cpu->run(code.size()) == StepResult::Executed);
+    u64 completed = 0;
+    CHECK(native_path.cpu->run_jit(code.size(), &completed) == StepResult::Executed);
+    CHECK_EQ(completed, code.size());
+    CHECK(native_path.s() == reference.s());
+    CHECK_EQ(native_path.r32(0x201CU), reference.r32(0x201CU));
+    CHECK_EQ(native_path.r32(0x2020U), reference.r32(0x2020U));
+}
+#endif
+
 TEST_CASE(jit_arm64_guarded_memory_falls_back_for_unmapped_and_page_crossing) {
     const u32 instruction = A::D(32, 3, 4, 0);
     Machine reference_unmapped;
