@@ -21,9 +21,6 @@ constexpr u32 str_x(unsigned rt, unsigned rn, unsigned byte_offset) {
 constexpr u32 movz_x(unsigned rd, u32 imm16, unsigned shift) {
     return 0xD2800000U | ((shift / 16U) << 21U) | ((imm16 & 0xFFFFU) << 5U) | rd;
 }
-constexpr u32 movk_x(unsigned rd, u32 imm16, unsigned shift) {
-    return 0xF2800000U | ((shift / 16U) << 21U) | ((imm16 & 0xFFFFU) << 5U) | rd;
-}
 constexpr u32 eor_x(unsigned rd, unsigned rn, unsigned rm) {
     return 0xCA000000U | (rm << 16U) | (rn << 5U) | rd;
 }
@@ -32,6 +29,9 @@ constexpr u32 orr_x(unsigned rd, unsigned rn, unsigned rm) {
 }
 constexpr u32 and_x(unsigned rd, unsigned rn, unsigned rm) {
     return 0x8A000000U | (rm << 16U) | (rn << 5U) | rd;
+}
+constexpr u32 mvn_x(unsigned rd, unsigned rm) {
+    return 0xAA2003E0U | (rm << 16U) | rd;
 }
 constexpr u32 str_w(unsigned rt, unsigned rn, unsigned byte_offset) {
     return 0xB9000000U | ((byte_offset / 4U) << 10U) | (rn << 5U) | rt;
@@ -392,13 +392,7 @@ bool translate_one(u32 ins, std::vector<u32>& out) {
                 if (xo == 40U) out.push_back(eor_x(11, 9, 10));
                 else if (xo == 136U) out.push_back(orr_x(11, 9, 10));
                 else {
-                    out.push_back(mvn_w(12, 12)); // overwritten below; keep W scratch independent
-                    load_imm(out, 12, 0U);
-                    out.pop_back();
-                    out.push_back(movz_x(10, 0x7FFFU, 48U));
-                    out.push_back(movk_x(10, 0xFFFFU, 32U));
-                    out.push_back(movk_x(10, 0xFFFFU, 16U));
-                    out.push_back(movk_x(10, 0xFFFFU, 0U));
+                    out.push_back(mvn_x(10, 10));
                     out.push_back(and_x(11, 9, 10));
                 }
                 out.push_back(str_x(11, 0, destination));
