@@ -1023,7 +1023,8 @@ Block compile_arm64(std::span<const u32> words, u32 start_pc) {
                                  ((ins >> 1U) & 0x3FFU) == 663U ||
                                  ((ins >> 1U) & 0x3FFU) == 695U ||
                                  ((ins >> 1U) & 0x3FFU) == 727U ||
-                                 ((ins >> 1U) & 0x3FFU) == 759U))) {
+                                 ((ins >> 1U) & 0x3FFU) == 759U ||
+                                 ((ins >> 1U) & 0x3FFU) == 983U))) {
             const bool indexed = guest_op == 31U;
             const unsigned xo = indexed ? ((ins >> 1U) & 0x3FFU) : 0U;
             const bool is_single = indexed
@@ -1034,6 +1035,7 @@ Block compile_arm64(std::span<const u32> words, u32 start_pc) {
                 ? (xo == 535U || xo == 567U || xo == 599U || xo == 631U)
                 : (guest_op == 48U || guest_op == 49U ||
                    guest_op == 50U || guest_op == 51U);
+            const bool is_integer_word = indexed && xo == 983U; // stfiwx
             const bool update = indexed
                 ? (xo == 567U || xo == 631U || xo == 695U || xo == 759U)
                 : (guest_op == 49U || guest_op == 51U ||
@@ -1042,7 +1044,7 @@ Block compile_arm64(std::span<const u32> words, u32 start_pc) {
             const unsigned ra = (ins >> 16U) & 31U;
             const unsigned rb = (ins >> 11U) & 31U;
             if (update && ra == 0U) break;
-            const unsigned access_size = is_single ? 4U : 8U;
+            const unsigned access_size = (is_single || is_integer_word) ? 4U : 8U;
             const unsigned fpr_offset = static_cast<unsigned>(
                 offsetof(CpuState, fpr) + ft * sizeof(Fpr) + offsetof(Fpr, ps0));
             b.host_words.push_back(sub_sp_32());
@@ -1086,7 +1088,15 @@ Block compile_arm64(std::span<const u32> words, u32 start_pc) {
             } else {
                 b.host_words.push_back(str_x(0, 31U, 16U)); // preserve resolved host pointer across helper call
                 b.host_words.push_back(ldr_x(17, 31U, 0U));
-                if (is_single) {
+                if (is_integer_word) {
+                    // stfiwx stores the low-order 32 bits of FPR[ps0] verbatim;
+                    // it is not a floating-point conversion.
+                    b.host_words.push_back(ldr_w(11, 17, fpr_offset + 4U));
+                    b.host_words.push_back(rev_w(11, 11));
+                    b.host_words.push_back(ldr_x(17, 31U, 16U));
+                    b.host_words.push_back(str_w(11, 17, 0U));
+                    b.host_words.push_back(ldr_x(17, 31U, 0U));
+                } else if (is_single) {
                     b.host_words.push_back(ldr_x(0, 17, fpr_offset));
                     load_imm_x(b.host_words, 16, static_cast<u64>(
                         reinterpret_cast<std::uintptr_t>(&fpu::store_single)));
