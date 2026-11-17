@@ -39,7 +39,17 @@ bool decode_wii_remote_input_report(std::span<const u8> report,
     const u8 id=report[0], required=minimum_size(id);
     if (required==0U) { error="Wii Remote: unsupported input report ID"; return false; }
     if (report.size()<required) { error="Wii Remote: truncated input report"; return false; }
+    // Status and acknowledgement reports are asynchronous side channels.
+    // Preserve their last decoded values when a normal input report arrives,
+    // and preserve them when the other side-channel report arrives.
     WiiRemoteState next{};
+    next.has_status=state.has_status;
+    next.status_flags=state.status_flags;
+    next.led_mask=state.led_mask;
+    next.battery_level=state.battery_level;
+    next.has_acknowledgement=state.has_acknowledgement;
+    next.acknowledged_report_id=state.acknowledged_report_id;
+    next.acknowledgement_error=state.acknowledgement_error;
     next.report_id=id;
     next.buttons=static_cast<u16>((static_cast<u16>(report[1])<<8U)|report[2]);
     if (id==0x22U) {
