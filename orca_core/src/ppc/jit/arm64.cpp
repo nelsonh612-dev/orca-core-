@@ -606,26 +606,26 @@ Block compile_arm64(std::span<const u32> words, u32 start_pc) {
             break;
         }
 
-        {
-        const unsigned xo = (ins >> 1U) & 0x3FFU;
-        if ((xo == 16U || xo == 528U)) { // bclr / bcctr
+        if ((ins >> 26U) == 19U) {
+            const unsigned xo = (ins >> 1U) & 0x3FFU;
+            if ((xo == 16U || xo == 528U)) { // bclr / bcctr
             const unsigned bo = (ins >> 21U) & 31U;
             const unsigned bi = (ins >> 16U) & 31U;
             if (xo == 528U && (bo & 4U) == 0U) break; // architecturally invalid form: interpreter handles it
             // Capture the indirect target before any LR/CTR side effects.
             b.host_words.push_back(ldr_w(15, 0, static_cast<unsigned>(
                 xo == 16U ? offsetof(CpuState, lr) : offsetof(CpuState, ctr))));
-            load_imm(out, 14, 0xFFFFFFFCU);
+            load_imm(b.host_words, 14, 0xFFFFFFFCU);
             b.host_words.push_back(and_w(15, 15, 14));
             if ((bo & 4U) == 0U) {
                 b.host_words.push_back(ldr_w(9, 0, static_cast<unsigned>(offsetof(CpuState, ctr))));
-                load_imm(out, 10, 1U);
+                load_imm(b.host_words, 10, 1U);
                 b.host_words.push_back(sub_w(11, 9, 10));
                 b.host_words.push_back(str_w(11, 0, static_cast<unsigned>(offsetof(CpuState, ctr))));
                 b.host_words.push_back(cmp_zero_w(11));
                 b.host_words.push_back(cset_w(12, (bo & 2U) != 0U ? 0x0U : 0x1U));
             } else {
-                load_imm(out, 12, 1U);
+                load_imm(b.host_words, 12, 1U);
             }
             if ((bo & 16U) == 0U) {
                 b.host_words.push_back(ldr_w(9, 0, static_cast<unsigned>(offsetof(CpuState, cr))));
@@ -633,15 +633,15 @@ Block compile_arm64(std::span<const u32> words, u32 start_pc) {
                 b.host_words.push_back(cmp_zero_w(10));
                 b.host_words.push_back(cset_w(14, (bo & 8U) != 0U ? 0x1U : 0x0U));
             } else {
-                load_imm(out, 14, 1U);
+                load_imm(b.host_words, 14, 1U);
             }
             b.host_words.push_back(and_w(12, 12, 14));
             b.host_words.push_back(cmp_zero_w(12));
-            load_imm(out, 14, b.end_pc + 4U);
+            load_imm(b.host_words, 14, b.end_pc + 4U);
             b.host_words.push_back(csel_w(9, 15, 14, 0x1U));
             b.host_words.push_back(str_w(9, 0, static_cast<unsigned>(offsetof(CpuState, pc))));
             if ((ins & 1U) != 0U) {
-                load_imm(out, 9, b.end_pc + 4U);
+                load_imm(b.host_words, 9, b.end_pc + 4U);
                 b.host_words.push_back(str_w(9, 0, static_cast<unsigned>(offsetof(CpuState, lr))));
             }
             ++b.guest_instructions;
