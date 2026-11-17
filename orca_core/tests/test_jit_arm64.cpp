@@ -123,6 +123,58 @@ TEST_CASE(jit_arm64_translates_all_register_logical_forms_and_record_bit) {
     CHECK_EQ(b.host_words.back(), 0xD65F03C0U);
 }
 
+
+TEST_CASE(jit_arm64_translates_rotate_mask_and_insert_forms) {
+    const std::array<u32, 3> code{
+        A::rlwinm(3, 4, 7, 4, 19, true),
+        A::rlwimi(5, 6, 11, 8, 23, false),
+        A::rlwnm(7, 8, 9, 0, 31, true)
+    };
+    const Block b = compile_arm64(code, 0x1000U);
+    CHECK_EQ(b.guest_instructions, code.size());
+    CHECK_EQ(b.end_pc, 0x100CU);
+    CHECK(!b.host_words.empty());
+    CHECK_EQ(b.host_words.back(), 0xD65F03C0U);
+    const auto has_word = [&](u32 word) {
+        for (u32 emitted : b.host_words) if (emitted == word) return true;
+        return false;
+    };
+    CHECK(has_word(0x1AC02C2BU)); // RORV w11,w1,w0 opcode family (register fields vary)
+}
+
+#if defined(__aarch64__)
+TEST_CASE(jit_arm64_differential_rotate_mask_matches_reference_interpreter) {
+    Machine reference;
+    const std::array<u32, 3> code{
+        A::rlwinm(3, 4, 7, 4, 19, true),
+        A::rlwimi(5, 6, 11, 8, 23, false),
+        A::rlwnm(7, 8, 9, 0, 31, true)
+    };
+    reference.code(0x1000U, {code[0], code[1], code[2]});
+    reference.s().gpr[4] = 0x81234567U;
+    reference.s().gpr[5] = 0xA5A5A5A5U;
+    reference.s().gpr[6] = 0xFEDCBA98U;
+    reference.s().gpr[8] = 0x12345678U;
+    reference.s().gpr[9] = 13U;
+    reference.s().cr = 0x12345678U;
+    CHECK(reference.cpu->run(code.size()) == StepResult::Executed);
+    const CpuState expected = reference.s();
+
+    CpuState actual{};
+    actual.pc = 0x1000U;
+    actual.gpr[4] = 0x81234567U;
+    actual.gpr[5] = 0xA5A5A5A5U;
+    actual.gpr[6] = 0xFEDCBA98U;
+    actual.gpr[8] = 0x12345678U;
+    actual.gpr[9] = 13U;
+    actual.cr = 0x12345678U;
+    const Block block = compile_arm64(code, 0x1000U);
+    CHECK_EQ(block.guest_instructions, code.size());
+    CHECK(execute_arm64(block, actual));
+    CHECK(actual == expected);
+}
+#endif
+
 TEST_CASE(jit_arm64_unsupported_first_instruction_produces_no_executable_block) {
     const std::array<u32, 1> code{A::b(4)};
     const Block b = compile_arm64(code, 0x1000);
