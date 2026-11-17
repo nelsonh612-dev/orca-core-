@@ -135,11 +135,10 @@ TEST_CASE(jit_arm64_translates_rotate_mask_and_insert_forms) {
     CHECK_EQ(b.end_pc, 0x100CU);
     CHECK(!b.host_words.empty());
     CHECK_EQ(b.host_words.back(), 0xD65F03C0U);
-    const auto has_word = [&](u32 word) {
-        for (u32 emitted : b.host_words) if (emitted == word) return true;
-        return false;
-    };
-    CHECK(has_word(0x1AC02C2BU)); // RORV w11,w1,w0 opcode family (register fields vary)
+    bool has_rorv = false;
+    for (u32 emitted : b.host_words)
+        has_rorv = has_rorv || ((emitted & 0xFFE0FC00U) == 0x1AC02C00U);
+    CHECK(has_rorv);
 }
 
 #if defined(__aarch64__)
