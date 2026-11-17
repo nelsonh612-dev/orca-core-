@@ -177,6 +177,49 @@ void emit_cr1(std::vector<u32>& out) {
     out.push_back(str_w(9, 0, static_cast<unsigned>(offsetof(CpuState, cr))));
 }
 
+void emit_fsel_lane(std::vector<u32>& out, unsigned a_reg, bool a_upper,
+                    unsigned b_reg, bool b_upper, unsigned c_reg, bool c_upper,
+                    unsigned d_reg, bool d_upper) {
+    const auto offset = [](unsigned reg, bool upper) {
+        return static_cast<unsigned>(offsetof(CpuState, fpr) + reg * sizeof(Fpr) +
+            (upper ? offsetof(Fpr, ps1) : offsetof(Fpr, ps0)));
+    };
+    out.push_back(ldr_x(9, 0, offset(a_reg, a_upper)));
+    out.push_back(ubfx_x(10, 9, 63U, 1U));
+    out.push_back(cmp_zero_w(10));
+    out.push_back(cset_w(11, 0U)); // sign bit clear
+    movz_x(12, 0x7FFFU, 48U);
+    out.push_back(movz_x(12, 0x7FFFU, 48U));
+    out.push_back(movk_x(12, 0xFFFFU, 32U));
+    out.push_back(movk_x(12, 0xFFFFU, 16U));
+    out.push_back(movk_x(12, 0xFFFFU, 0U));
+    out.push_back(and_x(13, 9, 12));
+    out.push_back(cmp_x(13, 31U));
+    out.push_back(cset_w(14, 0U)); // either signed zero compares >= 0
+    out.push_back(orr_w(11, 11, 14));
+
+    out.push_back(ubfx_x(13, 9, 52U, 11U));
+    out.push_back(cmp_imm_x(13, 0x7FFU));
+    out.push_back(cset_w(15, 0U)); // all exponent bits set
+    out.push_back(movz_x(12, 0x000FU, 48U));
+    out.push_back(movk_x(12, 0xFFFFU, 32U));
+    out.push_back(movk_x(12, 0xFFFFU, 16U));
+    out.push_back(movk_x(12, 0xFFFFU, 0U));
+    out.push_back(and_x(13, 9, 12));
+    out.push_back(cmp_x(13, 31U));
+    out.push_back(cset_w(16, 1U)); // mantissa nonzero
+    out.push_back(and_w(16, 15, 16)); // NaN
+    load_imm(out, 17, 1U);
+    out.push_back(eor_w(16, 16, 17)); // not NaN
+    out.push_back(and_w(11, 11, 16));
+    out.push_back(cmp_zero_w(11));
+
+    out.push_back(ldr_x(12, 0, offset(b_reg, b_upper)));
+    out.push_back(ldr_x(13, 0, offset(c_reg, c_upper)));
+    out.push_back(csel_x(14, 13, 12, 1U)); // select C for >= 0, B otherwise
+    out.push_back(str_x(14, 0, offset(d_reg, d_upper)));
+}
+
 void emit_cr0(std::vector<u32>& out, unsigned result_reg) {
     out.push_back(cmp_zero_w(result_reg));
     out.push_back(cset_w(12, 0xBU)); // LT
