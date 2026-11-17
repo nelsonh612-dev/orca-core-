@@ -16,6 +16,7 @@ struct BenchResult {
     StepResult result{StepResult::UnsupportedInstruction};
     u64 retired{};
     u32 r3{};
+    u64 ram_fastpath_hits{};
     double seconds{};
 };
 
@@ -53,6 +54,7 @@ BenchResult run_bench(u32 iterations, bool fp, bool jit) {
     out.result = result;
     out.retired = cpu.instructions_retired();
     out.r3 = cpu.state().gpr[3];
+    out.ram_fastpath_hits = cpu.jit_memory_fastpath_hits();
     out.seconds = std::chrono::duration<double>(t1 - t0).count();
     return out;
 }
@@ -61,7 +63,7 @@ void print_result(const char* label, const BenchResult& r, const char* loop) {
     const double mips = r.seconds > 0.0 ? static_cast<double>(r.retired) / r.seconds / 1e6 : 0.0;
     std::printf("%s: stop=%s retired=%llu r3=%u time=%.3fs throughput=%.2f M instr/s (%s loop)\n",
                 label, to_string(r.result), static_cast<unsigned long long>(r.retired),
-                r.r3, r.seconds, mips, loop);
+                r.r3, r.seconds, mips, static_cast<unsigned long long>(r.ram_fastpath_hits), loop);
 }
 } // namespace
 
