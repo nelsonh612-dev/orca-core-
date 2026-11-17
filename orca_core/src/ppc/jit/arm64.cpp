@@ -376,6 +376,22 @@ bool translate_one(u32 ins, std::vector<u32>& out) {
         // CR0 from the signed result and the sticky XER[SO] bit.
         const unsigned xo9 = (ins >> 1U) & 0x1FFU;
         const bool oe = (ins & 0x400U) != 0U;
+        if (xo9 == 512U && (ins & 1U) == 0U) { // mcrxr: move XER[SO|OV|CA] to CR field and clear them
+            const unsigned bf = (rt >> 2U) & 7U;
+            const unsigned shift = 28U - bf * 4U;
+            out.push_back(ldr_w(9, 0, static_cast<unsigned>(offsetof(CpuState, xer))));
+            out.push_back(ubfx_w(10, 9, 28U, 4U));
+            if (shift != 0U) out.push_back(lsl_w(10, 10, shift));
+            out.push_back(ldr_w(11, 0, static_cast<unsigned>(offsetof(CpuState, cr))));
+            load_imm(out, 12, ~(0xFU << shift));
+            out.push_back(and_w(11, 11, 12));
+            out.push_back(orr_w(11, 11, 10));
+            out.push_back(str_w(11, 0, static_cast<unsigned>(offsetof(CpuState, cr))));
+            load_imm(out, 12, 0x0FFFFFFFU);
+            out.push_back(and_w(9, 9, 12));
+            out.push_back(str_w(9, 0, static_cast<unsigned>(offsetof(CpuState, xer))));
+            return true;
+        }
         if (xo9 == 19U && (ins & 1U) == 0U) { // mfcr
             out.push_back(ldr_w(9, 0, static_cast<unsigned>(offsetof(CpuState, cr))));
             out.push_back(str_w(9, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + rt * 4U)));
