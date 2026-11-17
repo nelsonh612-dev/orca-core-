@@ -1279,6 +1279,63 @@ TEST_CASE(jit_arm64_differential_single_precision_fpr_memory_matches_interpreter
     for (u32 address : {0x2004U, 0x200CU})
         CHECK_EQ(native_path.r32(address), reference.r32(address));
 }
+TEST_CASE(jit_arm64_indexed_fpr_memory_falls_back_for_page_crossing_and_faults) {
+    // An aligned 64-bit FPR access at 0x1FFC crosses the 4 KiB page
+    // boundary. The resolver must decline it and let the interpreter perform
+    // the architectural access across both pages.
+    const u32 load = A::lfdx(1, 3, 4);
+    Machine reference_load;
+    Machine jit_load;
+    for (Machine* m : {&reference_load, &jit_load}) {
+        m->code(0x1000U, {load});
+        m->s().msr = MSR_FP;
+        m->s().gpr[3] = 0x1FFCU;
+        m->s().gpr[4] = 0U;
+        CHECK(m->bus.write32(0x1FFCU, 0x7FF00001U) == mem::BusStatus::Ok);
+        CHECK(m->bus.write32(0x2000U, 0x00000001U) == mem::BusStatus::Ok);
+    }
+    CHECK(reference_load.cpu->run(1U) == StepResult::Executed);
+    CHECK(jit_load.cpu->run_jit(1U) == StepResult::Executed);
+    CHECK_EQ(jit_load.cpu->jit_memory_fastpath_hits(), 0U);
+    CHECK(jit_load.s() == reference_load.s());
+
+    // The corresponding store must also fall back and write both page parts.
+    const u32 store = A::stfdx(5, 3, 4);
+    Machine reference_store;
+    Machine jit_store;
+    for (Machine* m : {&reference_store, &jit_store}) {
+        m->code(0x1000U, {store});
+        m->s().msr = MSR_FP;
+        m->s().gpr[3] = 0x1FFCU;
+        m->s().gpr[4] = 0U;
+        m->s().fpr[5].ps0 = 0x0123456789ABCDEFULL;
+    }
+    CHECK(reference_store.cpu->run(1U) == StepResult::Executed);
+    CHECK(jit_store.cpu->run_jit(1U) == StepResult::Executed);
+    CHECK_EQ(jit_store.cpu->jit_memory_fastpath_hits(), 0U);
+    CHECK(jit_store.s() == reference_store.s());
+    u64 expected = 0, actual = 0;
+    CHECK(reference_store.bus.read(0x1FFCU, 8U, expected) == mem::BusStatus::Ok);
+    CHECK(jit_store.bus.read(0x1FFCU, 8U, actual) == mem::BusStatus::Ok);
+    CHECK_EQ(actual, expected);
+
+    // An unmapped indexed FPR access must reproduce the interpreter's fault
+    // state, rather than exposing a host pointer or partially updating FPRs.
+    Machine reference_fault;
+    Machine jit_fault;
+    for (Machine* m : {&reference_fault, &jit_fault}) {
+        m->code(0x1000U, {load});
+        m->s().msr = MSR_FP;
+        m->s().gpr[3] = 0x10000000U;
+        m->s().gpr[4] = 0U;
+        m->s().fpr[1].ps0 = 0x3FF0000000000000ULL;
+    }
+    const StepResult expected_fault = reference_fault.cpu->run(1U);
+    CHECK(jit_fault.cpu->run_jit(1U) == expected_fault);
+    CHECK_EQ(jit_fault.cpu->jit_memory_fastpath_hits(), 0U);
+    CHECK(jit_fault.s() == reference_fault.s());
+}
+
 TEST_CASE(jit_arm64_differential_all_indexed_fpr_memory_forms_match_interpreter) {
     const std::array<u32, 8> instructions{
         A::lfsx(1, 3, 4), A::lfsux(2, 3, 4),
