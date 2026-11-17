@@ -502,3 +502,16 @@ TEST_CASE(wii_remote_decodes_status_report_battery_leds_and_extension_flags) {
     CHECK_EQ(state.battery_level,0x7FU);
     CHECK(!state.has_accelerometer);
 }
+
+
+TEST_CASE(wii_remote_decodes_output_report_acknowledgement) {
+    hw::WiiRemoteState state{};
+    std::string error;
+    const std::array<u8,5> report{0x22,0x00,0x08,0x12,0x00};
+    CHECK(hw::decode_wii_remote_input_report(report,state,error));
+    CHECK(state.has_acknowledgement);
+    CHECK_EQ(state.acknowledged_report_id,0x12U);
+    CHECK_EQ(state.acknowledgement_error,0x00U);
+    CHECK(!state.has_status);
+    CHECK(!state.has_accelerometer);
+}
