@@ -88,6 +88,74 @@ TEST_CASE(jit_arm64_translates_adde_and_subfe_using_xer_carry_in) {
     CHECK(has_word(0xD53B420CU)); // MRS NZCV (carry-out)
 }
 
+TEST_CASE(jit_arm64_translates_paired_single_unary_and_merge_operations) {
+    const std::array<u32, 8> code{
+        A::psX(40, 1, 0, 2, true), A::psX(72, 3, 0, 4),
+        A::psX(136, 5, 0, 6), A::psX(264, 7, 0, 8),
+        A::psX(528, 9, 10, 11), A::psX(560, 12, 13, 14),
+        A::psX(592, 15, 16, 17), A::psX(624, 18, 19, 20)
+    };
+    const Block block = compile_arm64(code, 0x1000U);
+    CHECK_EQ(block.guest_instructions, code.size());
+    CHECK(block.requires_fp);
+    CHECK(block.requires_paired);
+    CHECK_EQ(block.host_words.back(), 0xD65F03C0U);
+}
+
+#if defined(__aarch64__)
+TEST_CASE(jit_arm64_differential_paired_single_unary_and_merge_operations) {
+    const std::array<u32, 8> code{
+        A::psX(40, 1, 0, 2, true), A::psX(72, 3, 0, 4),
+        A::psX(136, 5, 0, 6), A::psX(264, 7, 0, 8),
+        A::psX(528, 9, 10, 11), A::psX(560, 12, 13, 14),
+        A::psX(592, 15, 16, 17), A::psX(624, 18, 19, 20)
+    };
+    Machine reference;
+    reference.code(0x1000U, {code[0],code[1],code[2],code[3],code[4],code[5],code[6],code[7]});
+    reference.s().msr |= MSR_FP;
+    reference.s().hid2 |= HID2_PSE;
+    reference.s().cr = 0xA5963CC3U;
+    for (unsigned i = 0; i < 32U; ++i) {
+        reference.s().fpr[i].ps0 = 0xFFF0000000001000ULL + i;
+        reference.s().fpr[i].ps1 = 0x7FF8000000002000ULL + i;
+    }
+    CHECK(reference.cpu->run(code.size()) == StepResult::Executed);
+    const CpuState expected = reference.s();
+
+    CpuState actual{};
+    actual.pc = 0x1000U;
+    actual.msr = MSR_FP;
+    actual.hid2 = HID2_PSE;
+    actual.cr = 0xA5963CC3U;
+    for (unsigned i = 0; i < 32U; ++i) {
+        actual.fpr[i].ps0 = 0xFFF0000000001000ULL + i;
+        actual.fpr[i].ps1 = 0x7FF8000000002000ULL + i;
+    }
+    const Block block = compile_arm64(code, 0x1000U);
+    CHECK(execute_arm64(block, actual));
+    CHECK(actual == expected);
+}
+
+TEST_CASE(jit_arm64_run_jit_preserves_paired_single_unavailable_exception) {
+    const u32 instruction = A::psX(40, 1, 0, 2);
+    Machine reference;
+    reference.code(0x1000U, {instruction});
+    reference.s().msr |= MSR_FP;
+    reference.s().hid2 &= ~HID2_PSE;
+    CHECK(reference.cpu->step() == StepResult::ExceptionTaken);
+    const CpuState expected = reference.s();
+
+    Machine native_path;
+    native_path.code(0x1000U, {instruction});
+    native_path.s().msr |= MSR_FP;
+    native_path.s().hid2 &= ~HID2_PSE;
+    u64 completed = 0;
+    CHECK(native_path.cpu->run_jit(1U, &completed) == StepResult::Executed);
+    CHECK_EQ(completed, 1U);
+    CHECK(native_path.s() == expected);
+}
+#endif
+
 TEST_CASE(jit_arm64_translates_fpr_unary_sign_and_move_operations) {
     const std::array<u32, 4> code{
         A::fmr(1, 2), A::fneg(4, 5, true), A::fnabs(6, 7), A::fabs_(8, 9)
