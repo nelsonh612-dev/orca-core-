@@ -500,7 +500,7 @@ bool translate_one(u32 ins, std::vector<u32>& out) {
                 out.push_back(orr_w(9, 9, 14)); // sticky SO
                 out.push_back(str_w(9, 0, static_cast<unsigned>(offsetof(CpuState, xer))));
             }
-            if (rc) emit_cr0(out, 11);
+            if ((ins & 1U) != 0U) emit_cr0(out, 11);
             return true;
         }
         if (xo9 == 19U && (ins & 1U) == 0U) { // mfcr
