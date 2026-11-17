@@ -84,6 +84,20 @@ struct WiiPartition {
 };
 std::optional<std::vector<WiiPartition>> parse_wii_partition_table(DiscReader& disc, std::string& error);
 
+struct WiiPartitionHeader {
+    u32 tmd_size{0};
+    u64 tmd_offset{0};
+    u32 cert_size{0};
+    u64 cert_offset{0};
+    u64 h3_offset{0};
+    u64 data_offset{0};
+    u64 data_size{0};
+};
+// Parses the 0x1C-byte metadata block at partition +0x2A4 and validates
+// every referenced range against the raw disc image.
+std::optional<WiiPartitionHeader> parse_wii_partition_header(
+    DiscReader& disc, const WiiPartition& partition, std::string& error);
+
 std::optional<DiscHeader> parse_header(DiscReader& disc, std::string& error);
 std::optional<ApploaderHeader> parse_apploader_header(DiscReader& disc, std::string& error);
 
