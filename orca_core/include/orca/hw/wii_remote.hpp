@@ -17,6 +17,9 @@ struct WiiRemoteState {
     std::array<u8,3> accelerometer{};
     bool has_accelerometer{};
     u8 report_id{};
+    // Raw packed IR bytes: 12 for report 0x33, 10 for report 0x37.
+    std::array<u8,12> ir_data{};
+    u8 ir_size{};
     std::array<u8,21> extension_data{};
     u8 extension_size{};
 };
