@@ -641,6 +641,32 @@ TEST_CASE(jit_arm64_differential_integer_state_matches_reference_interpreter) {
 }
 #endif
 
+TEST_CASE(jit_arm64_translates_mftb_time_base_reads) {
+    const std::array<u32,2> code{A::mftb(3U,268U),A::mftb(4U,269U)};
+    const Block block=compile_arm64(code,0x1000U);
+    CHECK_EQ(block.guest_instructions,2U);
+    CHECK_EQ(block.end_pc,0x1008U);
+    const std::array<u32,1> unsupported{A::mftb(3U,270U)};
+    CHECK_EQ(compile_arm64(unsupported,0x1000U).guest_instructions,0U);
+}
+
+#if defined(__aarch64__)
+TEST_CASE(jit_arm64_executes_mftb_low_and_high_halves) {
+    Machine reference;
+    Machine candidate;
+    const std::array<u32,2> code{A::mftb(3U,268U),A::mftb(4U,269U)};
+    reference.code(0x1000U,{code[0],code[1]});
+    candidate.code(0x1000U,{code[0],code[1]});
+    reference.s().tb=0x12345678ABCDEF01ULL;
+    candidate.s().tb=0x12345678ABCDEF01ULL;
+    CHECK(reference.cpu->run(2U)==StepResult::Executed);
+    CHECK(candidate.cpu->run_jit(2U)==StepResult::Executed);
+    CHECK(candidate.s()==reference.s());
+    CHECK_EQ(candidate.s().gpr[3],0xABCDEF01U);
+    CHECK_EQ(candidate.s().gpr[4],0x12345678U);
+}
+#endif
+
 TEST_CASE(jit_arm64_translates_mfspr_and_mtspr_for_lr_ctr_and_read_only_xer) {
     const std::array<u32,6> code{
         A::mfspr(3U,1U), A::mfspr(4U,8U), A::mfspr(5U,9U),
