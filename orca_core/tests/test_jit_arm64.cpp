@@ -89,6 +89,57 @@ TEST_CASE(jit_arm64_translates_adde_and_subfe_using_xer_carry_in) {
     CHECK(has_word(0xD53B420CU)); // MRS NZCV (carry-out)
 }
 
+TEST_CASE(jit_arm64_translates_addze_addme_subfze_subfme_and_neg) {
+    const std::array<u32, 5> code{
+        A::addze(3, 4, false, true), A::addme(5, 6),
+        A::subfze(7, 8), A::subfme(9, 10), A::neg(11, 12, false, true)
+    };
+    const Block block = compile_arm64(code, 0x1000U);
+    CHECK_EQ(block.guest_instructions, code.size());
+    CHECK_EQ(block.end_pc, 0x1014U);
+    CHECK(!block.host_words.empty());
+    CHECK_EQ(block.host_words.back(), 0xD65F03C0U);
+}
+
+#if defined(__aarch64__)
+TEST_CASE(jit_arm64_differential_addze_addme_subfze_subfme_and_neg) {
+    const std::array<u32, 5> code{
+        A::addze(3, 4, false, true), A::addme(5, 6),
+        A::subfze(7, 8), A::subfme(9, 10), A::neg(11, 12, false, true)
+    };
+    for (u32 instruction : code) {
+        for (u32 carry : {0U, 1U}) {
+            Machine reference;
+            reference.code(0x1000U, {instruction});
+            reference.s().gpr[4] = 0x7FFFFFFFU;
+            reference.s().gpr[6] = 0x80000000U;
+            reference.s().gpr[8] = 0xFFFFFFFFU;
+            reference.s().gpr[10] = 0x00000001U;
+            reference.s().gpr[12] = 0x80000000U;
+            reference.s().xer = XER_SO | (carry != 0U ? XER_CA : 0U);
+            reference.s().cr = 0xA5963CC3U;
+            CHECK(reference.cpu->run(1U) == StepResult::Executed);
+            const CpuState expected = reference.s();
+
+            CpuState actual{};
+            actual.pc = 0x1000U;
+            actual.gpr[4] = 0x7FFFFFFFU;
+            actual.gpr[6] = 0x80000000U;
+            actual.gpr[8] = 0xFFFFFFFFU;
+            actual.gpr[10] = 0x00000001U;
+            actual.gpr[12] = 0x80000000U;
+            actual.xer = XER_SO | (carry != 0U ? XER_CA : 0U);
+            actual.cr = 0xA5963CC3U;
+            const std::array<u32, 1> one{instruction};
+            const Block block = compile_arm64(one, 0x1000U);
+            CHECK_EQ(block.guest_instructions, 1U);
+            CHECK(execute_arm64(block, actual));
+            CHECK(actual == expected);
+        }
+    }
+}
+#endif
+
 TEST_CASE(jit_arm64_does_not_translate_overflow_enabled_xo_arithmetic_yet) {
     const std::array<u32, 1> code{A::add(3, 4, 5, true, false)};
     const Block b = compile_arm64(code, 0x1000U);
