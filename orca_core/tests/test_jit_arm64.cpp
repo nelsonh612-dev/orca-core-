@@ -39,6 +39,9 @@ TEST_CASE(jit_arm64_translates_unsigned_divide_word) {
         return false;
     };
     CHECK(has_word(0x1ACA092BU)); // UDIV w11, w9, w10
+    CHECK(has_word(0x7100015FU)); // CMP w10, #0
+    CHECK(has_word(0x1A9F17EDU)); // CSET w13, EQ (zero divisor)
+    CHECK(has_word(0xD65F03C0U) == false); // terminal RET is checked by block trailer test
 }
 
 TEST_CASE(jit_arm64_translates_signed_and_unsigned_multiply_high) {
