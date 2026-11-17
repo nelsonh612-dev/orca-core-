@@ -140,3 +140,8 @@ Se añaden fmr, fneg, fnabs y fabs como operaciones enteras nativas sobre el pat
 - Las comprobaciones de interrupción y el scheduler siguen limitando los lotes del dispatcher, pero falta validación temporal en hardware bajo carga real.
 - La invalidación por escrituras del Bus e icbi está conectada a la caché de bloques; se necesita más estrés diferencial con DMA, alias de memoria y cambios de BAT/PTE.
 - QEMU ARM64 y el APK CI no equivalen a pruebas en un dispositivo físico. No se ha ejecutado una sesión física en el dispositivo del usuario ni se han obtenido benchmarks comparativos fiables.
+
+## M045 — mullw y overflow firmado
+
+Se añade la multiplicación signed de 32 bits usando SMULL AArch64. El resultado arquitectónico conserva los 32 bits inferiores; con OE=1, se compara el producto completo de 64 bits con la extensión de signo del resultado para calcular overflow exacto y actualizar XER[OV]/XER[SO]. Rc actualiza CR0. Pruebas diferenciales cubren overflow positivo, producto negativo dentro de rango y el caso INT32_MIN × -1. CI pendiente.
+
