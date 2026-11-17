@@ -385,7 +385,7 @@ void* Cpu::resolve_jit_ram(u32 ea, u32 size, bool write) {
     u32 pa_lo = 0, pa_hi = 0, split = 0;
     u8 wimg = 0;
     const Outcome translated = translate_data(ea, size, write, pa_lo, pa_hi, split, wimg);
-    if (!translated.ok() || split != size || wimg != 0U) return nullptr;
+    if (!translated.ok() || split != size || (wimg & (WIMG_W | WIMG_I)) != 0U) return nullptr;
     u8* const pointer = bus_.ram_pointer(pa_lo, size);
     if (pointer == nullptr) return nullptr;
     if (write) {
