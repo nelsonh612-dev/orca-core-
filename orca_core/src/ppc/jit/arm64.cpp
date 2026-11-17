@@ -491,7 +491,7 @@ bool translate_one(u32 ins, u32 guest_pc, std::vector<u32>& out, bool& terminate
 
     if(op==31U) {
         const unsigned xo10=(ins>>1U)&0x3FFU;
-
+        const unsigned xo9=(ins>>1U)&0x1FFU;
 
         if(xo10==512U) { // mcrxr BF: move XER[SO:CA] nibble into CR and clear XER
             const unsigned bf=(ins>>23U)&7U;
@@ -570,7 +570,7 @@ bool translate_one(u32 ins, u32 guest_pc, std::vector<u32>& out, bool& terminate
             emit_cr_compare(out,bf,xo10==0U?0xBU:0x3U,xo10==0U?0xCU:0x8U,0U);
             return true;
         }
-        if(xo10==104U) { // neg RT,RA
+        if(xo9==104U) { // neg RT,RA
             const bool oe=(ins&0x400U)!=0U;
             const bool record=(ins&1U)!=0U;
             out.push_back(ldr_w(9,0,static_cast<unsigned>(offsetof(CpuState,gpr)+ra*4U)));
