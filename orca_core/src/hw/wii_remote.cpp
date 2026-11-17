@@ -29,6 +29,14 @@ bool decode_wii_remote_input_report(std::span<const u8> report,
         next.has_accelerometer=true;
         next.accelerometer={report[3],report[4],report[5]};
     }
+    // IR camera payload follows the accelerometer in 0x33/0x37 reports.
+    // Keep the packed bytes intact; coordinate unpacking/calibration belongs
+    // to the higher-level IR sensor model.
+    if (id==0x33U || id==0x37U) {
+        const std::size_t ir_count=id==0x33U?12U:10U;
+        std::copy_n(report.begin()+6,ir_count,next.ir_data.begin());
+        next.ir_size=static_cast<u8>(ir_count);
+    }
     const std::size_t extension_offset=id==0x35U?6U:(id==0x37U?16U:report.size());
     if (extension_offset<report.size()) {
         const std::size_t count=std::min(next.extension_data.size(),report.size()-extension_offset);
