@@ -93,3 +93,10 @@ No se declara completo el JIT ni se atribuyen mejoras de rendimiento. El resulta
 Se añade traducción de opcode 18 (b / bl) como terminador de bloque. El destino relativo o absoluto se calcula con desplazamiento PowerPC de 26 bits con signo; la forma con LK guarda la dirección de retorno en LR. El bloque escribe el PC de destino y termina inmediatamente, de modo que el dispatcher vuelve a buscar/traducir desde el destino. Se mantienen en fallback bc, bclr y bcctr: requieren evaluación precisa de BO/BI, decremento de CTR, captura de LR/CTR y condiciones CR.
 
 Se añadieron pruebas de traducción y una prueba diferencial AArch64 para b+LK frente al intérprete. El CI de este nuevo commit debe completar antes de considerar validado M036.
+
+
+## M037 — salto condicional inmediato (bc)
+
+Se añade la forma opcode 16 (bc) como terminador de bloque. El código nativo evalúa BO/BI, decrementa CTR cuando BO lo solicita, consulta el bit CR seleccionado y elige entre destino y fall-through; LK actualiza LR incluso cuando la condición no toma el salto, igual que el intérprete de referencia. Las formas indirectas bclr/bcctr siguen en fallback.
+
+Se incorporó una prueba diferencial para una condición CR tomada y una prueba estructural de destino absoluto. La validación de estos últimos commits está pendiente del workflow CI más reciente; no se debe extrapolar el resultado anterior de M035 a M036/M037.
