@@ -374,9 +374,8 @@ bool translate_one(u32 ins, std::vector<u32>& out) {
     if (op == 31U) {
         // Conservative XO subset: OE=0 only. Rc is supported by rebuilding
         // CR0 from the signed result and the sticky XER[SO] bit.
-        const unsigned xo9 = (ins >> 1U) & 0x1FFU;
-        const bool oe = (ins & 0x400U) != 0U;
-        if (xo9 == 512U && (ins & 1U) == 0U) { // mcrxr: move XER[SO|OV|CA] to CR field and clear them
+        const unsigned xo10 = (ins >> 1U) & 0x3FFU;
+        if (xo10 == 512U && (ins & 1U) == 0U) { // mcrxr: move XER[SO|OV|CA] to CR field and clear them
             const unsigned bf = (rt >> 2U) & 7U;
             const unsigned shift = 28U - bf * 4U;
             out.push_back(ldr_w(9, 0, static_cast<unsigned>(offsetof(CpuState, xer))));
@@ -392,6 +391,8 @@ bool translate_one(u32 ins, std::vector<u32>& out) {
             out.push_back(str_w(9, 0, static_cast<unsigned>(offsetof(CpuState, xer))));
             return true;
         }
+        const unsigned xo9 = (ins >> 1U) & 0x1FFU;
+        const bool oe = (ins & 0x400U) != 0U;
         if (xo9 == 19U && (ins & 1U) == 0U) { // mfcr
             out.push_back(ldr_w(9, 0, static_cast<unsigned>(offsetof(CpuState, cr))));
             out.push_back(str_w(9, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + rt * 4U)));
