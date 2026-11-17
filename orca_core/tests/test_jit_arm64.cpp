@@ -190,11 +190,16 @@ TEST_CASE(jit_arm64_differential_overflow_enabled_integer_arithmetic) {
 }
 #endif
 
-TEST_CASE(jit_arm64_does_not_translate_overflow_enabled_xo_arithmetic_yet) {
-    const std::array<u32, 1> code{A::add(3, 4, 5, true, false)};
-    const Block b = compile_arm64(code, 0x1000U);
-    CHECK_EQ(b.guest_instructions, 0U);
-    CHECK(b.host_words.empty());
+TEST_CASE(jit_arm64_translates_overflow_enabled_xo_arithmetic) {
+    const std::array<u32, 4> code{
+        A::add(3, 4, 5, true), A::addc(6, 7, 8, true),
+        A::subf(9, 10, 11, true), A::neg(12, 13, true)
+    };
+    const Block block = compile_arm64(code, 0x1000U);
+    CHECK_EQ(block.guest_instructions, code.size());
+    CHECK_EQ(block.end_pc, 0x1010U);
+    CHECK(!block.host_words.empty());
+    CHECK_EQ(block.host_words.back(), 0xD65F03C0U);
 }
 
 
