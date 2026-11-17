@@ -105,3 +105,12 @@ Se incorporó una prueba diferencial para una condición CR tomada y una prueba 
 ## M038 — operaciones lógicas del registro CR
 
 Se añaden las operaciones CR lógicas crand, crandc, cror, crorc, crxor, crnand, crnor y creqv. La emisión respeta la numeración PowerPC de bits CR (BT/BA/BB, de MSB a LSB) y actualiza únicamente el bit destino. Se añaden tests estructurales y una comparación diferencial de CpuState completo contra el intérprete. El workflow que incluya M038 debe aprobar antes de considerar validado este hito.
+
+
+## M039 — transferencias del registro CR
+
+Se traducen mcrf, mfcr y mtcrf. mcrf copia solo el nibble de campo indicado; mfcr transfiere el CR completo a un GPR; mtcrf aplica la máscara FXM sin modificar los campos no seleccionados. Se añadieron pruebas estructurales y diferenciales para comparar el estado completo con el intérprete.
+
+## M040 — saltos indirectos bclr/bcctr
+
+Se añaden terminadores de bloque nativos para bclr y bcctr. El destino LR/CTR se captura antes de modificar LR/CTR, se alinea a palabra, se aplican BO/BI, decremento de CTR cuando corresponde, y LK actualiza LR después de capturar el destino. bcctr con BO[2]=0 permanece en fallback para que el intérprete entregue InvalidForm sin efectos parciales. El CI de estos últimos cambios debe aprobar antes de considerar validados M039/M040.
