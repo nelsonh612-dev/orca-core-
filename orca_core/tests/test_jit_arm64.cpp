@@ -1168,8 +1168,9 @@ TEST_CASE(jit_arm64_differential_single_precision_fpr_memory_matches_interpreter
     for (Machine* m : {&reference, &native_path}) {
         m->s().msr = MSR_FP;
         m->s().gpr[3] = 0x2000U;
-        CHECK(m->bus.write32(0x2000U, 0x3F800001U) == mem::BusStatus::Ok);
-        CHECK(m->bus.write32(0x2008U, 0xBF000001U) == mem::BusStatus::Ok);
+        // Preserve a signalling-NaN payload and the smallest binary32 subnormal.
+        CHECK(m->bus.write32(0x2000U, 0x7F800001U) == mem::BusStatus::Ok);
+        CHECK(m->bus.write32(0x2008U, 0x00000001U) == mem::BusStatus::Ok);
     }
     CHECK(reference.cpu->run(code.size()) == StepResult::Executed);
     CHECK(native_path.cpu->run_jit(code.size()) == StepResult::Executed);
