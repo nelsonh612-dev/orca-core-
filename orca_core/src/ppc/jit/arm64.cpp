@@ -1,5 +1,7 @@
 #include "orca/ppc/jit/arm64.hpp"
 #include "orca/ppc/registers.hpp"
+#include "orca/ppc/fpu.hpp"
+#include <cstdint>
 #include <limits>
 #include <cstring>
 #if defined(__aarch64__)
@@ -149,6 +151,13 @@ constexpr u32 mask_mb_me(unsigned mb, unsigned me) {
 void load_imm(std::vector<u32>& out, unsigned reg, u32 value) {
     out.push_back(movz_w(reg, value & 0xFFFFU));
     if ((value >> 16U) != 0U) out.push_back(movk_w(reg, value >> 16U));
+}
+void load_imm_x(std::vector<u32>& out, unsigned reg, u64 value) {
+    out.push_back(movz_x(reg, static_cast<u32>(value & 0xFFFFU), 0U));
+    for (unsigned shift = 16U; shift < 64U; shift += 16U) {
+        const u32 part = static_cast<u32>((value >> shift) & 0xFFFFU);
+        if (part != 0U) out.push_back(movk_x(reg, part, shift));
+    }
 }
 void emit_ov(std::vector<u32>& out) {
     // AArch64 V (NZCV[28]) is the signed 32-bit overflow result for the
@@ -1001,25 +1010,41 @@ Block compile_arm64(std::span<const u32> words, u32 start_pc) {
             break;
         }
 
-        // Double-precision FPR memory operations. The generated path is
-        // guarded by the same MMU/WIMG/contiguous-RAM resolver as integer
-        // accesses; alignment, MMIO, locked-cache and faults retry in step().
-        if (guest_op == 50U || guest_op == 51U ||
+        // Scalar FPR memory operations. The RAM resolver performs MMU,
+        // WIMG, alignment and contiguous-page checks; exceptional mappings
+        // fall back to the architectural interpreter path.
+        if (guest_op == 48U || guest_op == 49U || guest_op == 50U ||
+            guest_op == 51U || guest_op == 52U || guest_op == 53U ||
             guest_op == 54U || guest_op == 55U ||
-            (guest_op == 31U && (((ins >> 1U) & 0x3FFU) == 599U ||
+            (guest_op == 31U && (((ins >> 1U) & 0x3FFU) == 535U ||
+                                 ((ins >> 1U) & 0x3FFU) == 567U ||
+                                 ((ins >> 1U) & 0x3FFU) == 599U ||
                                  ((ins >> 1U) & 0x3FFU) == 631U ||
+                                 ((ins >> 1U) & 0x3FFU) == 663U ||
+                                 ((ins >> 1U) & 0x3FFU) == 695U ||
                                  ((ins >> 1U) & 0x3FFU) == 727U ||
                                  ((ins >> 1U) & 0x3FFU) == 759U))) {
             const bool indexed = guest_op == 31U;
             const unsigned xo = indexed ? ((ins >> 1U) & 0x3FFU) : 0U;
-            const bool is_load = indexed ? (xo == 599U || xo == 631U)
-                                         : (guest_op == 50U || guest_op == 51U);
-            const bool update = indexed ? (xo == 631U || xo == 759U)
-                                        : (guest_op == 51U || guest_op == 55U);
+            const bool is_single = indexed
+                ? (xo == 535U || xo == 567U || xo == 663U || xo == 695U)
+                : (guest_op == 48U || guest_op == 49U ||
+                   guest_op == 52U || guest_op == 53U);
+            const bool is_load = indexed
+                ? (xo == 535U || xo == 567U || xo == 599U || xo == 631U)
+                : (guest_op == 48U || guest_op == 49U ||
+                   guest_op == 50U || guest_op == 51U);
+            const bool update = indexed
+                ? (xo == 567U || xo == 631U || xo == 695U || xo == 759U)
+                : (guest_op == 49U || guest_op == 51U ||
+                   guest_op == 53U || guest_op == 55U);
             const unsigned ft = (ins >> 21U) & 31U;
             const unsigned ra = (ins >> 16U) & 31U;
             const unsigned rb = (ins >> 11U) & 31U;
             if (update && ra == 0U) break;
+            const unsigned access_size = is_single ? 4U : 8U;
+            const unsigned fpr_offset = static_cast<unsigned>(
+                offsetof(CpuState, fpr) + ft * sizeof(Fpr) + offsetof(Fpr, ps0));
             b.host_words.push_back(sub_sp_32());
             b.host_words.push_back(str_x(0, 31U, 0U));
             b.host_words.push_back(str_x(30, 31U, 8U));
@@ -1036,22 +1061,45 @@ Block compile_arm64(std::span<const u32> words, u32 start_pc) {
             b.host_words.push_back(str_w(9, 0, static_cast<unsigned>(offsetof(CpuState, pc))));
             b.host_words.push_back(orr_x(16, 2, 31U));
             b.host_words.push_back(orr_w(2, 20, 31U));
-            load_imm(b.host_words, 3, 8U);
+            load_imm(b.host_words, 3, access_size);
             load_imm(b.host_words, 4, is_load ? 0U : 1U);
             b.host_words.push_back(blr_x16());
             const std::size_t fallback_branch = b.host_words.size();
             b.host_words.push_back(cbz_x(0, 0U));
-            b.host_words.push_back(ldr_x(17, 31U, 0U));
-            const unsigned fpr_offset = static_cast<unsigned>(
-                offsetof(CpuState, fpr) + ft * sizeof(Fpr) + offsetof(Fpr, ps0));
             if (is_load) {
-                b.host_words.push_back(ldr_x(11, 0U, 0U));
-                b.host_words.push_back(rev_x(11, 11)); // PowerPC big-endian double
-                b.host_words.push_back(str_x(11, 17, fpr_offset));
+                if (is_single) {
+                    b.host_words.push_back(ldr_w(11, 0U, 0U));
+                    b.host_words.push_back(rev_w(11, 11));
+                    b.host_words.push_back(orr_w(0, 11, 31U));
+                    load_imm_x(b.host_words, 16, static_cast<u64>(
+                        reinterpret_cast<std::uintptr_t>(&fpu::load_single)));
+                    b.host_words.push_back(blr_x16());
+                    b.host_words.push_back(ldr_x(17, 31U, 0U));
+                    b.host_words.push_back(str_x(0, 17, fpr_offset));
+                    b.host_words.push_back(str_x(0, 17, fpr_offset + static_cast<unsigned>(offsetof(Fpr, ps1) - offsetof(Fpr, ps0))));
+                } else {
+                    b.host_words.push_back(ldr_x(17, 31U, 0U));
+                    b.host_words.push_back(ldr_x(11, 0U, 0U));
+                    b.host_words.push_back(rev_x(11, 11));
+                    b.host_words.push_back(str_x(11, 17, fpr_offset));
+                }
             } else {
-                b.host_words.push_back(ldr_x(11, 17, fpr_offset));
-                b.host_words.push_back(rev_x(11, 11));
-                b.host_words.push_back(str_x(11, 0U, 0U));
+                b.host_words.push_back(str_x(0, 31U, 16U)); // preserve resolved host pointer across helper call
+                b.host_words.push_back(ldr_x(17, 31U, 0U));
+                if (is_single) {
+                    b.host_words.push_back(ldr_x(0, 17, fpr_offset));
+                    load_imm_x(b.host_words, 16, static_cast<u64>(
+                        reinterpret_cast<std::uintptr_t>(&fpu::store_single)));
+                    b.host_words.push_back(blr_x16());
+                    b.host_words.push_back(rev_w(0, 0));
+                    b.host_words.push_back(ldr_x(17, 31U, 16U));
+                    b.host_words.push_back(str_w(0, 17, 0U));
+                } else {
+                    b.host_words.push_back(ldr_x(11, 17, fpr_offset));
+                    b.host_words.push_back(rev_x(11, 11));
+                    b.host_words.push_back(ldr_x(17, 31U, 16U));
+                    b.host_words.push_back(str_x(11, 17, 0U));
+                }
             }
             if (update)
                 b.host_words.push_back(str_w(20, 17, static_cast<unsigned>(offsetof(CpuState, gpr) + ra * 4U)));
