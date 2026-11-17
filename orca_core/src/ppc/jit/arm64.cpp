@@ -1094,11 +1094,13 @@ Block compile_arm64(std::span<const u32> words, u32 start_pc) {
                     b.host_words.push_back(rev_w(0, 0));
                     b.host_words.push_back(ldr_x(17, 31U, 16U));
                     b.host_words.push_back(str_w(0, 17, 0U));
+                    b.host_words.push_back(ldr_x(17, 31U, 0U));
                 } else {
                     b.host_words.push_back(ldr_x(11, 17, fpr_offset));
                     b.host_words.push_back(rev_x(11, 11));
                     b.host_words.push_back(ldr_x(17, 31U, 16U));
                     b.host_words.push_back(str_x(11, 17, 0U));
+                    b.host_words.push_back(ldr_x(17, 31U, 0U));
                 }
             }
             if (update)
