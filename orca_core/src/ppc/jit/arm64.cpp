@@ -178,7 +178,7 @@ bool translate_one(u32 ins, std::vector<u32>& out) {
         return true;
     }
 
-    if (op == 10U || op == 11U) { // cmplwi / cmpwi
+    if ((op == 10U || op == 11U) && (rt & 3U) == 0U) { // cmplwi / cmpwi, L/reserved bits clear
         const unsigned bf = (rt >> 2U) & 7U;
         out.push_back(ldr_w(9, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + ra * 4U)));
         const u32 value = op == 11U ? static_cast<u32>(static_cast<s32>(static_cast<s16>(imm))) : imm;
@@ -351,7 +351,7 @@ bool translate_one(u32 ins, std::vector<u32>& out) {
         const bool rc = (ins & 1U) != 0U;
 
 
-        if ((xo == 0U || xo == 32U) && (ins & 1U) == 0U) { // cmpw / cmplw
+        if ((xo == 0U || xo == 32U) && (rt & 3U) == 0U && (ins & 1U) == 0U) { // cmpw / cmplw
             const unsigned bf = (rt >> 2U) & 7U;
             out.push_back(ldr_w(9, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + ra * 4U)));
             out.push_back(ldr_w(10, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + rb * 4U)));
