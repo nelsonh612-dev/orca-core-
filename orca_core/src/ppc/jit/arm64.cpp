@@ -604,6 +604,18 @@ bool translate_one(u32 ins, std::vector<u32>& out) {
             out.push_back(ldr_w(10, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + rb * 4U)));
             out.push_back(udiv_w(11, 9, 10));
             out.push_back(str_w(11, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + rt * 4U)));
+            // divwu updates OV on every execution: divisor zero sets OV and
+            // sticky SO; a nonzero divisor clears OV but preserves SO.
+            out.push_back(cmp_zero_w(10));
+            out.push_back(cset_w(13, 0U)); // EQ: divisor was zero
+            out.push_back(lsl_w(14, 13, 30U)); // XER[OV]
+            out.push_back(ldr_w(12, 0, static_cast<unsigned>(offsetof(CpuState, xer))));
+            load_imm(out, 15, XER_OV);
+            out.push_back(bic_w(12, 12, 15));
+            out.push_back(orr_w(12, 12, 14));
+            out.push_back(lsl_w(14, 13, 1U)); // XER[SO], sticky
+            out.push_back(orr_w(12, 12, 14));
+            out.push_back(str_w(12, 0, static_cast<unsigned>(offsetof(CpuState, xer))));
             if ((ins & 1U) != 0U) emit_cr0(out, 11);
             return true;
         }
