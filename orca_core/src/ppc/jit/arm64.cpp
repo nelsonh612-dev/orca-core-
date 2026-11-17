@@ -452,15 +452,44 @@ Block compile_arm64(std::span<const u32> words, u32 start_pc) {
     // Bound blocks to a single 4 KiB guest code page; no control flow or
     // memory operations are crossed in this initial translator.
     if ((start_pc & 3U) != 0U) return b;
+    bool control_flow_exit = false;
     for (u32 ins : words) {
-        if ((b.end_pc >> 12U) != (start_pc >> 12U) || !translate_one(ins, b.host_words)) break;
+        if ((b.end_pc >> 12U) != (start_pc >> 12U)) break;
+
+        // Unconditional immediate branch (b / bl). Branches terminate a
+        // block: the dispatcher resumes at the guest target on its next turn.
+        // Conditional and indirect branches remain in the interpreter until
+        // their BO/BI, CTR/LR and exception-boundary semantics are emitted.
+        if ((ins >> 26U) == 18U) {
+            const u32 encoded_disp = ins & 0x03FFFFFCU;
+            const s32 displacement = (encoded_disp & 0x02000000U) != 0U
+                ? static_cast<s32>(encoded_disp | 0xFC000000U)
+                : static_cast<s32>(encoded_disp);
+            const u32 target = (ins & 2U) != 0U
+                ? static_cast<u32>(displacement)
+                : b.end_pc + static_cast<u32>(displacement);
+            if ((ins & 1U) != 0U) {
+                load_imm(b.host_words, 9, b.end_pc + 4U);
+                b.host_words.push_back(str_w(9, 0, static_cast<unsigned>(offsetof(CpuState, lr))));
+            }
+            load_imm(b.host_words, 9, target);
+            b.host_words.push_back(str_w(9, 0, static_cast<unsigned>(offsetof(CpuState, pc))));
+            ++b.guest_instructions;
+            b.end_pc += 4U; // sequential fall-through address, for block metadata
+            control_flow_exit = true;
+            break;
+        }
+
+        if (!translate_one(ins, b.host_words)) break;
         ++b.guest_instructions;
         b.end_pc += 4U;
     }
     if (b.guest_instructions != 0U) {
-        // Load immediate end_pc into w9 then store PC.
-        load_imm(b.host_words, 9, b.end_pc);
-        b.host_words.push_back(str_w(9, 0, static_cast<unsigned>(offsetof(CpuState, pc))));
+        if (!control_flow_exit) {
+            // Load immediate sequential end_pc into w9 then store PC.
+            load_imm(b.host_words, 9, b.end_pc);
+            b.host_words.push_back(str_w(9, 0, static_cast<unsigned>(offsetof(CpuState, pc))));
+        }
         b.host_words.push_back(ret());
     }
     return b;
