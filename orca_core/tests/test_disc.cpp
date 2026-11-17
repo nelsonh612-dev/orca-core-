@@ -115,6 +115,46 @@ TEST_CASE(wii_partition_table_parsing_and_bounds) {
     CHECK(!disc::parse_wii_partition_table(empty, error).has_value());
 }
 
+
+TEST_CASE(wii_partition_header_metadata_and_bounds) {
+    constexpr std::size_t base = 0x48000U;
+    std::vector<u8> image(0x90000U, 0);
+    // Ticket is [base, base+0x2A4); metadata follows it.
+    put32(image, base + 0x2A4U, 0x100U);    // TMD size
+    put32(image, base + 0x2A8U, 0x00B0U);   // TMD offset = base + 0x2C0
+    put32(image, base + 0x2ACU, 0x80U);     // certificate size
+    put32(image, base + 0x2B0U, 0x00F0U);   // certificate offset = base + 0x3C0
+    put32(image, base + 0x2B4U, 0x10000U);  // H3 offset = base + 0x40000
+    put32(image, base + 0x2B8U, 0x20000U);  // data offset = base + 0x80000
+    put32(image, base + 0x2BCU, 0x1000U);   // data size = 0x4000
+    disc::MemoryDisc d(std::move(image));
+    std::string error;
+    const disc::WiiPartition part{base, 0U};
+    const auto header = disc::parse_wii_partition_header(d, part, error);
+    CHECK(header.has_value());
+    if (header) {
+        CHECK_EQ(header->tmd_size, 0x100U);
+        CHECK_EQ(header->tmd_offset, 0x2C0U);
+        CHECK_EQ(header->cert_size, 0x80U);
+        CHECK_EQ(header->cert_offset, 0x3C0U);
+        CHECK_EQ(header->h3_offset, 0x40000U);
+        CHECK_EQ(header->data_offset, 0x80000U);
+        CHECK_EQ(header->data_size, 0x4000U);
+    }
+
+    std::vector<u8> bad(0x90000U, 0);
+    put32(bad, base + 0x2A4U, 0x100U);
+    put32(bad, base + 0x2A8U, 0x00B0U);
+    put32(bad, base + 0x2B4U, 0xFFFFFFFFU); // H3 outside partition/image
+    put32(bad, base + 0x2B8U, 0x20000U);
+    put32(bad, base + 0x2BCU, 0x1000U);
+    disc::MemoryDisc invalid(std::move(bad));
+    CHECK(!disc::parse_wii_partition_header(invalid, part, error).has_value());
+
+    disc::MemoryDisc truncated(std::vector<u8>(base + 0x2A4U + 0x10U, 0));
+    CHECK(!disc::parse_wii_partition_header(truncated, part, error).has_value());
+}
+
 TEST_CASE(disc_rejections) {
     std::string err;
     std::vector<u8> app(64, 0), dol(0x100, 0);
