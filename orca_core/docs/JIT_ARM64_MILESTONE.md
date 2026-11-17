@@ -51,7 +51,7 @@ En hosts no AArch64, `run_jit()` conserva la semántica del intérprete y report
 **Verificación pendiente:** los tests host pueden comprobar la semántica de fallback y los límites de parada, pero no ejecutan bytes AArch64. El workflow M026 compila el núcleo con GCC/Clang y genera un APK ARM64; una compilación exitosa no sustituye una prueba diferencial en un dispositivo ARM64. No se afirman aún mejoras de FPS ni compatibilidad con juegos comerciales.
 
 
-## M030–M032 — ampliación de enteros y validación pendiente
+## M030–M035 — ampliación de enteros y validación CI
 
 Los hitos M030–M032 amplían el subconjunto nativo sin cambiar el fallback arquitectónico:
 
@@ -63,11 +63,11 @@ Los hitos M030–M032 amplían el subconjunto nativo sin cambiar el fallback arq
 - cntlzw, extsb y extsh.
 - Comparaciones signed/unsigned cmpwi, cmplwi, cmpw y cmplw con actualización del campo CR seleccionado y XER[SO].
 
-Se añadieron pruebas de traducción para estas formas y pruebas diferenciales condicionadas a AArch64 que comparan el estado completo con el intérprete de referencia. Estas pruebas nuevas aún necesitan ejecutarse en CI/QEMU ARM64; la presencia de los tests no equivale a un resultado aprobado.
+Se añadieron pruebas de traducción y pruebas diferenciales condicionadas a AArch64 que comparan el estado completo con el intérprete de referencia. En el workflow 44000274588, la ejecución de código ARM64 generado bajo QEMU terminó correctamente: 25 pruebas y 139 aserciones aprobadas, sin fallos. GCC y Clang también completaron sus suites; la compilación del APK Android ARM64 terminó correctamente y publicó el artefacto. Esto valida las rutas cubiertas por esos tests, no toda la ISA ni la ejecución en un dispositivo físico.
 
 Se mantienen deliberadamente en fallback las formas que aún no tienen semántica completa en el emisor, entre ellas operaciones con overflow habilitado, saltos, accesos de memoria, FPU y paired-single.
 
-### Estado real después de M032
+### Estado real después de M035 y del CI 44000274588
 
 | Área | Estado |
 |---|---|
@@ -82,7 +82,7 @@ Se mantienen deliberadamente en fallback las formas que aún no tienen semántic
 | Saltos y flujo de control nativo | Pendiente |
 | Load/store, MMU y excepciones desde bloques nativos | Pendiente; fallback actual |
 | FPU y paired-single | Pendiente; fallback actual |
-| Pruebas diferenciales ejecutadas en ARM64 | Pendiente de resultado CI/dispositivo |
-| Benchmarks frente al intérprete | Pendiente |
+| Pruebas diferenciales ejecutadas en ARM64/QEMU | 25 pruebas, 139 aserciones; 0 fallos en CI 44000274588 |
+| APK Android ARM64 | Compilado y publicado como artefacto CI; no probado en dispositivo físico |\n| Benchmarks frente al intérprete | Pendiente |
 
-No se declara completo el JIT ni se atribuyen mejoras de rendimiento hasta que las rutas nativas y sus efectos laterales superen las pruebas diferenciales y de rendimiento en ARM64.
+No se declara completo el JIT ni se atribuyen mejoras de rendimiento. El resultado QEMU cubre las instrucciones incluidas en los tests diferenciales; no acredita cobertura total, rendimiento real ni compatibilidad con juegos. El APK debe probarse en hardware ARM64 y las familias pendientes deben implementarse y validarse antes de cerrar el proyecto.
