@@ -55,6 +55,17 @@ constexpr u32 lslv_x(unsigned rd, unsigned rn, unsigned rm) {
 constexpr u32 lsrv_x(unsigned rd, unsigned rn, unsigned rm) {
     return 0x9AC02400U | (rm << 16U) | (rn << 5U) | rd;
 }
+
+constexpr u32 sub_x(unsigned rd, unsigned rn, unsigned rm) {
+    return 0xCB000000U | (rm << 16U) | (rn << 5U) | rd;
+}
+constexpr u32 asrv_x(unsigned rd, unsigned rn, unsigned rm) {
+    return 0x9AC02800U | (rm << 16U) | (rn << 5U) | rd;
+}
+constexpr u32 sxtw_x(unsigned rd, unsigned rn) {
+    return 0x93407C00U | (rn << 5U) | rd;
+}
+
 constexpr u32 clz_w(unsigned rd, unsigned rn) {
     return 0x5AC01000U | (rn << 5U) | rd;
 }
@@ -359,14 +370,50 @@ bool translate_one(u32 ins, std::vector<u32>& out) {
             emit_cr_field(out, bf, xo == 0U);
             return true;
         }
-        if (xo == 24U || xo == 536U || xo == 26U || xo == 954U || xo == 922U) {
+        if (xo == 24U || xo == 536U || xo == 792U || xo == 824U || xo == 26U || xo == 954U || xo == 922U) {
             out.push_back(ldr_w(9, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + rt * 4U)));
             if (xo == 24U || xo == 536U) {
                 out.push_back(ldr_w(10, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + rb * 4U)));
-                // PPC uses six shift bits. Use the X-register variable-shift
-                // form on zero-extended 32-bit operands: counts 32..63 then
-                // naturally produce zero, while the stored low word is exact.
+                // PPC uses six shift bits. The X-register form preserves the
+                // 32..63 zero-result cases for zero-extended source operands.
                 out.push_back(xo == 24U ? lslv_x(11, 9, 10) : lsrv_x(11, 9, 10));
+            } else if (xo == 792U) { // sraw: signed 32-bit arithmetic shift and XER[CA]
+                out.push_back(ldr_w(10, 0, static_cast<unsigned>(offsetof(CpuState, gpr) + rb * 4U)));
+                load_imm(out, 12, 63U);
+                out.push_back(and_w(10, 10, 12));
+                out.push_back(sxtw_x(9, 9));
+                out.push_back(asrv_x(11, 9, 10));
+                // CA = negative source AND at least one discarded one bit.
+                load_imm(out, 12, 1U);
+                out.push_back(lslv_x(12, 12, 10));
+                load_imm(out, 14, 1U);
+                out.push_back(sub_x(12, 12, 14));
+                out.push_back(and_w(13, 9, 12));
+                out.push_back(cmp_zero_w(13));
+                out.push_back(cset_w(14, 0x1U)); // discarded bits nonzero
+                out.push_back(ubfx_w(15, 9, 31, 1));
+                out.push_back(and_w(14, 14, 15));
+                out.push_back(lsl_w(14, 14, 29));
+                load_imm(out, 15, XER_CA);
+                out.push_back(ldr_w(13, 0, static_cast<unsigned>(offsetof(CpuState, xer))));
+                out.push_back(bic_w(13, 13, 15));
+                out.push_back(orr_w(13, 13, 14));
+                out.push_back(str_w(13, 0, static_cast<unsigned>(offsetof(CpuState, xer))));
+            } else if (xo == 824U) { // srawi: fixed shift and XER[CA]
+                const unsigned sh = rb;
+                out.push_back(0x13000000U | (sh << 16U) | (31U << 10U) | (9U << 5U) | 11U);
+                load_imm(out, 10, sh == 0U ? 0U : ((1U << sh) - 1U));
+                out.push_back(and_w(13, 9, 10));
+                out.push_back(cmp_zero_w(13));
+                out.push_back(cset_w(14, 0x1U));
+                out.push_back(ubfx_w(15, 9, 31, 1));
+                out.push_back(and_w(14, 14, 15));
+                out.push_back(lsl_w(14, 14, 29));
+                load_imm(out, 15, XER_CA);
+                out.push_back(ldr_w(13, 0, static_cast<unsigned>(offsetof(CpuState, xer))));
+                out.push_back(bic_w(13, 13, 15));
+                out.push_back(orr_w(13, 13, 14));
+                out.push_back(str_w(13, 0, static_cast<unsigned>(offsetof(CpuState, xer))));
             } else if (xo == 26U) {
                 out.push_back(clz_w(11, 9));
             } else if (xo == 954U) {
