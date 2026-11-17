@@ -29,6 +29,19 @@ TEST_CASE(jit_arm64_translates_mulli_and_preserves_gpr_zero_as_source) {
     CHECK_EQ(b.host_words.back(), 0xD65F03C0U);
 }
 
+TEST_CASE(jit_arm64_translates_signed_and_unsigned_multiply_high) {
+    const std::array<u32, 2> code{A::X(75, 3, 4, 5), A::X(11, 6, 7, 8)};
+    const Block b = compile_arm64(code, 0x1000U);
+    CHECK_EQ(b.guest_instructions, 2U);
+    CHECK_EQ(b.end_pc, 0x1008U);
+    const auto has_word = [&](u32 word) {
+        for (u32 emitted : b.host_words) if (emitted == word) return true;
+        return false;
+    };
+    CHECK(has_word(0x9B257C8BU)); // SMULL x11, w4, w5
+    CHECK(has_word(0x9BA87CCBU)); // UMULL x11, w6, w8
+}
+
 TEST_CASE(jit_arm64_translates_addic_and_subfic_with_xer_carry_update) {
     const std::array<u32, 2> code{A::addic(3, 4, 1), A::subfic(5, 6, -2)};
     const Block b = compile_arm64(code, 0x1000U);
