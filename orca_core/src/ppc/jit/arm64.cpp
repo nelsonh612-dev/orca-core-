@@ -249,51 +249,6 @@ bool translate_one(u32 ins, std::vector<u32>& out) {
         if ((ins & 1U) != 0U) emit_cr0(out, 11);
         return true;
     }
-    if (op == 19U) {
-        const unsigned xo = (ins >> 1U) & 0x3FFU;
-        if ((xo == 16U || xo == 528U)) { // bclr / bcctr
-            const unsigned bo = (ins >> 21U) & 31U;
-            const unsigned bi = (ins >> 16U) & 31U;
-            if (xo == 528U && (bo & 4U) == 0U) return false; // architecturally invalid form: interpreter handles it
-            // Capture the indirect target before any LR/CTR side effects.
-            out.push_back(ldr_w(15, 0, static_cast<unsigned>(
-                xo == 16U ? offsetof(CpuState, lr) : offsetof(CpuState, ctr))));
-            load_imm(out, 14, 0xFFFFFFFCU);
-            out.push_back(and_w(15, 15, 14));
-            if ((bo & 4U) == 0U) {
-                out.push_back(ldr_w(9, 0, static_cast<unsigned>(offsetof(CpuState, ctr))));
-                load_imm(out, 10, 1U);
-                out.push_back(sub_w(11, 9, 10));
-                out.push_back(str_w(11, 0, static_cast<unsigned>(offsetof(CpuState, ctr))));
-                out.push_back(cmp_zero_w(11));
-                out.push_back(cset_w(12, (bo & 2U) != 0U ? 0x0U : 0x1U));
-            } else {
-                load_imm(out, 12, 1U);
-            }
-            if ((bo & 16U) == 0U) {
-                out.push_back(ldr_w(9, 0, static_cast<unsigned>(offsetof(CpuState, cr))));
-                out.push_back(ubfx_w(10, 9, 31U - bi, 1U));
-                out.push_back(cmp_zero_w(10));
-                out.push_back(cset_w(14, (bo & 8U) != 0U ? 0x1U : 0x0U));
-            } else {
-                load_imm(out, 14, 1U);
-            }
-            out.push_back(and_w(12, 12, 14));
-            out.push_back(cmp_zero_w(12));
-            load_imm(out, 14, b.end_pc + 4U);
-            out.push_back(csel_w(9, 15, 14, 0x1U));
-            out.push_back(str_w(9, 0, static_cast<unsigned>(offsetof(CpuState, pc))));
-            if ((ins & 1U) != 0U) {
-                load_imm(out, 9, b.end_pc + 4U);
-                out.push_back(str_w(9, 0, static_cast<unsigned>(offsetof(CpuState, lr))));
-            }
-            ++b.guest_instructions;
-            b.end_pc += 4U;
-            control_flow_exit = true;
-            break;
-        }
-    }
-
     if (op == 19U && (ins & 1U) == 0U) {
         const unsigned xo = (ins >> 1U) & 0x3FFU;
         if (xo == 0U) { // mcrf: copy one CR field, preserve the other seven
@@ -651,9 +606,53 @@ Block compile_arm64(std::span<const u32> words, u32 start_pc) {
             break;
         }
 
+        {
+        const unsigned xo = (ins >> 1U) & 0x3FFU;
+        if ((xo == 16U || xo == 528U)) { // bclr / bcctr
+            const unsigned bo = (ins >> 21U) & 31U;
+            const unsigned bi = (ins >> 16U) & 31U;
+            if (xo == 528U && (bo & 4U) == 0U) break; // architecturally invalid form: interpreter handles it
+            // Capture the indirect target before any LR/CTR side effects.
+            b.host_words.push_back(ldr_w(15, 0, static_cast<unsigned>(
+                xo == 16U ? offsetof(CpuState, lr) : offsetof(CpuState, ctr))));
+            load_imm(out, 14, 0xFFFFFFFCU);
+            b.host_words.push_back(and_w(15, 15, 14));
+            if ((bo & 4U) == 0U) {
+                b.host_words.push_back(ldr_w(9, 0, static_cast<unsigned>(offsetof(CpuState, ctr))));
+                load_imm(out, 10, 1U);
+                b.host_words.push_back(sub_w(11, 9, 10));
+                b.host_words.push_back(str_w(11, 0, static_cast<unsigned>(offsetof(CpuState, ctr))));
+                b.host_words.push_back(cmp_zero_w(11));
+                b.host_words.push_back(cset_w(12, (bo & 2U) != 0U ? 0x0U : 0x1U));
+            } else {
+                load_imm(out, 12, 1U);
+            }
+            if ((bo & 16U) == 0U) {
+                b.host_words.push_back(ldr_w(9, 0, static_cast<unsigned>(offsetof(CpuState, cr))));
+                b.host_words.push_back(ubfx_w(10, 9, 31U - bi, 1U));
+                b.host_words.push_back(cmp_zero_w(10));
+                b.host_words.push_back(cset_w(14, (bo & 8U) != 0U ? 0x1U : 0x0U));
+            } else {
+                load_imm(out, 14, 1U);
+            }
+            b.host_words.push_back(and_w(12, 12, 14));
+            b.host_words.push_back(cmp_zero_w(12));
+            load_imm(out, 14, b.end_pc + 4U);
+            b.host_words.push_back(csel_w(9, 15, 14, 0x1U));
+            b.host_words.push_back(str_w(9, 0, static_cast<unsigned>(offsetof(CpuState, pc))));
+            if ((ins & 1U) != 0U) {
+                load_imm(out, 9, b.end_pc + 4U);
+                b.host_words.push_back(str_w(9, 0, static_cast<unsigned>(offsetof(CpuState, lr))));
+            }
+            ++b.guest_instructions;
+            b.end_pc += 4U;
+            control_flow_exit = true;
+            break;
+        }
+    }
+
         // Unconditional immediate branch (b / bl). Both branch types
         // terminate a block; the dispatcher resumes at the selected PC.
-        // Indirect branches (bclr/bcctr) remain in the interpreter.
         if ((ins >> 26U) == 18U) {
             const u32 encoded_disp = ins & 0x03FFFFFCU;
             const s32 displacement = (encoded_disp & 0x02000000U) != 0U
