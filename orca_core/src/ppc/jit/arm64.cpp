@@ -393,7 +393,7 @@ bool translate_one(u32 ins, std::vector<u32>& out) {
                     (upper ? offsetof(Fpr, ps1) : offsetof(Fpr, ps0)));
             };
             if (xo >= 528U) {
-                const unsigned source0 = xo == 528U || xo == 560U ? fra : fra;
+                const unsigned source0 = fra;
                 const bool source0_upper = xo == 592U || xo == 624U;
                 const unsigned source1 = frb;
                 const bool source1_upper = xo == 560U || xo == 624U;
