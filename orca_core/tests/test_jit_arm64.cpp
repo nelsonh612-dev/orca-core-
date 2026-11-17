@@ -96,6 +96,33 @@ TEST_CASE(jit_arm64_does_not_translate_overflow_enabled_xo_arithmetic_yet) {
     CHECK(b.host_words.empty());
 }
 
+
+TEST_CASE(jit_arm64_translates_andi_and_andis_with_cr0_updates) {
+    const std::array<u32, 2> code{A::andi_(3, 4, 0xF0F0), A::andis_(5, 6, 0x8001)};
+    const Block b = compile_arm64(code, 0x1000U);
+    CHECK_EQ(b.guest_instructions, 2U);
+    CHECK_EQ(b.end_pc, 0x1008U);
+    const auto has_word = [&](u32 word) {
+        for (u32 emitted : b.host_words) if (emitted == word) return true;
+        return false;
+    };
+    CHECK(has_word(0x0A0A012BU)); // AND w11,w9,w10
+    CHECK(has_word(0x7100017FU)); // CMP w11,#0 for CR0
+}
+
+TEST_CASE(jit_arm64_translates_all_register_logical_forms_and_record_bit) {
+    const std::array<u32, 8> code{
+        A::and_(3, 4, 5, true), A::andc(6, 7, 8), A::nor(9, 10, 11),
+        A::eqv(12, 13, 14), A::xor_(15, 16, 17), A::orc(18, 19, 20),
+        A::or_(21, 22, 23), A::nand(24, 25, 26)
+    };
+    const Block b = compile_arm64(code, 0x1000U);
+    CHECK_EQ(b.guest_instructions, code.size());
+    CHECK_EQ(b.end_pc, 0x1020U);
+    CHECK(!b.host_words.empty());
+    CHECK_EQ(b.host_words.back(), 0xD65F03C0U);
+}
+
 TEST_CASE(jit_arm64_unsupported_first_instruction_produces_no_executable_block) {
     const std::array<u32, 1> code{A::b(4)};
     const Block b = compile_arm64(code, 0x1000);
