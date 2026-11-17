@@ -96,6 +96,127 @@ TEST_CASE(jit_arm64_does_not_translate_overflow_enabled_xo_arithmetic_yet) {
     CHECK(b.host_words.empty());
 }
 
+
+TEST_CASE(jit_arm64_translates_andi_and_andis_with_cr0_updates) {
+    const std::array<u32, 2> code{A::andi_(3, 4, 0xF0F0), A::andis_(5, 6, 0x8001)};
+    const Block b = compile_arm64(code, 0x1000U);
+    CHECK_EQ(b.guest_instructions, 2U);
+    CHECK_EQ(b.end_pc, 0x1008U);
+    const auto has_word = [&](u32 word) {
+        for (u32 emitted : b.host_words) if (emitted == word) return true;
+        return false;
+    };
+    CHECK(has_word(0x0A0A012BU)); // AND w11,w9,w10
+    CHECK(has_word(0x7100017FU)); // CMP w11,#0 for CR0
+}
+
+TEST_CASE(jit_arm64_translates_all_register_logical_forms_and_record_bit) {
+    const std::array<u32, 8> code{
+        A::and_(3, 4, 5, true), A::andc(6, 7, 8), A::nor(9, 10, 11),
+        A::eqv(12, 13, 14), A::xor_(15, 16, 17), A::orc(18, 19, 20),
+        A::or_(21, 22, 23), A::nand(24, 25, 26)
+    };
+    const Block b = compile_arm64(code, 0x1000U);
+    CHECK_EQ(b.guest_instructions, code.size());
+    CHECK_EQ(b.end_pc, 0x1020U);
+    CHECK(!b.host_words.empty());
+    CHECK_EQ(b.host_words.back(), 0xD65F03C0U);
+}
+
+
+TEST_CASE(jit_arm64_translates_rotate_mask_and_insert_forms) {
+    const std::array<u32, 3> code{
+        A::rlwinm(3, 4, 7, 4, 19, true),
+        A::rlwimi(5, 6, 11, 8, 23, false),
+        A::rlwnm(7, 8, 9, 0, 31, true)
+    };
+    const Block b = compile_arm64(code, 0x1000U);
+    CHECK_EQ(b.guest_instructions, code.size());
+    CHECK_EQ(b.end_pc, 0x100CU);
+    CHECK(!b.host_words.empty());
+    CHECK_EQ(b.host_words.back(), 0xD65F03C0U);
+    bool has_rorv = false;
+    for (u32 emitted : b.host_words)
+        has_rorv = has_rorv || ((emitted & 0xFFE0FC00U) == 0x1AC02C00U);
+    CHECK(has_rorv);
+}
+
+#if defined(__aarch64__)
+TEST_CASE(jit_arm64_differential_rotate_mask_matches_reference_interpreter) {
+    Machine reference;
+    const std::array<u32, 3> code{
+        A::rlwinm(3, 4, 7, 4, 19, true),
+        A::rlwimi(5, 6, 11, 8, 23, false),
+        A::rlwnm(7, 8, 9, 0, 31, true)
+    };
+    reference.code(0x1000U, {code[0], code[1], code[2]});
+    reference.s().gpr[4] = 0x81234567U;
+    reference.s().gpr[5] = 0xA5A5A5A5U;
+    reference.s().gpr[6] = 0xFEDCBA98U;
+    reference.s().gpr[8] = 0x12345678U;
+    reference.s().gpr[9] = 13U;
+    reference.s().cr = 0x12345678U;
+    CHECK(reference.cpu->run(code.size()) == StepResult::Executed);
+    const CpuState expected = reference.s();
+
+    CpuState actual{};
+    actual.pc = 0x1000U;
+    actual.gpr[4] = 0x81234567U;
+    actual.gpr[5] = 0xA5A5A5A5U;
+    actual.gpr[6] = 0xFEDCBA98U;
+    actual.gpr[8] = 0x12345678U;
+    actual.gpr[9] = 13U;
+    actual.cr = 0x12345678U;
+    const Block block = compile_arm64(code, 0x1000U);
+    CHECK_EQ(block.guest_instructions, code.size());
+    CHECK(execute_arm64(block, actual));
+    CHECK(actual == expected);
+}
+#endif
+
+
+TEST_CASE(jit_arm64_translates_integer_shift_and_sign_extension_forms) {
+    const std::array<u32, 5> code{
+        A::slw(3, 4, 5), A::srw(6, 7, 8),
+        A::cntlzw(14, 15), A::extsb(16, 17), A::extsh(18, 19)
+    };
+    const Block b = compile_arm64(code, 0x1000U);
+    CHECK_EQ(b.guest_instructions, code.size());
+    CHECK_EQ(b.end_pc, 0x1014U);
+    CHECK(!b.host_words.empty());
+    CHECK_EQ(b.host_words.back(), 0xD65F03C0U);
+}
+
+#if defined(__aarch64__)
+TEST_CASE(jit_arm64_differential_integer_shifts_match_reference_interpreter) {
+    Machine reference;
+    const std::array<u32, 5> code{
+        A::slw(3, 4, 5), A::srw(6, 7, 8),
+        A::cntlzw(14, 15), A::extsb(16, 17), A::extsh(18, 19)
+    };
+    reference.code(0x1000U, {code[0], code[1], code[2], code[3], code[4]});
+    reference.s().gpr[4] = 0x81234567U; reference.s().gpr[5] = 5U;
+    reference.s().gpr[7] = 0xF1234567U; reference.s().gpr[8] = 36U;
+    reference.s().gpr[15] = 0x00100000U;
+    reference.s().gpr[17] = 0x00000080U; reference.s().gpr[19] = 0x00008001U;
+    reference.s().cr = 0x12345678U;
+    CHECK(reference.cpu->run(code.size()) == StepResult::Executed);
+    const CpuState expected = reference.s();
+
+    CpuState actual{};
+    actual.pc = 0x1000U;
+    actual.gpr[4] = 0x81234567U; actual.gpr[5] = 5U;
+    actual.gpr[7] = 0xF1234567U; actual.gpr[8] = 36U;
+    actual.gpr[15] = 0x00100000U;
+    actual.gpr[17] = 0x00000080U; actual.gpr[19] = 0x00008001U;
+    actual.cr = 0x12345678U;
+    const Block block = compile_arm64(code, 0x1000U);
+    CHECK_EQ(block.guest_instructions, code.size());
+    CHECK(execute_arm64(block, actual));
+    CHECK(actual == expected);
+}
+#endif
+
 TEST_CASE(jit_arm64_unsupported_first_instruction_produces_no_executable_block) {
     const std::array<u32, 1> code{A::b(4)};
     const Block b = compile_arm64(code, 0x1000);
