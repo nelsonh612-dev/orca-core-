@@ -390,8 +390,9 @@ void* Cpu::resolve_jit_ram(u32 ea, u32 size, bool write) {
         jit_memory_fallback_ = true;
         return nullptr;
     };
-    if ((size != 1U && size != 2U && size != 4U &&
-         (size > 128U || (size & 3U) != 0U)) || !locked_cache_.empty()) return decline();
+    if ((size != 1U && size != 2U && size != 4U && size != 8U &&
+         (size > 128U || (size & 3U) != 0U)) ||
+        (size == 8U && (ea & 3U) != 0U) || !locked_cache_.empty()) return decline();
     u32 pa_lo = 0, pa_hi = 0, split = 0;
     u8 wimg = 0;
     const Outcome translated = translate_data(ea, size, write, pa_lo, pa_hi, split, wimg);
