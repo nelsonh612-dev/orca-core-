@@ -746,6 +746,38 @@ TEST_CASE(jit_dispatcher_fallback_preserves_unmapped_load_fault_and_retirement) 
 }
 
 
+TEST_CASE(jit_arm64_executes_unsigned_divide_and_matches_interpreter) {
+    Machine reference;
+    Machine candidate;
+    const auto divwu=[](u32 rt,u32 ra,u32 rb,bool record) {
+        return (31U<<26U)|(rt<<21U)|(ra<<16U)|(rb<<11U)|(459U<<1U)|(record?1U:0U);
+    };
+    const std::array<u32,4> code{
+        divwu(3U,4U,5U,true),
+        divwu(6U,7U,8U,false),
+        divwu(9U,10U,11U,true),
+        divwu(12U,13U,14U,false)
+    };
+    reference.code(0x1000U,{code[0],code[1],code[2],code[3]});
+    candidate.code(0x1000U,{code[0],code[1],code[2],code[3]});
+    reference.s().gpr[4]=0xFFFFFFFEU; candidate.s().gpr[4]=0xFFFFFFFEU;
+    reference.s().gpr[5]=3U; candidate.s().gpr[5]=3U;
+    reference.s().gpr[7]=0x80000000U; candidate.s().gpr[7]=0x80000000U;
+    reference.s().gpr[8]=0U; candidate.s().gpr[8]=0U;
+    reference.s().gpr[10]=0xFFFFFFFFU; candidate.s().gpr[10]=0xFFFFFFFFU;
+    reference.s().gpr[11]=0x10000U; candidate.s().gpr[11]=0x10000U;
+    reference.s().gpr[13]=17U; candidate.s().gpr[13]=17U;
+    reference.s().gpr[14]=5U; candidate.s().gpr[14]=5U;
+    reference.s().cr=0xA5C3F00FU; candidate.s().cr=0xA5C3F00FU;
+    CHECK(reference.cpu->run(code.size())==StepResult::Executed);
+    CHECK(candidate.cpu->run_jit(code.size())==StepResult::Executed);
+    CHECK(candidate.s()==reference.s());
+    CHECK_EQ(candidate.s().gpr[3],0x55555554U);
+    CHECK_EQ(candidate.s().gpr[6],0U);
+    CHECK_EQ(candidate.s().gpr[9],0xFFFFU);
+    CHECK_EQ(candidate.s().gpr[12],3U);
+}
+
 TEST_CASE(jit_arm64_translates_negate_without_overflow_enable) {
     const u32 neg = (31U << 26U) | (3U << 21U) | (4U << 16U) | (104U << 1U);
     const u32 neg_record = neg | 1U;
