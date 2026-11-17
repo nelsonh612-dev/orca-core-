@@ -134,10 +134,6 @@ std::optional<WiiTicket> parse_wii_ticket(
         error = "Wii ticket: title ID is empty";
         return std::nullopt;
     }
-    if (ticket.common_key_index > 1U) {
-        error = "Wii ticket: unsupported common-key index";
-        return std::nullopt;
-    }
     return ticket;
 }
 
