@@ -89,6 +89,54 @@ TEST_CASE(jit_arm64_translates_adde_and_subfe_using_xer_carry_in) {
 }
 
 #if defined(__aarch64__)
+TEST_CASE(jit_arm64_differential_d_form_update_load_store) {
+    const u32 lwzu = A::D(33, 3, 4, 4);
+    Machine reference_load;
+    reference_load.code(0x1000U, {lwzu});
+    reference_load.s().gpr[4] = 0x2000U;
+    CHECK(reference_load.bus.write32(0x2004U, 0xCAFEBABEU) == mem::BusStatus::Ok);
+    Machine native_load;
+    native_load.code(0x1000U, {lwzu});
+    native_load.s().gpr[4] = 0x2000U;
+    CHECK(native_load.bus.write32(0x2004U, 0xCAFEBABEU) == mem::BusStatus::Ok);
+    CHECK(reference_load.cpu->run(1U) == StepResult::Executed);
+    CHECK(native_load.cpu->run_jit(1U) == StepResult::Executed);
+    CHECK(native_load.s() == reference_load.s());
+
+    const u32 stwu = A::D(37, 5, 4, 8);
+    Machine reference_store;
+    reference_store.code(0x1000U, {stwu});
+    reference_store.s().gpr[4] = 0x2000U;
+    reference_store.s().gpr[5] = 0x11223344U;
+    Machine native_store;
+    native_store.code(0x1000U, {stwu});
+    native_store.s().gpr[4] = 0x2000U;
+    native_store.s().gpr[5] = 0x11223344U;
+    CHECK(reference_store.cpu->run(1U) == StepResult::Executed);
+    CHECK(native_store.cpu->run_jit(1U) == StepResult::Executed);
+    CHECK(native_store.s() == reference_store.s());
+    CHECK_EQ(native_store.r32(0x2008U), reference_store.r32(0x2008U));
+}
+
+TEST_CASE(jit_arm64_native_store_invalidates_cached_guest_code) {
+    const u32 store = A::D(36, 5, 4, 0);
+    const u32 old_instruction = A::addi(6, 0, 1);
+    const u32 new_instruction = A::addi(6, 0, 2);
+    Machine reference;
+    reference.code(0x1000U, {store, old_instruction});
+    reference.s().gpr[4] = 0x1004U;
+    reference.s().gpr[5] = new_instruction;
+    Machine native_path;
+    native_path.code(0x1000U, {store, old_instruction});
+    native_path.s().gpr[4] = 0x1004U;
+    native_path.s().gpr[5] = new_instruction;
+    CHECK(reference.cpu->run(2U) == StepResult::Executed);
+    CHECK(native_path.cpu->run_jit(2U) == StepResult::Executed);
+    CHECK(native_path.s() == reference.s());
+    CHECK_EQ(native_path.r32(0x1004U), new_instruction);
+}
+
+#if defined(__aarch64__)
 TEST_CASE(jit_arm64_differential_guarded_d_form_ram_load_store) {
     const std::array<u32, 6> code{
         A::D(32, 3, 4, 0), A::D(40, 5, 4, 4), A::D(42, 6, 4, 6),
