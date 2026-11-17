@@ -258,6 +258,55 @@ TEST_CASE(jit_arm64_differential_logical_record_forms_match_reference_interprete
 }
 #endif
 
+
+TEST_CASE(jit_arm64_translates_signed_and_unsigned_compare_forms) {
+    const std::array<u32, 4> code{
+        A::cmpwi(0, 3, -5), A::cmplwi(1, 4, 0xFF00),
+        A::cmpw(2, 5, 6), A::cmplw(3, 7, 8)
+    };
+    const Block b = compile_arm64(code, 0x1000U);
+    CHECK_EQ(b.guest_instructions, code.size());
+    CHECK_EQ(b.end_pc, 0x1010U);
+    CHECK(!b.host_words.empty());
+    CHECK_EQ(b.host_words.back(), 0xD65F03C0U);
+}
+
+#if defined(__aarch64__)
+TEST_CASE(jit_arm64_differential_compare_forms_match_reference_interpreter) {
+    Machine reference;
+    const std::array<u32, 4> code{
+        A::cmpwi(0, 3, -5), A::cmplwi(1, 4, 0xFF00),
+        A::cmpw(2, 5, 6), A::cmplw(3, 7, 8)
+    };
+    reference.code(0x1000U, {code[0],code[1],code[2],code[3]});
+    reference.s().gpr[3] = 0xFFFFFFFCU;
+    reference.s().gpr[4] = 0x0000FE00U;
+    reference.s().gpr[5] = 0x80000000U;
+    reference.s().gpr[6] = 1U;
+    reference.s().gpr[7] = 0xFFFFFFFFU;
+    reference.s().gpr[8] = 0x7FFFFFFFU;
+    reference.s().xer = XER_SO;
+    reference.s().cr = 0x12345678U;
+    CHECK(reference.cpu->run(code.size()) == StepResult::Executed);
+    const CpuState expected = reference.s();
+
+    CpuState actual{};
+    actual.pc = 0x1000U;
+    actual.gpr[3] = 0xFFFFFFFCU;
+    actual.gpr[4] = 0x0000FE00U;
+    actual.gpr[5] = 0x80000000U;
+    actual.gpr[6] = 1U;
+    actual.gpr[7] = 0xFFFFFFFFU;
+    actual.gpr[8] = 0x7FFFFFFFU;
+    actual.xer = XER_SO;
+    actual.cr = 0x12345678U;
+    const Block block = compile_arm64(code, 0x1000U);
+    CHECK_EQ(block.guest_instructions, code.size());
+    CHECK(execute_arm64(block, actual));
+    CHECK(actual == expected);
+}
+#endif
+
 TEST_CASE(jit_arm64_unsupported_first_instruction_produces_no_executable_block) {
     const std::array<u32, 1> code{A::b(4)};
     const Block b = compile_arm64(code, 0x1000);
