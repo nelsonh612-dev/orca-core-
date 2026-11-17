@@ -225,22 +225,47 @@ TEST_CASE(jit_arm64_translates_adde_and_subfe_using_xer_carry_in) {
     CHECK(has_word(0xD53B4210U)); // MRS x16, NZCV (carry-out preserved for CA and OV)
 }
 
-TEST_CASE(jit_arm64_translates_supported_overflow_enabled_add_but_defers_overflow_multiply) {
+TEST_CASE(jit_arm64_translates_overflow_enabled_add_and_mullw_but_defers_high_multiply) {
     const std::array<u32,4> code{
         A::add(3U,4U,5U,true,false),
         A::XO(75U,3U,4U,5U,true,false),
         A::XO(11U,3U,4U,5U,true,false),
         A::mullw(3U,4U,5U,true,false)
     };
-    const Block add_block=compile_arm64(std::span<const u32>(code.data(),1U),0x1000U);
-    CHECK_EQ(add_block.guest_instructions,1U);
-    for(std::size_t i=1;i<code.size();++i) {
+    for(const std::size_t index : {0U,3U}) {
+        const Block block=compile_arm64(std::span<const u32>(code.data()+index,1U),0x1000U);
+        CHECK_EQ(block.guest_instructions,1U);
+    }
+    for(std::size_t i=1;i<3U;++i) {
         const std::array<u32,1> one{code[i]};
         const Block block=compile_arm64(one,0x1000U);
         CHECK_EQ(block.guest_instructions,0U);
         CHECK(block.host_words.empty());
     }
 }
+
+#if defined(__aarch64__)
+TEST_CASE(jit_arm64_executes_overflow_enabled_mullw) {
+    Machine reference;
+    Machine candidate;
+    const std::array<u32,2> code{
+        A::mullw(3U,4U,5U,true),A::mullw(6U,7U,8U,true)
+    };
+    reference.code(0x1000U,{code[0],code[1]});
+    candidate.code(0x1000U,{code[0],code[1]});
+    reference.s().gpr[4]=0x40000000U; candidate.s().gpr[4]=0x40000000U;
+    reference.s().gpr[5]=4U; candidate.s().gpr[5]=4U;
+    reference.s().gpr[7]=3U; candidate.s().gpr[7]=3U;
+    reference.s().gpr[8]=4U; candidate.s().gpr[8]=4U;
+    CHECK(reference.cpu->run(code.size())==StepResult::Executed);
+    CHECK(candidate.cpu->run_jit(code.size())==StepResult::Executed);
+    CHECK(candidate.s()==reference.s());
+    CHECK_EQ(candidate.s().gpr[3],0U);
+    CHECK_EQ(candidate.s().gpr[6],12U);
+    CHECK((candidate.s().xer&XER_OV)==0U);
+    CHECK((candidate.s().xer&XER_SO)!=0U);
+}
+#endif
 
 TEST_CASE(jit_arm64_unsupported_first_instruction_produces_no_executable_block) {
     const std::array<u32, 1> code{0xFFFFFFFFU};
