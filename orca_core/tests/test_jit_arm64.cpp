@@ -1332,7 +1332,7 @@ TEST_CASE(jit_arm64_misaligned_lfs_uses_interpreter_alignment_exception) {
     for (Machine* m : {&reference, &candidate}) {
         m->s().msr = MSR_FP;
         m->s().gpr[3] = 0x2001U; // scalar FP accesses require 4-byte alignment
-        CHECK(m->bus.write32(0x2001U, 0x3F800000U) == mem::BusStatus::Ok);
+        // The access must fault before touching memory; do not seed an unaligned word.
     }
     CHECK(reference.cpu->run(1U) == StepResult::ExceptionTaken);
     CHECK(candidate.cpu->run_jit(1U) == StepResult::ExceptionTaken);
