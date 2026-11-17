@@ -702,13 +702,24 @@ bool translate_one(u32 ins, u32 guest_pc, std::vector<u32>& out, bool& terminate
             if(rc) emit_cr0(out,12);
             return true;
         }
-        if(xo10==235U) { // mullw, OE=0
-            if((ins&0x400U)!=0U) return false; // OE must update XER[OV]/[SO]
+        if(xo9==235U) { // mullw with optional signed overflow update
+            const bool oe=(ins&0x400U)!=0U;
             out.push_back(ldr_w(9,0,static_cast<unsigned>(offsetof(CpuState,gpr)+ra*4U)));
             out.push_back(ldr_w(10,0,static_cast<unsigned>(offsetof(CpuState,gpr)+rb*4U)));
-            out.push_back(mul_w(11,9,10));
-            out.push_back(str_w(11,0,static_cast<unsigned>(offsetof(CpuState,gpr)+rt*4U)));
-            if(rc) emit_cr0(out,11);
+            if(oe) {
+                out.push_back(smull_x(12,9,10));
+                out.push_back(lsr_x(13,12,32U));
+                out.push_back(asr_w(14,12,31U));
+                out.push_back(subs_w(31U,13,14));
+                out.push_back(cset_w(15,1U)); // high word differs from sign extension
+                out.push_back(str_w(12,0,static_cast<unsigned>(offsetof(CpuState,gpr)+rt*4U)));
+                emit_xer_overflow_bool(out,15);
+                if(rc) emit_cr0(out,12);
+            } else {
+                out.push_back(mul_w(11,9,10));
+                out.push_back(str_w(11,0,static_cast<unsigned>(offsetof(CpuState,gpr)+rt*4U)));
+                if(rc) emit_cr0(out,11);
+            }
             return true;
         }
         if(xo10==792U) { // sraw: variable arithmetic shift with XER[CA]
