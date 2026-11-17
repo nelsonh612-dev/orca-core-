@@ -60,6 +60,7 @@ Los hitos M030–M032 amplían el subconjunto nativo sin cambiar el fallback arq
 - Rotación y máscaras rlwinm, rlwimi y rlwnm; las formas con Rc=1 actualizan CR0.
 - Desplazamientos lógicos slw / srw, respetando el campo de seis bits del contador PPC.
 - cntlzw, extsb y extsh.
+- Comparaciones signed/unsigned cmpwi, cmplwi, cmpw y cmplw con actualización del campo CR seleccionado y XER[SO].
 
 Se añadieron pruebas de traducción para estas formas y pruebas diferenciales condicionadas a AArch64 que comparan el estado completo con el intérprete de referencia. Estas pruebas nuevas aún necesitan ejecutarse en CI/QEMU ARM64; la presencia de los tests no equivale a un resultado aprobado.
 
@@ -74,7 +75,8 @@ Se mantienen deliberadamente en fallback las formas que aún no tienen semántic
 | Integración con el scheduler | Integrada en M026; validar temporización en hardware |
 | Aritmética y lógica entera | Parcial, ampliada en M030 |
 | Rotaciones, máscaras y desplazamientos lógicos | Ampliados en M031/M032 |
-| CR0 y XER | Parcial; no se traducen todas las formas que afectan flags |
+| Comparaciones signed/unsigned | cmpwi, cmplwi, cmpw y cmplw añadidas en M034 |
+| CR0, campos CR y XER | Parcial; comparaciones y CR0 cubiertos en las formas indicadas, otras formas de flags pendientes |
 | Saltos y flujo de control nativo | Pendiente |
 | Load/store, MMU y excepciones desde bloques nativos | Pendiente; fallback actual |
 | FPU y paired-single | Pendiente; fallback actual |
