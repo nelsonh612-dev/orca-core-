@@ -43,6 +43,49 @@ TEST_CASE(jit_arm64_translates_unsigned_divide_word) {
     CHECK(has_word(0x1A9F17EDU)); // CSET w13, EQ (zero divisor)
 }
 
+TEST_CASE(jit_arm64_translates_signed_divide_word_and_exception_guards) {
+    const std::array<u32, 2> code{A::X(491, 3, 4, 5), A::X(491, 6, 7, 8, true)};
+    const Block b = compile_arm64(code, 0x1000U);
+    CHECK_EQ(b.guest_instructions, 2U);
+    CHECK_EQ(b.end_pc, 0x1008U);
+    const auto has_word = [&](u32 word) {
+        for (u32 emitted : b.host_words) if (emitted == word) return true;
+        return false;
+    };
+    CHECK(has_word(0x1ACA0D2BU)); // SDIV w11, w9, w10
+    CHECK(has_word(0x7100015FU)); // CMP w10, #0
+    CHECK(has_word(0x1A9F17EDU)); // CSET w13, EQ
+    CHECK(has_word(0x4B1003F0U)); // SUB w16, wzr, w16
+}
+
+#if defined(__aarch64__)
+TEST_CASE(jit_arm64_differential_signed_divide_matches_interpreter) {
+    const std::array<u32, 1> code{A::X(491, 3, 4, 5, true)};
+    const std::array<std::pair<u32, u32>, 5> cases{{
+        {static_cast<u32>(-17), 5U},
+        {17U, 5U},
+        {static_cast<u32>(-17), 0U},
+        {17U, 0U},
+        {0x80000000U, 0xFFFFFFFFU}
+    }};
+    for (const auto [dividend, divisor] : cases) {
+        Machine reference;
+        Machine native_path;
+        reference.code(0x1000U, {code[0]});
+        native_path.code(0x1000U, {code[0]});
+        for (Machine* m : {&reference, &native_path}) {
+            m->s().gpr[4] = dividend;
+            m->s().gpr[5] = divisor;
+            m->s().xer = XER_SO | XER_OV;
+            m->s().cr = 0x12345678U;
+        }
+        CHECK(reference.cpu->run(1U) == StepResult::Executed);
+        CHECK(native_path.cpu->run_jit(1U) == StepResult::Executed);
+        CHECK(native_path.s() == reference.s());
+    }
+}
+#endif
+
 TEST_CASE(jit_arm64_translates_signed_and_unsigned_multiply_high) {
     const std::array<u32, 2> code{A::X(75, 3, 4, 5), A::X(11, 6, 7, 8)};
     const Block b = compile_arm64(code, 0x1000U);
