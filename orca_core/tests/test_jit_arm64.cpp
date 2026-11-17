@@ -109,6 +109,7 @@ TEST_CASE(jit_arm64_differential_guarded_lmw_stmw) {
     u64 completed = 0;
     CHECK(native_path.cpu->run_jit(2U, &completed) == StepResult::Executed);
     CHECK_EQ(completed, 2U);
+    CHECK(native_path.cpu->jit_memory_fastpath_hits() >= 2U);
     CHECK(native_path.s() == reference.s());
     for (unsigned i = 0; i < 4U; ++i)
         CHECK_EQ(native_path.r32(0x2100U + i * 4U), reference.r32(0x2100U + i * 4U));
@@ -190,6 +191,7 @@ TEST_CASE(jit_arm64_differential_guarded_d_form_ram_load_store) {
     u64 completed = 0;
     CHECK(native_path.cpu->run_jit(code.size(), &completed) == StepResult::Executed);
     CHECK_EQ(completed, code.size());
+    CHECK(native_path.cpu->jit_memory_fastpath_hits() >= code.size());
     CHECK(native_path.s() == reference.s());
     CHECK_EQ(native_path.r32(0x2008U), reference.r32(0x2008U));
     CHECK_EQ(native_path.r32(0x200CU), reference.r32(0x200CU));
@@ -266,7 +268,21 @@ TEST_CASE(jit_arm64_guarded_memory_falls_back_for_unmapped_and_page_crossing) {
     CHECK(jit_cross.bus.write8(0x2002U, 0x78U) == mem::BusStatus::Ok);
     CHECK(reference_cross.cpu->run(1U) == StepResult::Executed);
     CHECK(jit_cross.cpu->run_jit(1U) == StepResult::Executed);
+    CHECK(jit_cross.cpu->jit_memory_fastpath_hits() == 0U); // cross-page access must fall back
     CHECK(jit_cross.s() == reference_cross.s());
+
+    // If a guarded memory resolver declines after earlier guest instructions,
+    // those earlier operations must not be replayed by the interpreter fallback.
+    const std::array<u32, 2> prefix_code{A::addi(3, 3, 1), A::D(32, 4, 5, 0)};
+    Machine reference_prefix;
+    reference_prefix.code(0x1000U, {prefix_code[0], prefix_code[1]});
+    reference_prefix.s().gpr[5] = 0x10000000U;
+    Machine jit_prefix;
+    jit_prefix.code(0x1000U, {prefix_code[0], prefix_code[1]});
+    jit_prefix.s().gpr[5] = 0x10000000U;
+    CHECK(reference_prefix.cpu->run(2U) == StepResult::MemoryFault);
+    CHECK(jit_prefix.cpu->run_jit(2U) == StepResult::MemoryFault);
+    CHECK(jit_prefix.s() == reference_prefix.s());
 }
 #endif
 
