@@ -48,6 +48,7 @@ add_library(orca_core
     src/video/xfb.cpp
     src/hw/external_interface.cpp
     src/hw/serial_interface.cpp
+    src/hw/wii_remote.cpp
     src/hw/video_interface.cpp
     src/hw/mmio_splitter.cpp
     src/hw/processor_interface.cpp
