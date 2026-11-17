@@ -17,6 +17,7 @@ struct Block {
     std::size_t guest_instructions{};
     bool requires_fp{false};
     bool requires_paired{false};
+    bool has_guarded_memory{false};
     std::vector<u32> host_words; // little-endian AArch64 instruction words
 };
 
@@ -27,6 +28,7 @@ Block compile_arm64(std::span<const u32> guest_words, u32 start_pc);
 // retained by the CPU block cache instead of mmap/munmap on every invocation.
 class ExecutableBlock {
 public:
+    using MemoryResolver = void* (*)(CpuState*, void*, u32, u32, u32);
     ExecutableBlock() noexcept = default;
     explicit ExecutableBlock(const Block& block) noexcept;
     ~ExecutableBlock();
@@ -35,10 +37,11 @@ public:
     ExecutableBlock(ExecutableBlock&& other) noexcept;
     ExecutableBlock& operator=(ExecutableBlock&& other) noexcept;
     bool valid() const noexcept { return memory_ != nullptr; }
-    bool execute(CpuState& state) const noexcept;
+    bool execute(CpuState& state, void* context = nullptr, MemoryResolver resolver = nullptr) const noexcept;
 private:
     void* memory_{nullptr};
     std::size_t allocation_size_{0};
+    bool has_guarded_memory_{false};
 };
 
 // Convenience one-shot entry point, primarily for tests. CPU execution uses
