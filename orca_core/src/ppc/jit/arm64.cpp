@@ -526,6 +526,15 @@ bool translate_one(u32 ins, u32 guest_pc, std::vector<u32>& out, bool& terminate
             emit_cr_compare(out,bf,xo10==0U?0xBU:0x3U,xo10==0U?0xCU:0x8U,0U);
             return true;
         }
+        if(xo10==104U) { // neg RT,RA (OE=0)
+            if((ins&0x400U)!=0U) return false;
+            const bool record=(ins&1U)!=0U;
+            out.push_back(ldr_w(9,0,static_cast<unsigned>(offsetof(CpuState,gpr)+ra*4U)));
+            out.push_back(sub_w(11,31U,9)); // 0 - GPR[RA]
+            out.push_back(str_w(11,0,static_cast<unsigned>(offsetof(CpuState,gpr)+rt*4U)));
+            if(record) emit_cr0(out,11);
+            return true;
+        }
         const bool rc=(ins&1U)!=0U;
 
 
