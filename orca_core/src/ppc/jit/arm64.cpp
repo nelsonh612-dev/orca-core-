@@ -18,6 +18,16 @@ constexpr u32 ldr_x(unsigned rt, unsigned rn, unsigned byte_offset) {
 constexpr u32 str_x(unsigned rt, unsigned rn, unsigned byte_offset) {
     return 0xF9000000U | ((byte_offset / 8U) << 10U) | (rn << 5U) | rt;
 }
+constexpr u32 ldrb_w(unsigned rt, unsigned rn) { return 0x39400000U | (rn << 5U) | rt; }
+constexpr u32 ldrh_w(unsigned rt, unsigned rn) { return 0x79400000U | (rn << 5U) | rt; }
+constexpr u32 strb_w(unsigned rt, unsigned rn) { return 0x39000000U | (rn << 5U) | rt; }
+constexpr u32 strh_w(unsigned rt, unsigned rn) { return 0x79000000U | (rn << 5U) | rt; }
+constexpr u32 rev16_w(unsigned rd, unsigned rn) { return 0x5AC00400U | (rn << 5U) | rd; }
+constexpr u32 rev_w(unsigned rd, unsigned rn) { return 0x5AC00800U | (rn << 5U) | rd; }
+constexpr u32 cbz_x(unsigned rt, unsigned imm19) { return 0xB4000000U | (imm19 << 5U) | rt; }
+constexpr u32 blr_x16() { return 0xD63F0200U; }
+constexpr u32 sub_sp_32() { return 0xD10083FFU; }
+constexpr u32 add_sp_32() { return 0x910083FFU; }
 constexpr u32 movz_x(unsigned rd, u32 imm16, unsigned shift) {
     return 0xD2800000U | ((shift / 16U) << 21U) | ((imm16 & 0xFFFFU) << 5U) | rd;
 }
