@@ -1536,3 +1536,48 @@ TEST_CASE(jit_arm64_keeps_unimplemented_fpu_arithmetic_on_reference_fallback) {
     CHECK_EQ(prefix.guest_instructions, 1U);
     CHECK_EQ(prefix.end_pc, 0x1004U);
 }
+
+
+#if defined(__aarch64__)
+TEST_CASE(jit_arm64_differential_cr_logical_and_field_moves_match_interpreter) {
+    const std::array<u32, 12> code{
+        A::crnor(0, 1, 2), A::crandc(3, 4, 5), A::crxor(6, 7, 8),
+        A::crnand(9, 10, 11), A::crand(12, 13, 14), A::creqv(15, 16, 17),
+        A::crorc(18, 19, 20), A::cror(21, 22, 23),
+        A::mcrf(2, 5), A::mtcrf(0xA5, 24), A::mcrxr(6), A::mfcr(25)
+    };
+    Machine reference;
+    Machine candidate;
+    reference.code(0x1000U, {code[0],code[1],code[2],code[3],code[4],code[5],
+                             code[6],code[7],code[8],code[9],code[10],code[11]});
+    candidate.code(0x1000U, {code[0],code[1],code[2],code[3],code[4],code[5],
+                             code[6],code[7],code[8],code[9],code[10],code[11]});
+    for (Machine* m : {&reference, &candidate}) {
+        m->s().cr = 0x96A53C81U;
+        m->s().xer = XER_SO | XER_OV | XER_CA;
+        m->s().gpr[24] = 0xD3A596C7U;
+    }
+    CHECK(reference.cpu->run(code.size()) == StepResult::Executed);
+    CHECK(candidate.cpu->run_jit(code.size()) == StepResult::Executed);
+    CHECK(candidate.s() == reference.s());
+}
+ 
+TEST_CASE(jit_arm64_differential_sraw_carry_boundaries_match_interpreter) {
+    for (u32 shift : {0U, 1U, 31U, 32U, 33U, 63U}) {
+        Machine reference;
+        Machine candidate;
+        const u32 instruction = A::sraw(4, 3, 5, true);
+        reference.code(0x1000U, {instruction});
+        candidate.code(0x1000U, {instruction});
+        for (Machine* m : {&reference, &candidate}) {
+            m->s().gpr[3] = 0x80000005U;
+            m->s().gpr[5] = shift;
+            m->s().xer = XER_SO;
+            m->s().cr = 0x12345678U;
+        }
+        CHECK(reference.cpu->run(1U) == StepResult::Executed);
+        CHECK(candidate.cpu->run_jit(1U) == StepResult::Executed);
+        CHECK(candidate.s() == reference.s());
+    }
+}
+#endif
