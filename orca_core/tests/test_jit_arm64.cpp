@@ -1445,15 +1445,45 @@ TEST_CASE(jit_arm64_keeps_unimplemented_fpu_arithmetic_on_reference_fallback) {
         const std::array<u32, 1> one{instruction};
         const Block block = compile_arm64(one, 0x1000U);
         CHECK_EQ(block.guest_instructions, 0U);
+        CHECK(block.host_words.empty());
+        CHECK_EQ(block.end_pc, 0x1000U);
     }
 
-    const std::array<u32, 4> paired{
+    const std::array<u32, 8> fused_scalar{
+        A::fmadds(1, 2, 3, 4), A::fmadd(5, 6, 7, 8),
+        A::fmsubs(9, 10, 11, 12), A::fmsub(13, 14, 15, 16),
+        A::fnmadds(17, 18, 19, 20), A::fnmadd(21, 22, 23, 24),
+        A::fnmsubs(25, 26, 27, 28), A::fnmsub(29, 30, 31, 0)
+    };
+    for (u32 instruction : fused_scalar) {
+        const std::array<u32, 1> one{instruction};
+        const Block block = compile_arm64(one, 0x1000U);
+        CHECK_EQ(block.guest_instructions, 0U);
+        CHECK(block.host_words.empty());
+    }
+
+    const std::array<u32, 10> paired{
         A::ps_add(1, 2, 3), A::ps_sub(4, 5, 6),
-        A::ps_mul(7, 8, 9), A::ps_div(10, 11, 12)
+        A::ps_mul(7, 8, 9), A::ps_div(10, 11, 12),
+        A::ps_madd(13, 14, 15, 16), A::ps_msub(17, 18, 19, 20),
+        A::ps_nmadd(21, 22, 23, 24), A::ps_nmsub(25, 26, 27, 28),
+        A::ps_sum0(29, 30, 31, 0), A::ps_sum1(1, 2, 3, 4)
     };
     for (u32 instruction : paired) {
         const std::array<u32, 1> one{instruction};
         const Block block = compile_arm64(one, 0x1000U);
         CHECK_EQ(block.guest_instructions, 0U);
+        CHECK(block.host_words.empty());
+        CHECK_EQ(block.end_pc, 0x1000U);
     }
+
+    // A supported prefix must stop exactly before an unsupported FP opcode.
+    // The dispatcher can then retire the prefix once and execute the FP
+    // instruction through the reference interpreter without replaying it.
+    const std::array<u32, 3> mixed{
+        A::addi(3, 0, 7), A::fadds(1, 2, 3), A::addi(4, 0, 9)
+    };
+    const Block prefix = compile_arm64(mixed, 0x1000U);
+    CHECK_EQ(prefix.guest_instructions, 1U);
+    CHECK_EQ(prefix.end_pc, 0x1004U);
 }
