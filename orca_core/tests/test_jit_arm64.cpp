@@ -1281,6 +1281,7 @@ TEST_CASE(jit_arm64_run_honors_stop_pc_after_interpreted_branch) {
     CHECK_EQ(m.s().gpr[3], 0U);
 }
 
+#if defined(__aarch64__)
 TEST_CASE(jit_arm64_run_honors_stop_pc_inside_straight_line_cached_block) {
     Machine m;
     m.code(0x1000U, {A::addi(3, 0, 11), A::addi(4, 0, 22), A::addi(5, 0, 33)});
@@ -1303,6 +1304,7 @@ TEST_CASE(jit_arm64_run_honors_stop_pc_inside_straight_line_cached_block) {
     CHECK_EQ(m.s().gpr[4], 22U);
     CHECK_EQ(m.s().gpr[5], 0U);
 }
+#endif
 
 TEST_CASE(jit_arm64_branch_uses_interpreter_fallback_at_block_boundary) {
     Machine m;
