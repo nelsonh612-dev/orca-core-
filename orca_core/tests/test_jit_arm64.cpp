@@ -1361,6 +1361,30 @@ TEST_CASE(jit_arm64_misaligned_stfsx_uses_interpreter_alignment_exception) {
 }
 #endif
 
+#if defined(__aarch64__)
+TEST_CASE(jit_arm64_runtime_fpu_fallback_retires_prefix_once_and_matches_interpreter) {
+    const std::array<u32, 3> code{
+        A::addi(3, 0, 7), A::fadds(1, 2, 3), A::addi(4, 0, 9)
+    };
+    Machine reference;
+    Machine candidate;
+    reference.code(0x1000U, {code[0], code[1], code[2]});
+    candidate.code(0x1000U, {code[0], code[1], code[2]});
+    for (Machine* m : {&reference, &candidate}) {
+        m->s().msr = MSR_FP;
+        m->s().fpr[2].ps0 = 0x3FF8000000000000ULL; // 1.5
+        m->s().fpr[3].ps0 = 0x4004000000000000ULL; // 2.5
+    }
+
+    CHECK(reference.cpu->run(code.size()) == StepResult::Executed);
+    u64 completed = 0;
+    CHECK(candidate.cpu->run_jit(code.size(), &completed) == StepResult::Executed);
+    CHECK_EQ(completed, code.size());
+    CHECK(candidate.s() == reference.s());
+    CHECK_EQ(candidate.cpu->instructions_retired(), reference.cpu->instructions_retired());
+}
+#endif
+
 TEST_MAIN("jit_arm64")
 
 
