@@ -2,7 +2,7 @@ name: Orca Core ARM64 JIT validation
 
 on:
   push:
-    branches: [main]
+    branches: [main, m054-jit-completion]
   pull_request:
     branches: [main]
   workflow_dispatch:
