@@ -1281,6 +1281,29 @@ TEST_CASE(jit_arm64_run_honors_stop_pc_after_interpreted_branch) {
     CHECK_EQ(m.s().gpr[3], 0U);
 }
 
+TEST_CASE(jit_arm64_run_honors_stop_pc_inside_straight_line_cached_block) {
+    Machine m;
+    m.code(0x1000U, {A::addi(3, 0, 11), A::addi(4, 0, 22), A::addi(5, 0, 33)});
+
+    // First populate the cache with a block extending beyond the later stop PC.
+    CHECK(m.cpu->run_jit(3U) == StepResult::Executed);
+    CHECK_EQ(m.s().gpr[5], 33U);
+
+    // Rewind and request a stop in the middle of that cached straight-line block.
+    m.s().pc = 0x1000U;
+    m.s().gpr[3] = 0U;
+    m.s().gpr[4] = 0U;
+    m.s().gpr[5] = 0U;
+    const u32 stop_pc = 0x1008U;
+    u64 completed = 0;
+    CHECK(m.cpu->run_jit(3U, &completed, &stop_pc) == StepResult::Executed);
+    CHECK_EQ(completed, 2U);
+    CHECK_EQ(m.s().pc, stop_pc);
+    CHECK_EQ(m.s().gpr[3], 11U);
+    CHECK_EQ(m.s().gpr[4], 22U);
+    CHECK_EQ(m.s().gpr[5], 0U);
+}
+
 TEST_CASE(jit_arm64_branch_uses_interpreter_fallback_at_block_boundary) {
     Machine m;
     m.code(0x1000U, {A::addi(3, 0, 5), A::b(8), A::addi(4, 0, 99), A::addi(5, 0, 7)});
