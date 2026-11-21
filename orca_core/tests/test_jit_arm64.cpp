@@ -1429,3 +1429,31 @@ TEST_CASE(jit_arm64_differential_scalar_fsel_matches_interpreter_for_zero_and_na
     }
 }
 #endif
+
+
+TEST_CASE(jit_arm64_keeps_unimplemented_fpu_arithmetic_on_reference_fallback) {
+    // These instructions have architectural implementations in cpu_fpu.cpp,
+    // but are not yet emitted as native ARM64 operations. The translator must
+    // stop before them rather than mark an incomplete block as translated.
+    const std::array<u32, 8> scalar{
+        A::fadds(1, 2, 3), A::fsubs(4, 5, 6),
+        A::fmuls(7, 8, 9), A::fdivs(10, 11, 12),
+        A::fadd(13, 14, 15), A::fsub(16, 17, 18),
+        A::fmul(19, 20, 21), A::fdiv(22, 23, 24)
+    };
+    for (u32 instruction : scalar) {
+        const std::array<u32, 1> one{instruction};
+        const Block block = compile_arm64(one, 0x1000U);
+        CHECK_EQ(block.guest_instructions, 0U);
+    }
+
+    const std::array<u32, 4> paired{
+        A::ps_add(1, 2, 3), A::ps_sub(4, 5, 6),
+        A::ps_mul(7, 8, 9), A::ps_div(10, 11, 12)
+    };
+    for (u32 instruction : paired) {
+        const std::array<u32, 1> one{instruction};
+        const Block block = compile_arm64(one, 0x1000U);
+        CHECK_EQ(block.guest_instructions, 0U);
+    }
+}
