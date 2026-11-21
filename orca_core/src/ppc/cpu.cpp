@@ -241,7 +241,15 @@ StepResult Cpu::run_jit(u64 budget, u64* completed, const u32* stop_pc) {
         }
         if (it == jit_blocks_.end()) {
             std::vector<u32> words;
-            const u64 remaining = budget - done;
+            u64 remaining = budget - done;
+            // A caller may request a precise stop PC inside an otherwise
+            // straight-line block. Never compile past that boundary: a cached
+            // block must not retire instructions beyond stop_pc.
+            if (stop_pc != nullptr) {
+                const u32 distance = *stop_pc - pc;
+                if (distance != 0U && distance < 0x80000000U && (distance & 3U) == 0U)
+                    remaining = std::min<u64>(remaining, distance / 4U);
+            }
             const std::size_t limit = static_cast<std::size_t>(std::min<u64>(remaining, 64U));
             words.reserve(limit);
             bool fetch_ok = true;
@@ -286,7 +294,13 @@ StepResult Cpu::run_jit(u64 budget, u64* completed, const u32* stop_pc) {
         }
 
         const std::size_t count = it->second->block.guest_instructions;
-        bool mapping_valid = count != 0U && count <= budget - done;
+        u64 allowed = budget - done;
+        if (stop_pc != nullptr) {
+            const u32 distance = *stop_pc - pc;
+            if (distance != 0U && distance < 0x80000000U && (distance & 3U) == 0U)
+                allowed = std::min<u64>(allowed, distance / 4U);
+        }
+        bool mapping_valid = count != 0U && count <= allowed;
         // A guest can rewrite segment/BAT/PTE mappings without writing the
         // translated code page. Revalidate every fetch translation before a
         // cached block is entered; otherwise a stale physical continuation
