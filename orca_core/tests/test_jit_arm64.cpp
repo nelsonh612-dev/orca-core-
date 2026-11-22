@@ -1660,3 +1660,56 @@ TEST_CASE(jit_arm64_differential_logical_shift_register_boundaries_match_interpr
     }
 }
 #endif
+
+
+#if defined(__aarch64__)
+TEST_CASE(jit_arm64_differential_indexed_integer_memory_matrix_matches_interpreter) {
+    struct Case { unsigned xo; bool load; unsigned size; bool update; };
+    // Include ordinary, update, sign-extending and byte-reversed indexed forms.
+    const std::array<Case, 18> cases{{
+        {23U, true, 4U, false}, {55U, true, 4U, true},
+        {87U, true, 1U, false}, {119U, true, 1U, true},
+        {279U, true, 2U, false}, {311U, true, 2U, true},
+        {343U, true, 2U, false}, {375U, true, 2U, true},
+        {151U, false, 4U, false}, {183U, false, 4U, true},
+        {215U, false, 1U, false}, {247U, false, 1U, true},
+        {407U, false, 2U, false}, {439U, false, 2U, true},
+        {534U, true, 4U, false}, {790U, true, 2U, false},
+        {662U, false, 4U, false}, {918U, false, 2U, false}
+    }};
+    const auto xform = [](unsigned rt, unsigned ra, unsigned rb, unsigned xo) {
+        return (31U << 26U) | (rt << 21U) | (ra << 16U) |
+               (rb << 11U) | (xo << 1U);
+    };
+
+    for (const Case& c : cases) {
+        Machine reference;
+        Machine candidate;
+        const u32 instruction = xform(c.load ? 3U : 6U, 4U, 5U, c.xo);
+        reference.code(0x1000U, {instruction});
+        candidate.code(0x1000U, {instruction});
+        for (Machine* m : {&reference, &candidate}) {
+            m->s().gpr[4] = 0x2000U;
+            m->s().gpr[5] = 4U;
+            m->s().gpr[3] = 0xDEADBEEFU;
+            m->s().gpr[6] = 0xA1B2C3D4U;
+            m->s().xer = XER_SO | XER_CA;
+            for (unsigned i = 0; i < 16U; ++i)
+                CHECK(m->bus.write8(0x2000U + i, static_cast<u8>(0x10U + i)) == mem::BusStatus::Ok);
+        }
+
+        CHECK(reference.cpu->run(1U) == StepResult::Executed);
+        CHECK(candidate.cpu->run_jit(1U) == StepResult::Executed);
+        CHECK(candidate.cpu->jit_memory_fastpath_hits() >= 1U);
+        CHECK(candidate.s() == reference.s());
+        for (unsigned i = 0; i < 16U; ++i) {
+            u8 expected = 0, actual = 0;
+            CHECK(reference.bus.read8(0x2000U + i, expected) == mem::BusStatus::Ok);
+            CHECK(candidate.bus.read8(0x2000U + i, actual) == mem::BusStatus::Ok);
+            CHECK_EQ(actual, expected);
+        }
+        if (c.update) CHECK_EQ(candidate.s().gpr[4], 0x2004U);
+        else CHECK_EQ(candidate.s().gpr[4], 0x2000U);
+    }
+}
+#endif
