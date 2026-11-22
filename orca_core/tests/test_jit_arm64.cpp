@@ -1758,3 +1758,41 @@ TEST_CASE(jit_arm64_differential_d_form_integer_memory_matrix_matches_interprete
     }
 }
 #endif
+
+
+#if defined(__aarch64__)
+TEST_CASE(jit_arm64_differential_lmw_stmw_full_register_range_crosses_page) {
+    // RT=8 transfers 24 registers. Start 32 bytes before the page boundary so
+    // the bulk JIT resolver must decline and the reference path handles both
+    // translated physical spans without replaying or losing any register.
+    const u32 lmw = A::D(46, 8, 4, 0);
+    const u32 stmw = A::D(47, 8, 5, 0);
+    Machine reference;
+    Machine candidate;
+    reference.code(0x1000U, {lmw, stmw});
+    candidate.code(0x1000U, {lmw, stmw});
+    for (Machine* m : {&reference, &candidate}) {
+        m->s().gpr[4] = 0x2FE0U;
+        m->s().gpr[5] = 0x3100U;
+        for (unsigned r = 8U; r < 32U; ++r) {
+            m->s().gpr[r] = 0xA5000000U ^ (r * 0x01010101U);
+            CHECK(m->bus.write32(0x2FE0U + (r - 8U) * 4U,
+                                 0x12340000U + r * 0x101U) == mem::BusStatus::Ok);
+        }
+    }
+    // Make the destination registers visibly different before lmw.
+    for (unsigned r = 8U; r < 32U; ++r) {
+        reference.s().gpr[r] = 0xDEAD0000U + r;
+        candidate.s().gpr[r] = 0xDEAD0000U + r;
+    }
+    CHECK(reference.cpu->run(2U) == StepResult::Executed);
+    u64 completed = 0;
+    CHECK(candidate.cpu->run_jit(2U, &completed) == StepResult::Executed);
+    CHECK_EQ(completed, 2U);
+    CHECK_EQ(candidate.cpu->jit_memory_fastpath_hits(), 0U);
+    CHECK(candidate.s() == reference.s());
+    for (unsigned r = 8U; r < 32U; ++r)
+        CHECK_EQ(candidate.r32(0x3100U + (r - 8U) * 4U),
+                 reference.r32(0x3100U + (r - 8U) * 4U));
+}
+#endif
