@@ -519,6 +519,9 @@ Cpu::Outcome Cpu::locked_cache_dma(u32 dmal) {
             (void)bus_.dma_read(mem_addr + k * 32U, line);
             locked_cache_[lc_addr + k * 32U] = line;
         }
+        // DMA into the locked-cache address space is still a write to the
+        // CPU-visible physical block for reservation/coherency tracking.
+        bus_.notify_external_write(lc_addr, lines * 32U, mem::AccessSource::Dma);
     } else {
         for (u32 k = 0; k < lines; ++k)
             if (locked_cache_.find(lc_addr + k * 32U) == locked_cache_.end())
