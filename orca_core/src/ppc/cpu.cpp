@@ -937,18 +937,28 @@ Cpu::Outcome Cpu::op_multiple(u32 ins, bool is_store) {
     u32 lo = 0, hi = 0, split = 0; u8 wimg = 0;
     Outcome o = translate_data(ea, bytes, is_store, lo, hi, split, wimg);
     if (!o.ok()) return o;
-    if (!bus_.is_mapped(lo, split) || (split < bytes && !bus_.is_mapped(hi, bytes - split)))
+    // Validate the complete transfer before changing architectural state.
+    // phys_accessible/phys_read/phys_write also cover HID2 locked-cache lines;
+    // Bus::is_mapped/read32/write32 alone incorrectly reject or bypass them.
+    if (!phys_accessible(locked_cache_, bus_, lo, split) ||
+        (split < bytes && !phys_accessible(locked_cache_, bus_, hi, bytes - split)))
         return Outcome::stop(StepResult::MemoryFault, "lmw/stmw touches unmapped physical memory", lo);
     auto pa = [&](u32 off) { return off < split ? lo + off : hi + (off - split); };
     if (is_store) {
-        for (unsigned r = rt; r < 32U; ++r)
-            if (bus_.write32(pa((r - rt) * 4U), g[r]) != mem::BusStatus::Ok)
-                return Outcome::stop(StepResult::MemoryFault, "stmw store failed", pa((r - rt) * 4U));
+        for (unsigned r = rt; r < 32U; ++r) {
+            const u32 address = pa((r - rt) * 4U);
+            if (!phys_write(address, 4U, g[r]))
+                return Outcome::stop(StepResult::MemoryFault, "stmw store failed", address);
+        }
     } else {
         std::array<u32, 32> tmp{};
-        for (unsigned r = rt; r < 32U; ++r)
-            if (bus_.read32(pa((r - rt) * 4U), tmp[r]) != mem::BusStatus::Ok)
-                return Outcome::stop(StepResult::MemoryFault, "lmw load failed", pa((r - rt) * 4U));
+        for (unsigned r = rt; r < 32U; ++r) {
+            u64 value = 0;
+            const u32 address = pa((r - rt) * 4U);
+            if (!phys_read(address, 4U, value))
+                return Outcome::stop(StepResult::MemoryFault, "lmw load failed", address);
+            tmp[r] = static_cast<u32>(value);
+        }
         for (unsigned r = rt; r < 32U; ++r) g[r] = tmp[r];
     }
     return Outcome::done();
