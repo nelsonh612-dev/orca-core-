@@ -473,13 +473,32 @@ bool Cpu::phys_write(u32 pa, unsigned size, u64 value) {
          locked_cache_.find((pa + size - 1U) & ~31U) == locked_cache_.end()))
         return bus_.write(pa, size, value) == mem::BusStatus::Ok;
     if (!phys_accessible(locked_cache_, bus_, pa, size)) return false;
+    // Preserve normal bus notifications for backing RAM, and explicitly
+    // notify observers for bytes written only into the locked-cache overlay.
+    // Reservation tracking and translated-code invalidation consume these
+    // physical write notifications.
+    u32 cached_run = 0;
+    u32 cached_size = 0;
+    auto flush_cached_run = [&]() {
+        if (cached_size != 0U) {
+            bus_.notify_external_write(cached_run, cached_size, mem::AccessSource::Cpu);
+            cached_size = 0;
+        }
+    };
     for (unsigned i = 0; i < size; ++i) {
         const u32 a = pa + i;
         const auto b = static_cast<u8>(value >> ((size - 1U - i) * 8U));
         const auto it = locked_cache_.find(a & ~31U);
-        if (it != locked_cache_.end()) it->second[a & 31U] = b;
-        else if (bus_.write8(a, b) != mem::BusStatus::Ok) return false;
+        if (it != locked_cache_.end()) {
+            it->second[a & 31U] = b;
+            if (cached_size == 0U) cached_run = a;
+            ++cached_size;
+        } else {
+            flush_cached_run();
+            if (bus_.write8(a, b) != mem::BusStatus::Ok) return false;
+        }
     }
+    flush_cached_run();
     return true;
 }
 
@@ -882,7 +901,9 @@ Cpu::Outcome Cpu::op_load_store_x(u32 ins, unsigned xo, bool& handled) {
         Outcome o = translate_data(ea, 4, false, lo, hi, split, wimg);
         if (!o.ok()) return o;
         u32 v = 0;
-        if (bus_.read32(lo, v) != mem::BusStatus::Ok) return Outcome::stop(StepResult::MemoryFault, "lwarx from unmapped physical memory", lo);
+        u64 loaded = 0;
+        if (!phys_read(lo, 4U, loaded)) return Outcome::stop(StepResult::MemoryFault, "lwarx from unmapped physical memory", lo);
+        v = static_cast<u32>(loaded);
         g[rt] = v;
         state_.reserve = true;
         state_.reserve_address = lo & ~31U;
@@ -896,7 +917,7 @@ Cpu::Outcome Cpu::op_load_store_x(u32 ins, unsigned xo, bool& handled) {
         Outcome o = translate_data(ea, 4, true, lo, hi, split, wimg);
         if (!o.ok()) return o;
         const bool success = state_.reserve && (lo & ~31U) == state_.reserve_address;
-        if (success && bus_.write32(lo, g[rt]) != mem::BusStatus::Ok)
+        if (success && !phys_write(lo, 4U, g[rt]))
             return Outcome::stop(StepResult::MemoryFault, "stwcx. to unmapped physical memory", lo);
         state_.reserve = false;
         set_cr_field(0, (success ? 2U : 0U) | ((state_.xer & XER_SO) != 0U ? 1U : 0U));
