@@ -1580,4 +1580,29 @@ TEST_CASE(jit_arm64_differential_sraw_carry_boundaries_match_interpreter) {
         CHECK(candidate.s() == reference.s());
     }
 }
+
+TEST_CASE(jit_arm64_differential_srawi_carry_and_cr_boundaries_match_interpreter) {
+    // srawi uses a five-bit immediate (0..31), unlike sraw's six-bit
+    // register shift. Exercise zero, sign-boundary and full-width shifts,
+    // both source signs, discarded-one/no-discard cases, and Rc updates.
+    for (u32 source : {0x00000000U, 0x00000001U, 0x7FFFFFFFU,
+                       0x80000000U, 0x80000001U, 0x80000005U,
+                       0xFFFFFFFFU, 0xFFFFFFFEU}) {
+        for (u32 shift : {0U, 1U, 2U, 15U, 30U, 31U}) {
+            Machine reference;
+            Machine candidate;
+            const u32 instruction = A::srawi(4, 3, shift, true);
+            reference.code(0x1000U, {instruction});
+            candidate.code(0x1000U, {instruction});
+            for (Machine* m : {&reference, &candidate}) {
+                m->s().gpr[3] = source;
+                m->s().xer = XER_SO | XER_OV | XER_CA;
+                m->s().cr = 0x12345678U;
+            }
+            CHECK(reference.cpu->run(1U) == StepResult::Executed);
+            CHECK(candidate.cpu->run_jit(1U) == StepResult::Executed);
+            CHECK(candidate.s() == reference.s());
+        }
+    }
+}
 #endif
