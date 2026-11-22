@@ -1796,3 +1796,26 @@ TEST_CASE(jit_arm64_differential_lmw_stmw_full_register_range_crosses_page) {
                  reference.r32(0x3100U + (r - 8U) * 4U));
 }
 #endif
+
+
+#if defined(__aarch64__)
+TEST_CASE(jit_arm64_lmw_stmw_unmapped_transfer_preserves_state) {
+    for (bool store : {false, true}) {
+        const u32 instruction = A::D(store ? 47U : 46U, 8U, 4U, 0);
+        Machine reference;
+        Machine candidate;
+        reference.code(0x1000U, {instruction});
+        candidate.code(0x1000U, {instruction});
+        for (Machine* m : {&reference, &candidate}) {
+            m->s().gpr[4] = 0x10000000U;
+            for (unsigned r = 8U; r < 32U; ++r)
+                m->s().gpr[r] = 0xC0010000U + r;
+        }
+        const CpuState before = reference.s();
+        CHECK(reference.cpu->run(1U) == StepResult::MemoryFault);
+        CHECK(candidate.cpu->run_jit(1U) == StepResult::MemoryFault);
+        CHECK(reference.s() == before);
+        CHECK(candidate.s() == before);
+    }
+}
+#endif
