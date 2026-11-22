@@ -436,6 +436,15 @@ TEST_CASE(reservation_lwarx_stwcx) {
     CHECK(m.cpu->step() == StepResult::Executed);
     CHECK_EQ(CR0(m.s().cr), 0U);
     CHECK_EQ(m.r32(0x2000), 99U);
+    // An ordinary CPU store by this processor also breaks the reservation.
+    m.s().pc = 0x1000; m.s().gpr[4] = 0x2000;
+    CHECK(m.cpu->step() == StepResult::Executed); // lwarx
+    m.s().pc = 0x1004; m.s().gpr[7] = 0x201C; m.s().gpr[8] = 0x1234;
+    m.code(0x1004, {A::stw(8, 0, 7), A::stwcx_(6, 0, 4)});
+    CHECK(m.cpu->step() == StepResult::Executed); // stw within same 32-byte granule
+    CHECK(m.cpu->step() == StepResult::Executed); // conditional store must fail
+    CHECK_EQ(CR0(m.s().cr), 0U);
+    CHECK_EQ(m.r32(0x2000), 99U);
     // misaligned lwarx -> alignment exception
     m.s().pc = 0x1000; m.s().gpr[4] = 0x2002;
     CHECK(m.cpu->step() == StepResult::ExceptionTaken);
