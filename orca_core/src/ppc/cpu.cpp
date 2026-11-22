@@ -1207,7 +1207,11 @@ Cpu::Outcome Cpu::op_cache_x(u32 ins, unsigned xo, bool& handled) {
         Outcome o = translate_data(ea & ~31U, 32, true, lo, hi, split, wimg);
         if (!o.ok()) return o;
         if ((wimg & (WIMG_W | WIMG_I)) != 0U) return Outcome::alignment(ea); // 750CL: write-through / cache-inhibited
-        if (const auto it = locked_cache_.find(lo); it != locked_cache_.end()) { it->second.fill(0); return o; }
+        if (const auto it = locked_cache_.find(lo); it != locked_cache_.end()) {
+            it->second.fill(0);
+            bus_.notify_external_write(lo, 32U, mem::AccessSource::Cpu);
+            return o;
+        }
         if (!bus_.is_ram(lo, 32)) return Outcome::stop(StepResult::MemoryFault, "dcbz outside RAM", lo);
         for (u32 i = 0; i < 32U; i += 8U) (void)bus_.write64(lo + i, 0);
         return o;
