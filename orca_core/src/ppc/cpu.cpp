@@ -37,10 +37,11 @@ struct Cpu::JitBlockEntry {
 
 Cpu::Cpu(mem::Bus& bus, CpuConfig config) : bus_(bus), config_(config) {
     bus_.set_code_invalidation_handler([this](u32, u32) { invalidate_jit_cache(); });
-    // Writes by other bus masters (DMA) to the reserved granule cancel a
-    // lwarx reservation (PEM 5.1.2).
+    // Any write by another instruction or bus master to the reserved
+    // reservation granule cancels lwarx (PEM 5.1.2). This includes ordinary
+    // CPU stores; stwcx. consumes its own reservation explicitly below.
     observer_id_ = bus_.add_write_observer([this](const mem::WriteEvent& ev) {
-        if (!state_.reserve || ev.source == mem::AccessSource::Cpu) return;
+        if (!state_.reserve) return;
         const u64 lo = ev.address, hi = static_cast<u64>(ev.address) + ev.size;
         const u64 g_lo = state_.reserve_address, g_hi = g_lo + 32U;
         if (lo < g_hi && g_lo < hi) state_.reserve = false;
