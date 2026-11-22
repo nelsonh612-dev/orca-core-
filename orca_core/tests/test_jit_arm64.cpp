@@ -1023,6 +1023,34 @@ TEST_CASE(jit_arm64_differential_bclr_and_bcctr_match_interpreter) {
         CHECK(actual == expected);
     }
 }
+
+TEST_CASE(jit_arm64_differential_conditional_branch_bo_ctr_matrix_matches_interpreter) {
+    // Exercise every BO encoding with both CR outcomes, CTR zero/nonzero,
+    // and both link settings. This checks the independent BO[0..4] tests
+    // rather than relying on one taken-branch example.
+    for (u32 bo = 0; bo < 32U; ++bo) {
+        const u32 bi = (bo * 7U) & 31U;
+        for (u32 cr_bit : {0U, 1U}) {
+            for (u32 ctr : {0U, 2U}) {
+                for (bool link : {false, true}) {
+                    Machine reference;
+                    Machine candidate;
+                    const u32 instruction = A::bc(bo, bi, 16, false, link);
+                    reference.code(0x1000U, {instruction});
+                    candidate.code(0x1000U, {instruction});
+                    for (Machine* m : {&reference, &candidate}) {
+                        m->s().cr = cr_bit << (31U - bi);
+                        m->s().ctr = ctr;
+                        m->s().lr = 0xCAFEBABEU;
+                    }
+                    CHECK(reference.cpu->run(1U) == StepResult::Executed);
+                    CHECK(candidate.cpu->run_jit(1U) == StepResult::Executed);
+                    CHECK(candidate.s() == reference.s());
+                }
+            }
+        }
+    }
+}
 #endif
 
 TEST_CASE(jit_arm64_translates_conditional_branch_as_block_exit) {
