@@ -1713,3 +1713,48 @@ TEST_CASE(jit_arm64_differential_indexed_integer_memory_matrix_matches_interpret
     }
 }
 #endif
+
+
+#if defined(__aarch64__)
+TEST_CASE(jit_arm64_differential_d_form_integer_memory_matrix_matches_interpreter) {
+    struct Case { unsigned op; bool load; bool update; };
+    const std::array<Case, 14> cases{{
+        {32U, true, false}, {33U, true, true},
+        {34U, true, false}, {35U, true, true},
+        {36U, false, false}, {37U, false, true},
+        {38U, true, false}, {39U, true, true},
+        {40U, true, false}, {41U, true, true},
+        {42U, true, false}, {43U, true, true},
+        {44U, false, false}, {45U, false, true}
+    }};
+
+    for (const Case& c : cases) {
+        Machine reference;
+        Machine candidate;
+        const u32 instruction = (c.op << 26U) |
+            ((c.load ? 3U : 6U) << 21U) | (4U << 16U) | 4U;
+        reference.code(0x1000U, {instruction});
+        candidate.code(0x1000U, {instruction});
+        for (Machine* m : {&reference, &candidate}) {
+            m->s().gpr[4] = 0x2000U;
+            m->s().gpr[3] = 0xDEADBEEFU;
+            m->s().gpr[6] = 0xA1B2C3D4U;
+            m->s().xer = XER_SO | XER_CA;
+            for (unsigned i = 0; i < 16U; ++i)
+                CHECK(m->bus.write8(0x2000U + i, static_cast<u8>(0x20U + i)) == mem::BusStatus::Ok);
+        }
+
+        CHECK(reference.cpu->run(1U) == StepResult::Executed);
+        CHECK(candidate.cpu->run_jit(1U) == StepResult::Executed);
+        CHECK(candidate.cpu->jit_memory_fastpath_hits() >= 1U);
+        CHECK(candidate.s() == reference.s());
+        for (unsigned i = 0; i < 16U; ++i) {
+            u8 expected = 0, actual = 0;
+            CHECK(reference.bus.read8(0x2000U + i, expected) == mem::BusStatus::Ok);
+            CHECK(candidate.bus.read8(0x2000U + i, actual) == mem::BusStatus::Ok);
+            CHECK_EQ(actual, expected);
+        }
+        CHECK_EQ(candidate.s().gpr[4], c.update ? 0x2004U : 0x2000U);
+    }
+}
+#endif
