@@ -1605,4 +1605,30 @@ TEST_CASE(jit_arm64_differential_srawi_carry_and_cr_boundaries_match_interpreter
         }
     }
 }
+
+TEST_CASE(jit_arm64_differential_logical_shift_register_boundaries_match_interpreter) {
+    // PPC variable shifts use RB[5:0]. Values 32..63 must produce zero
+    // for logical shifts; they must not be silently masked to 0..31.
+    for (u32 source : {0x00000000U, 0x00000001U, 0x80000000U,
+                       0x81234567U, 0xFFFFFFFFU}) {
+        for (u32 shift : {0U, 1U, 2U, 31U, 32U, 33U, 63U, 64U, 0xFFFFFFFFU}) {
+            for (bool left : {false, true}) {
+                Machine reference;
+                Machine candidate;
+                const u32 instruction = left ? A::slw(4, 3, 5, true)
+                                             : A::srw(4, 3, 5, true);
+                reference.code(0x1000U, {instruction});
+                candidate.code(0x1000U, {instruction});
+                for (Machine* m : {&reference, &candidate}) {
+                    m->s().gpr[3] = source;
+                    m->s().gpr[5] = shift;
+                    m->s().cr = 0xA5C369F0U;
+                }
+                CHECK(reference.cpu->run(1U) == StepResult::Executed);
+                CHECK(candidate.cpu->run_jit(1U) == StepResult::Executed);
+                CHECK(candidate.s() == reference.s());
+            }
+        }
+    }
+}
 #endif
