@@ -421,6 +421,59 @@ TEST_CASE(locked_cache_dcbz_l_and_access) {
     CHECK(m.exec(A::lwz(8, 0x40, 3)) == StepResult::MemoryFault); // not allocated, no RAM behind it
 }
 
+
+TEST_CASE(locked_cache_writes_invalidate_reservations) {
+    FpMachine m;
+    m.s().hid2 |= HID2_LCE;
+    m.s().dbat[3] = {0xE0000002U, 0xE0000002U};
+    m.s().msr |= MSR_DR;
+    m.s().gpr[3] = 0xE0000000U;
+    m.s().gpr[4] = 0;
+    m.s().gpr[5] = 0x12345678U;
+    m.code(0x1000, {A::dcbz_l(3, 4), A::stw(5, 0, 3), A::lwarx(6, 0, 3),
+                    A::dcbz_l(3, 4), A::stwcx_(5, 0, 3)});
+    CHECK(m.cpu->run(3) == StepResult::Executed);
+    CHECK(m.cpu->step() == StepResult::Executed); // dcbz_l overwrites the reserved line
+    CHECK(m.cpu->step() == StepResult::Executed); // stwcx. must fail
+    CHECK_EQ(CR0(m.s().cr), 0U);
+    CHECK_EQ(m.s().gpr[6], 0x12345678U);
+    std::array<u8, 32> line{};
+    CHECK(m.cpu->locked_cache_line(0xE0000000U, line));
+    for (u8 byte : line) CHECK_EQ(byte, 0U);
+}
+
+TEST_CASE(locked_cache_dma_fill_invalidates_reservations) {
+    FpMachine m;
+    m.s().hid2 |= HID2_LCE;
+    m.s().dbat[3] = {0xE0000002U, 0xE0000002U};
+    m.s().msr |= MSR_DR;
+    for (u32 i = 0; i < 32; i += 4) {
+        m.bus.write32(0x3000U + i, 0x11110000U + i);
+        m.bus.write32(0x3040U + i, 0x22220000U + i);
+    }
+    m.s().gpr[3] = 0x3000U;
+    m.s().gpr[4] = 0xE0000000U | 0x10U | (1U << 2U) | 0x2U;
+    m.s().gpr[6] = 0xE0000000U;
+    m.s().gpr[7] = 0;
+    m.s().gpr[5] = 0xAABBCCDDU;
+    m.code(0x1000, {A::mtspr(spr::DMAU, 3), A::mtspr(spr::DMAL, 4),
+                    A::lwarx(8, 6, 7), A::mtspr(spr::DMAU, 3), A::mtspr(spr::DMAL, 4),
+                    A::stwcx_(5, 6, 7)});
+    CHECK(m.cpu->run(2) == StepResult::Executed); // first DMA fill
+    CHECK(m.cpu->step() == StepResult::Executed); // reserve the filled line
+    CHECK_EQ(m.s().gpr[8], 0x11110000U);
+    m.s().gpr[3] = 0x3040U; // refill the same locked-cache line from another RAM line
+    CHECK(m.cpu->run(2) == StepResult::Executed);
+    CHECK(m.cpu->step() == StepResult::Executed); // stwcx. must fail after DMA overwrite
+    CHECK_EQ(CR0(m.s().cr), 0U);
+    std::array<u8, 32> line{};
+    CHECK(m.cpu->locked_cache_line(0xE0000000U, line));
+    CHECK_EQ(line[0], 0x22U);
+    CHECK_EQ(line[1], 0x22U);
+    CHECK_EQ(line[2], 0x00U);
+    CHECK_EQ(line[3], 0x00U);
+}
+
 TEST_CASE(locked_cache_dma_round_trip) {
     FpMachine m;
     m.s().hid2 |= HID2_LCE;
