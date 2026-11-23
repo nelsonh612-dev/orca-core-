@@ -61,6 +61,7 @@ add_library(orca_core
     src/ios/di_device.cpp
     src/ios/memory_values.cpp
     src/ios/bluetooth.cpp
+    src/ios/nand_setup.cpp
     src/wiimote/wiimote.cpp
     src/hw/exi_ipl.cpp
     src/hw/exi_memcard.cpp

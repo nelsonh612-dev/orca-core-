@@ -27,6 +27,8 @@
 // Every other request stops explicitly (DVD-video commands, wait for cover
 // close, notify reset, spin-up flag, other partition-open forms).
 //
+// Opening the partition also creates the title's NAND directories if missing
+// (/title/<high>/<low>/data owned by the title, as ES does for a title it runs).
 // Owner IDs: ES keeps /sys/uid.sys on the NAND, a list of {title ID u64,
 // uid u32}; a title not listed gets the next uid (0x1000 for the first).
 #pragma once

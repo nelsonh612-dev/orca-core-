@@ -1,6 +1,6 @@
 // orca_run: headless runner. Loads a DOL/ELF, boots it (HLE) and runs for a
 // number of cycles, then prints why it stopped and the CPU state.
-// Usage: orca_run [--ipl-rom=FILE] [--rtc=SECONDS] [--dsp-irom=FILE] [--dsp-coef=FILE] [--card-a=FILE] [--card-b=FILE] [--dump-xfb=FILE.ppm] [--dump-audio=FILE.wav] [--dsp-hle] [--jit] [--list-files] file.(dol|elf|iso|gcm) [cycles] [gc|wii]
+// Usage: orca_run [--ipl-rom=FILE] [--rtc=SECONDS] [--dsp-irom=FILE] [--dsp-coef=FILE] [--card-a=FILE] [--card-b=FILE] [--dump-xfb=FILE.ppm] [--dump-audio=FILE.wav] [--dsp-hle] [--jit] [--list-files] [--nand=DIR] [--create-nand=usa|eur|jpn|kor] [--wii-keys=FILE] file.(dol|elf|iso|gcm) [cycles] [gc|wii]
 //   --ipl-rom: IPL ROM image (descrambled, as the CPU reads it) for EXI0/CS1
 //   --rtc:     initial RTC counter value (seconds); default 0
 //   --list-files: print the disc FST (.iso/.gcm) and exit
@@ -11,6 +11,7 @@
 // .iso/.gcm images are booted through the HLE IPL + apploader path.
 #include "orca/disc/fst.hpp"
 #include "orca/system/system.hpp"
+#include "orca/ios/nand_setup.hpp"
 #include "orca/video/xfb.hpp"
 
 #include <cstdio>
@@ -27,7 +28,7 @@ int main(int argc_in, char** argv_in) {
     bool list_files = false, dsp_hle = false, use_jit = false;
     std::string irom_path, coef_path;
     std::string card_path[2];
-    std::string xfb_path, audio_path;
+    std::string xfb_path, audio_path, nand_path, create_region, keys_path;
     for (int i = 0; i < argc_in; ++i) {
         if (std::strncmp(argv_in[i], "--ipl-rom=", 10) == 0) ipl_path = argv_in[i] + 10;
         else if (std::strncmp(argv_in[i], "--rtc=", 6) == 0) rtc = std::strtoul(argv_in[i] + 6, nullptr, 0);
@@ -40,6 +41,9 @@ int main(int argc_in, char** argv_in) {
         else if (std::strncmp(argv_in[i], "--card-b=", 9) == 0) card_path[1] = argv_in[i] + 9;
         else if (std::strncmp(argv_in[i], "--dump-xfb=", 11) == 0) xfb_path = argv_in[i] + 11;
         else if (std::strncmp(argv_in[i], "--dump-audio=", 13) == 0) audio_path = argv_in[i] + 13;
+        else if (std::strncmp(argv_in[i], "--nand=", 7) == 0) nand_path = argv_in[i] + 7;
+        else if (std::strncmp(argv_in[i], "--create-nand=", 14) == 0) create_region = argv_in[i] + 14;
+        else if (std::strncmp(argv_in[i], "--wii-keys=", 11) == 0) keys_path = argv_in[i] + 11;
         else args.push_back(argv_in[i]);
     }
     const int argc = static_cast<int>(args.size());
@@ -47,6 +51,24 @@ int main(int argc_in, char** argv_in) {
     if (argc < 2) { std::fprintf(stderr, "usage: %s file.(dol|elf|iso|gcm) [cycles] [gc|wii]\n", argv[0]); return 2; }
     const unsigned long long cycles = argc > 2 ? std::strtoull(argv[2], nullptr, 0) : 486000000ULL;
     orca::system::SystemConfig cfg;
+    if (!create_region.empty()) {
+        if (nand_path.empty()) { std::fprintf(stderr, "--create-nand needs --nand=DIR\n"); return 2; }
+        orca::ios::NandSetup setup;
+        if (create_region == "eur") setup.region = orca::ios::WiiRegion::Europe;
+        else if (create_region == "jpn") { setup.region = orca::ios::WiiRegion::Japan; setup.language = 0; setup.country = 1; }
+        else if (create_region == "kor") { setup.region = orca::ios::WiiRegion::Korea; setup.language = 9; setup.country = 136; }
+        else if (create_region != "usa") { std::fprintf(stderr, "unknown region %s\n", create_region.c_str()); return 2; }
+        if (setup.region == orca::ios::WiiRegion::Europe) setup.country = 110;
+        orca::ios::NandFs nand(nand_path);
+        std::string nerr;
+        if (!nand.load(nerr) || !orca::ios::create_nand(nand, setup, nerr)) { std::fprintf(stderr, "NAND setup failed: %s\n", nerr.c_str()); return 1; }
+        std::printf("NAND ready in %s\n", nand_path.c_str());
+    }
+    cfg.nand_root = nand_path;
+    if (!keys_path.empty()) {
+        std::string kerr;
+        if (!orca::disc::load_wii_key_file(keys_path, cfg.wii_keys, 0, kerr)) { std::fprintf(stderr, "%s\n", kerr.c_str()); return 1; }
+    }
     cfg.console = (argc > 3 && std::strcmp(argv[3], "wii") == 0) ? orca::system::Console::Wii : orca::system::Console::GameCube;
     cfg.dsp_hle = dsp_hle;
     cfg.use_jit = use_jit;
@@ -108,7 +130,9 @@ int main(int argc_in, char** argv_in) {
             return 0;
         }
         sys.insert_disc(std::move(disc));
-        if (!sys.boot_disc(error)) { std::fprintf(stderr, "disc boot failed: %s\n", error.c_str()); return 1; }
+        const bool wii_disc = cfg.console == orca::system::Console::Wii;
+        if (wii_disc && !sys.nand_error().empty()) { std::fprintf(stderr, "NAND: %s\n", sys.nand_error().c_str()); return 1; }
+        if (!(wii_disc ? sys.boot_wii_disc(error) : sys.boot_disc(error))) { std::fprintf(stderr, "disc boot failed: %s\n", error.c_str()); return 1; }
         std::printf("apploader finished: game entry point %08X\n", sys.cpu().state().pc);
     } else {
         std::ifstream in(path, std::ios::binary);

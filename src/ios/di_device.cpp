@@ -93,6 +93,25 @@ bool DiDevice::open_partition(Kernel& k, u64 offset, std::string& error) {
     if (nand_ == nullptr) { error = "the NAND is needed to give the title an owner ID (uid.sys)"; return false; }
     const auto uid = uid_for_title(*nand_, title, error);
     if (!uid) return false;
+    // the title's directories, as ES makes them for a title it runs: the data
+    // directory belongs to the title
+    {
+        char hi[16], lo[16];
+        std::snprintf(hi, sizeof hi, "%08x", static_cast<unsigned>(title >> 32));
+        std::snprintf(lo, sizeof lo, "%08x", static_cast<unsigned>(title));
+        const std::string base = std::string("/title/") + hi;
+        const std::string dirs[] = {"/title", base, base + "/" + lo, base + "/" + lo + "/data"};
+        for (std::size_t i = 0; i < 4; ++i) {
+            FsMeta m;
+            if (nand_->metadata(0, 0, dirs[i], m) == 0) continue;
+            const bool data = i == 3;
+            if (nand_->create(0, 0, dirs[i], 0, data ? FsModes{3, 3, 0} : FsModes{3, 3, 1}, false) != 0 ||
+                (data && nand_->set_metadata(0, dirs[i], *uid, gid, 0, {3, 3, 0}) != 0)) {
+                error = "cannot create " + dirs[i] + " on the NAND";
+                return false;
+            }
+        }
+    }
     k.set_ppc_credentials(*uid, gid);
     partition_ = std::move(p);
     return true;

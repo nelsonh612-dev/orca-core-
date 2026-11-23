@@ -9,6 +9,7 @@
 #include "orca/ios/di_device.hpp"
 #include "orca/ios/memory_values.hpp"
 #include "orca/ios/bluetooth.hpp"
+#include "orca/ios/nand_setup.hpp"
 #include "orca/disc/disc_image.hpp"
 #include "test_port.hpp"
 #include "wii_disc_builder.hpp"
@@ -986,6 +987,9 @@ TEST_CASE(wii_disc_boot_runs_the_integer_suite) {
     CHECK_EQ(sys.bluetooth()->remote_count(), 0U); // this NAND has no SYSCONF
     CHECK(sys.bluetooth_error().find("SYSCONF") != std::string::npos);
     CHECK(sys.es()->active_title().has_value());
+    ios::FsMeta data_dir;
+    CHECK_EQ(sys.nand()->metadata(0, 0, "/title/00010000/52534245/data", data_dir), 0);
+    CHECK_EQ(data_dir.uid, sys.ios()->ppc_credentials()->first);
     const auto res = sys.run(4000000000ULL);
     CHECK(res.stop == ppc::StepResult::Halted);
     CHECK(port.exited);
@@ -1304,6 +1308,45 @@ TEST_CASE(bluetooth_unknown_hci_command_stops) {
     r.ticks(600);
     CHECK(r.kernel.stopped());
     CHECK(r.kernel.stop_reason().find("0x1234") != std::string::npos);
+}
+
+TEST_CASE(nand_setup_sysconf_setting_and_system_remotes) {
+    ios::NandSetup cfg;
+    cfg.region = ios::WiiRegion::Europe;
+    cfg.serial = "123456789";
+    cfg.remotes = 2;
+    const auto sc = ios::make_sysconf(cfg);
+    CHECK_EQ(sc.size(), 0x4000U);
+    CHECK(sc[0] == 'S' && sc[3] == '0' && sc[0x3FFC] == 'S' && sc[0x3FFF] == 'd');
+    std::string error;
+    const auto remotes = ios::paired_remotes_from_sysconf(sc, error);
+    CHECK(remotes == std::vector<ios::BdAddr>({ios::emulated_remote_address(0), ios::emulated_remote_address(1)}));
+    const auto st = ios::make_setting_txt(cfg);
+    CHECK_EQ(st.size(), 0x100U);
+    const std::string text = ios::decrypt_setting_txt(st);
+    CHECK(text.find("AREA=EUR\r\n") == 0);
+    CHECK(text.find("VIDEO=PAL\r\n") != std::string::npos);
+    CHECK(text.find("SERNO=123456789\r\n") != std::string::npos);
+    // a NAND from nothing, then a Wii System sees two remotes
+    TempDir dir("setup");
+    {
+        ios::NandFs nand(dir.p);
+        CHECK(nand.load(error));
+        CHECK(ios::create_nand(nand, cfg, error));
+        CHECK(ios::create_nand(nand, cfg, error)); // a second run keeps the files
+        ios::FsMeta m;
+        CHECK_EQ(nand.metadata(0, 0, "/shared2/sys/SYSCONF", m), 0);
+        CHECK_EQ(m.uid, 0x1000U);
+        CHECK_EQ(m.size, 0x4000U);
+        CHECK_EQ(nand.metadata(0, 0, "/title/00000001/00000002/data/setting.txt", m), 0);
+        CHECK_EQ(m.size, 0x100U);
+    }
+    system::SystemConfig sys_cfg;
+    sys_cfg.console = system::Console::Wii;
+    sys_cfg.nand_root = dir.p.string();
+    system::System sys(sys_cfg);
+    CHECK(sys.bluetooth() != nullptr);
+    CHECK_EQ(sys.bluetooth()->remote_count(), 2U);
 }
 
 int main() { return orca::test::run_all("ios"); }
