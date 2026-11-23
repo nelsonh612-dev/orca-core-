@@ -58,6 +58,14 @@ System::System(SystemConfig config) : config_(config), clocks_(clocks_for(config
     mixer_ = std::make_unique<audio::Mixer>(clocks_.cpu_hz);
     dsp_->set_audio_sink([this](std::span<const u8> block) { mixer_->push_dma_block(block, ai_->dma_divisor()); });
     ai_->set_stream_source([this](std::span<s16> out, std::size_t n) { return di_->dtk_pull(out, n); });
+    if (wii) {
+        // Hollywood: IPC to Starlet/IOS; the legacy DI/SI/EXI/AI page is also seen at 0x0D006000
+        hollywood_ = std::make_unique<hw::HollywoodIpc>(scheduler_, *pi_, clocks_.cpu_cycles_per_timebase_tick);
+        hollywood_->set_disc_present([this] { return di_->disc() != nullptr; });
+        bus_.map_mmio("Hollywood", hw::hollywood::kBase, 0x1000, *hollywood_);
+        bus_.map_mmio("DI/SI/EXI/AI (Hollywood)", 0x0D006000U, 0x1000, *page_0c006_);
+        ios_ = std::make_unique<ios::Kernel>(bus_, scheduler_, *hollywood_, clocks_.cpu_cycles_per_timebase_tick);
+    }
     ai_->set_stream_sink([this](std::span<const s16> pcm, u32 divisor, u32 vol) { mixer_->push_stream(pcm, divisor, vol); });
 }
 
@@ -209,6 +217,7 @@ RunResult System::run(u64 max_cycles) {
     while (scheduler_.now() < end) {
         if (dsp_->dsp_failed()) { r.device_stop = true; r.device_error = dsp_->dsp_error(); break; }
         if (cp_->stopped()) { r.device_stop = true; r.device_error = cp_->stop_reason(); break; }
+        if (ios_ && ios_->stopped()) { r.device_stop = true; r.device_error = ios_->stop_reason(); break; }
         if (stop_pc_ && cpu_->state().pc == *stop_pc_) { r.reached_stop_pc = true; break; }
         ppc::StepResult s;
         u64 steps = 1;

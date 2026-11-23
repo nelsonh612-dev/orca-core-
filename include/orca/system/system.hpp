@@ -28,6 +28,8 @@
 #include "orca/hw/command_processor.hpp"
 #include "orca/hw/pixel_engine.hpp"
 #include "orca/hw/memory_interface.hpp"
+#include "orca/hw/hollywood_ipc.hpp"
+#include "orca/ios/kernel.hpp"
 #include "orca/hw/processor_interface.hpp"
 #include "orca/loader/executable.hpp"
 #include "orca/memory/bus.hpp"
@@ -70,7 +72,7 @@ struct RunResult {
     u64 cycles{0};
     u64 instructions{0};
     bool reached_stop_pc{false}; // run_until / call_guest only
-    bool device_stop{false};     // a device (the DSP core or the GPU) hit a host stop
+    bool device_stop{false};     // a device (DSP core, GPU, IOS) hit a host stop
     std::string device_error;
 };
 
@@ -97,6 +99,9 @@ public:
     hw::ExternalInterface& exi() noexcept { return *exi_; }
     hw::MemoryInterface& mi() noexcept { return *mi_; }
     hw::DspInterface& dsp() noexcept { return *dsp_; }
+    // Wii only (nullptr on GameCube): Hollywood registers and the IOS kernel (HLE).
+    hw::HollywoodIpc* hollywood() noexcept { return hollywood_.get(); }
+    ios::Kernel* ios() noexcept { return ios_.get(); }
     // RTC/SRAM/IPL-ROM chip on EXI channel 0, CS1 (ROM image supplied by the user).
     hw::IplRtcSram& ipl() noexcept { return *ipl_; }
     // Inserts a memory card in slot 0 (A, EXI0) or 1 (B, EXI1); empty image = blank card.
@@ -182,6 +187,8 @@ private:
     std::array<std::unique_ptr<hw::MemoryCard>, 2> cards_;
     std::unique_ptr<hw::MemoryInterface> mi_;
     std::unique_ptr<hw::DspInterface> dsp_;
+    std::unique_ptr<hw::HollywoodIpc> hollywood_;
+    std::unique_ptr<ios::Kernel> ios_;
     std::function<void(bool)> field_listener_;
     std::optional<u32> stop_pc_;
     u64 timebase_remainder_{0};
