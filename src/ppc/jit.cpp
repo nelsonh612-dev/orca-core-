@@ -812,6 +812,7 @@ bool Jit::can_execute() const noexcept { return code_ != nullptr && code_->ok();
 
 void Jit::clear() {
     for (auto& [page, list] : page_blocks_) bus_.unmark_code_page(page << 12);
+    no_block_.clear();
     blocks_.clear();
     page_blocks_.clear();
     retired_blocks_.clear();
@@ -837,6 +838,7 @@ void Jit::invalidate(u32 address, u32 size) {
             }
         }
         std::erase_if(it->second, [](Block* b) { return !b->valid; });
+        std::erase_if(no_block_, [p](const auto& kv) { return (kv.second >> 12) == p; });
         if (it->second.empty()) { bus_.unmark_code_page(p << 12); page_blocks_.erase(it); }
         if (p == 0xFFFFFU) break;
     }
@@ -928,6 +930,10 @@ bool Jit::translate_for_test(u32 pc, std::vector<u32>& words, u32& guest_instruc
 }
 
 Jit::Block* Jit::lookup_or_compile(u32 pc, u32 pa, std::string& error) {
+    if (auto nb = no_block_.find(pc); nb != no_block_.end()) {
+        if (nb->second == pa) return nullptr;
+        no_block_.erase(nb);
+    }
     auto it = blocks_.find(pc);
     if (it != blocks_.end()) {
         if (it->second->valid && it->second->pa == pa) return it->second.get();
@@ -936,7 +942,12 @@ Jit::Block* Jit::lookup_or_compile(u32 pc, u32 pa, std::string& error) {
     }
     std::vector<u32> words;
     u32 count = 0;
-    if (!compile(pc, pa, words, count, error)) return nullptr;
+    if (!compile(pc, pa, words, count, error)) {
+        no_block_[pc] = pa;
+        page_blocks_[pa >> 12];                 // keep the page tracked so a write clears the entry
+        bus_.mark_code_page(pa & ~0xFFFU);
+        return nullptr;
+    }
     const u32* code = code_->append(words);
     if (code == nullptr) { // full: start over
         clear();
@@ -961,31 +972,40 @@ Jit::Result Jit::interpret() {
 Jit::Result Jit::run(u64 max_steps) {
     if (!can_execute() || max_steps == 0U) return interpret();
     CpuState& s = cpu_.state_;
+    u64 total = 0;
+    // Inside the budget nothing outside the CPU changes (no scheduler event, no
+    // decrementer underflow) and translated code never changes MSR, so the entry
+    // conditions checked here stay true from one block to the next.
     if (s.halted) return interpret();
     if ((s.msr & (MSR_SE | MSR_BE | MSR_LE)) != 0U) return interpret();
     if ((s.msr & MSR_EE) != 0U && (cpu_.external_line_ || s.dec_pending)) return interpret();
     if ((s.msr & MSR_POW) != 0U && (s.hid0 & 0x00E00000U) != 0U) return interpret();
-    const u32 pc = s.pc;
-    if ((pc & 3U) != 0U) return interpret();
-    const Translation t = translate(s, bus_, pc, AccessType::Fetch, cpu_.config_.extended_bats);
-    if (t.status != TranslateStatus::Ok) return interpret();
-    std::string error;
-    Block* b = lookup_or_compile(pc, t.physical, error);
-    if (b == nullptr || b->count > max_steps) return interpret();
-    if (!code_->make_executable()) return interpret();
     using Fn = u32 (*)(CpuState*, JitExit*, Jit*);
-    running_ = b;
-    running_invalidated_ = false;
-    exit_ = {};
-    const u32 kind = reinterpret_cast<Fn>(reinterpret_cast<std::uintptr_t>(b->code))(&s, &exit_, this);
-    running_ = nullptr;
-    const u64 steps = exit_.steps;
-    cpu_.retired_ += steps;
-    ++stats_.block_runs;
-    stats_.block_steps += steps;
-    if (kind == kExitFallback) ++stats_.fallback_exits;
-    if (steps == 0U) return interpret(); // left before its first instruction: let the interpreter do it
-    return {StepResult::Executed, steps};
+    while (total < max_steps) {
+        const u32 pc = s.pc;
+        if ((pc & 3U) != 0U) break;
+        const Translation t = translate(s, bus_, pc, AccessType::Fetch, cpu_.config_.extended_bats);
+        if (t.status != TranslateStatus::Ok) break;
+        std::string error;
+        Block* b = lookup_or_compile(pc, t.physical, error);
+        if (b == nullptr || b->count > max_steps - total) break;
+        if (!code_->make_executable()) break;
+        running_ = b;
+        running_invalidated_ = false;
+        exit_ = {};
+        const u32 kind = reinterpret_cast<Fn>(reinterpret_cast<std::uintptr_t>(b->code))(&s, &exit_, this);
+        running_ = nullptr;
+        const u64 steps = exit_.steps;
+        cpu_.retired_ += steps;
+        ++stats_.block_runs;
+        stats_.block_steps += steps;
+        if (total != 0U) ++stats_.chained;
+        total += steps;
+        if (kind == kExitFallback) { ++stats_.fallback_exits; break; }
+        if (steps == 0U) break;
+    }
+    if (total == 0U) return interpret(); // nothing translated applies here: the interpreter takes one step
+    return {StepResult::Executed, total};
 }
 
 } // namespace orca::ppc

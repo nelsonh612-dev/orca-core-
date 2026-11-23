@@ -62,6 +62,7 @@ public:
         u64 blocks_compiled{0}, block_runs{0}, block_steps{0}, interpreter_steps{0}, invalidations{0},
             fallback_exits{0};
         u64 helper_steps{0}; // block instructions executed by the in-block interpreter call (FP, paired singles)
+        u64 chained{0};      // blocks entered directly after another one inside the same run()
     };
     const Stats& stats() const noexcept { return stats_; }
 
@@ -91,6 +92,10 @@ private:
     std::unique_ptr<jit::CodeBuffer> code_;
     std::unordered_map<u32, std::unique_ptr<Block>> blocks_;     // by guest effective address
     std::unordered_map<u32, std::vector<Block*>> page_blocks_;   // physical page -> blocks
+    // Addresses (effective -> physical) whose first instruction is not translated:
+    // the interpreter runs them without a new translation attempt. Dropped with the
+    // page's blocks when its code changes.
+    std::unordered_map<u32, u32> no_block_;
     std::vector<std::unique_ptr<Block>> retired_blocks_;         // invalid, kept until clear()
     Block* running_{nullptr};
     bool running_invalidated_{false};
