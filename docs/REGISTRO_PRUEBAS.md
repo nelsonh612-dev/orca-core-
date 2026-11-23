@@ -1,4 +1,4 @@
-# Registro de pruebas — Milestone 018
+# Registro de pruebas — Milestones 018-020
 
 Todos los resultados son de ejecuciones reales del 2026-11-22 en este entorno, sobre una copia limpia de los fuentes de la rama `orca-core-0.1`.
 
@@ -38,13 +38,25 @@ Todos los resultados son de ejecuciones reales del 2026-11-22 en este entorno, s
 | **gles** (M016 + M018, Mesa llvmpipe 25.2.8, GLES 3.2) | 14 | 2.820 | 0 |
 | encodings (vs `llvm-mc`) | 189 instrucciones | 181 ensambladas + 8 desensambladas | 0 diferencias |
 
-### JIT AArch64 (M019, en curso) — ejecutado en ARM64 real (GitHub Actions `ubuntu-24.04-arm`)
+### JIT AArch64 (M019) — ejecutado en ARM64 real (GitHub Actions `ubuntu-24.04-arm`)
 
-- `jit_emitter`: 109 instrucciones idénticas a `llvm-mc -show-encoding`; secuencias `mov_imm` verificadas.
-- `jit`: un bloque de 7 instrucciones PowerPC da 121 instrucciones AArch64 válidas para `llvm-mc` (en cualquier anfitrión). En ARM64: 3000 programas aleatorios comparados con el intérprete (registros, CR, XER, LR, CTR, FPR, FPSCR, GQR, toda la RAM alcanzable, resultado y contador de instrucciones retiradas): **0 diferencias**.
-- `programs`: integer_suite (ELF/DOL), float_suite y hardware_suite con y sin JIT: idénticos en salida, instrucciones, ciclos, estado y RAM. Tiempos del System completo en el mismo runner (interprete → JIT): 153,8 → 39,7 ms; 39,7 → 29,8 ms; 3,4 → 2,7 ms.
-- **Errores encontrados por el CI de ARM64 y corregidos:** (1) en una carga con actualización y desplazamiento de más de 12 bits, el registro temporal del valor cargado se reutilizaba para recalcular la dirección (lwzu/lbzu daban el desplazamiento); lo localizó la reproducción paso a paso que imprime el primer bloque divergente. (2) Una función sin usar que Clang rechaza con `-Werror` (no la vi porque subí sin compilar antes con Clang). (3) Un commit que no compilaba (faltaba `<chrono>`) por encadenar el commit tras una compilación fallida; corregido en el commit siguiente.
-- **Revisión antes de ejecutar:** encontré que con base r0 la dirección usaba ADD inmediato con el registro 31, que ahí es SP y no cero; se corrigió antes de la primera ejecución.
+- `jit_emitter`: 132 instrucciones idénticas a `llvm-mc -show-encoding` (enteros, FP escalar, ADR, codificaciones de enlace); secuencias `mov_imm` verificadas.
+- `jit` (cualquier anfitrión): un bloque entero de 7 instrucciones PowerPC (196 AArch64) y uno de FP de 10 (992 AArch64), todas válidas para `llvm-mc`. El algoritmo del FP nativo comparado con `fpu::arith`: 2.550.000 operaciones (suma, resta, multiplicación, división, las cuatro FMA, redondeo a simple; simple y doble; operandos con cancelación, a 1-2 ulp, exactos, puntos medios de simple, extremos y especiales), 1.525.670 por el camino nativo, **0 diferencias** en resultado, FI, FR, excepciones y FPRF.
+- `jit` (ARM64): 3000 programas aleatorios comparados con el intérprete (registros, CR, XER, LR, CTR, FPR, FPSCR, GQR, RAM alcanzable directa y por los dos mapeos DBAT0, épocas de escritura del bus por página y global, resultado e instrucciones retiradas): **0 diferencias**; incluyen traducción por DBAT0 (también de solo lectura), `mtspr DBAT0L` en mitad del programa y `dcbz_l`. 2000 programas de FP/paired singles con FPSCR mayormente RN = 0: 480.423 instrucciones en bloques, 220.744 por el camino lento, **0 diferencias**. Enlaces a través de 60 cambios de MSR[IR] con código distinto en las mismas direcciones (126 enlaces): idéntico.
+- `programs`: integer_suite (ELF/DOL), float_suite y hardware_suite con y sin JIT: idénticos. Tiempo del System completo en el mismo runner (intérprete → JIT): 157,5 → 6,7 ms; 39,6 → 7,9 ms; 3,5 → 1,6 ms.
+- ASan+UBSan en ARM64: todas las suites pasan (ejecución de a15f01c, con la caché de traducción).
+- **Errores encontrados por el CI de ARM64 y corregidos:** (1) en una carga con actualización y desplazamiento de más de 12 bits, el registro temporal del valor cargado se reutilizaba para recalcular la dirección; (2) una función sin usar que Clang rechaza con `-Werror`; (3) un commit que no compilaba (faltaba `<chrono>`).
+- **Errores encontrados antes de ejecutar:** base r0 con ADD inmediato (31 es SP); en el algoritmo FP, un producto que se redondea a 0 sin ser exactamente 0 (lo encontró la comparación con `fpu::arith`: el producto cero solo vale si uno de los operandos es cero); una fusión de rutas que dejaba el estado de la caché de registros distinto en cada rama (store con actualización en la ruta que sale del bloque), rehecha antes de compilar.
+- **Infraestructura:** con `cancel-in-progress` cada push cancelaba el trabajo de ASan en curso; ahora un trabajo en curso termina y solo se reemplazan los que esperan.
+
+### Wii, unidad de disco y audio (M020)
+
+- `crypto`: AES-128 con FIPS-197 B y C.1 (cifrado y descifrado), CBC con SP 800-38A F.2.1/F.2.2 (también en dos llamadas), SHA-1 con "abc", el mensaje de 448 bits, el vacío y un millón de "a" en trozos irregulares.
+- `wii_disc`: tabla de particiones, clave de título (y error claro sin clave común), lectura completa de 70 bloques en dos grupos y lecturas desalineadas entre bloques y grupos, rechazo de datos, H0, H1, H2 y H3 manipulados, clave común equivocada, índice coreano, archivos de clave de 16 bytes y `keys.bin`.
+- `disc`: estados de la unidad y códigos de error (0x05020401 sin ID, 0x00052402 configuración tardía, 0x00052100 fuera del disco, 0x04020400 motor parado), identificación, ID del disco, búsqueda, streaming (decodificador con filtros 0 y 1 calculados a mano, cola de pistas, parada al final de pista, posición, sin búfer de audio), sin disco.
+- `audio`: paso directo a 48 kHz tras la latencia, 32 → 48 kHz con una rampa exacta, canales y volumen del streaming, suma con saturación, anillo lleno, y streaming de un disco a través de la AI hasta el mezclador (100 ms, muestras constantes, sin cortes).
+- `av`: AISCNT con las frecuencias reales (480 muestras = 4.855.680 ciclos) y AISFR; `av_suite` mide 404.640 ticks.
+- **Error en mis expectativas:** en la prueba de DTK esperé que, tras pedir "parar al final de la pista", sonara la pista encolada; la orden para al terminar la pista actual.
 
 ### CI en ARM64 real y Android NDK (M018)
 

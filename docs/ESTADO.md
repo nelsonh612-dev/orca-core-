@@ -1,4 +1,4 @@
-# Estado del proyecto — Milestone 019 en curso (rama `orca-core-0.1`)
+# Estado del proyecto — Milestone 020 en curso (rama `orca-core-0.1`)
 
 ## Funciones implementadas (todas con pruebas)
 
@@ -110,15 +110,32 @@
 - **Contadores de rendimiento:** quads que entran/pasan la Z temprana, entran/pasan la Z tardía (solo con la prueba Z activa) y entran a la mezcla (siempre), en PE 0x18-0x2A como mitades baja/alta; BP 0x57 los borra. Un quad 2x2 cuenta una vez por triángulo si al menos uno de sus píxeles llega a la etapa. Los ciclos de copia del EFB (0x2C/0x2E) siguen detenidos: no hay modelo de tiempo de las copias.
 - **Backend GLES:** los mismos valores con un *storage buffer* (atomicMin/Max/Add) y una imagen R32UI de 320x264x5 con el último triángulo que contó cada quad (imageAtomicExchange). Se activan con la primera escritura de BP 0x55/0x56 (caja) o 0x57 (contadores), como Dolphin; leer antes da una parada clara. Antes de que la CPU reescriba media caja se sincroniza con la GPU. Si el GL no ofrece buffers/imágenes en el fragment shader, el shader se compila sin esto y la lectura se detiene.
 
-**JIT PowerPC → AArch64 (M019, en curso)** — código propio; fuentes: Arm ARM (codificaciones), PEM/750CL (semántica, ya en el intérprete):
-- **Emisor AArch64** (`jit/a64_emitter`): 109 codificaciones idénticas a `llvm-mc`, inmediatos lógicos, secuencias MOVZ/MOVN/MOVK/ORR.
-- **Memoria ejecutable W^X** (`jit/code_buffer`): RW al escribir, RX al ejecutar (mprotect) y coherencia de la caché de instrucciones; válido en Android.
-- **Traducción nativa:** ALU entera (formas XO con CA/OV/SO y Rc), rotaciones y desplazamientos, comparaciones, lógica de CR, mfcr/mtcrf/mcrf, XER/LR/CTR, todos los saltos (b, bc, bclr, bcctr con CTR y LK), cargas y almacenamientos enteros D/X (con actualización e invertidos). Caché de 7 GPR invitados en registros x22-x28.
-- **FP y paired singles dentro del bloque:** la instrucción llama en su sitio a la implementación del intérprete (FPSCR, NaN y redondeo de referencia); las de memoria solo si el acceso es RAM normal.
-- **Exactitud por construcción:** lo que no se traduce y todo acceso que no sea RAM normal (MMIO, cruce de página, caché bloqueada, fallo) sale del bloque *antes* de la instrucción y lo ejecuta el intérprete, excepciones incluidas. Los almacenamientos en código traducido invalidan bloques (y detienen el bloque en curso si se escribe a sí mismo).
-- **Tiempo exacto:** `System::run` solo deja entrar en un bloque si cabe antes del siguiente evento del planificador, del desborde del decrementador y del fin del tramo; las interrupciones se ven donde las ve el intérprete.
-- **Validado en ARM64 real (CI):** 3000 programas aleatorios (enteros, memoria, saltos, autoescritura, FP, paired singles, psq con GQR aleatorios) sin ninguna diferencia con el intérprete; integer_suite, float_suite y hardware_suite (ELF y DOL) con salida, instrucciones, ciclos, estado y RAM idénticos. Tiempo del System completo en el mismo runner: integer_suite 153,8 → 39,7 ms; float_suite 39,7 → 29,8 ms; hardware_suite 3,4 → 2,7 ms.
-- **Pendiente:** FP/paired singles nativos (hoy por llamada), enlace directo entre bloques, acceso rápido a memoria sin helper, lmw/stmw, lwarx/stwcx., dcbz; las instrucciones de tiempo/contexto (mftb, mtmsr, rfi, sc, mtspr de sistema) seguirán en el intérprete por diseño.
+**JIT PowerPC → AArch64 (M019)** — código propio; fuentes: Arm ARM (codificaciones), PEM/750CL (semántica, ya en el intérprete), Knuth (TwoSum) y Boldo & Muller 2011 (error exacto de la FMA):
+- **Emisor AArch64** (`jit/a64_emitter`): 132 codificaciones idénticas a `llvm-mc` (enteros, FP escalar, ADR), inmediatos lógicos, secuencias MOVZ/MOVN/MOVK/ORR.
+- **Memoria ejecutable W^X** (`jit/code_buffer`): RW al escribir, RX al ejecutar (mprotect), coherencia de la caché de instrucciones y parcheo de una instrucción (enlaces) que vuelve a la protección anterior; válido en Android.
+- **Enteros nativos:** ALU (formas XO con CA/OV/SO y Rc), rotaciones y desplazamientos, comparaciones, lógica de CR, mfcr/mtcrf/mcrf, XER/LR/CTR, todos los saltos, cargas y almacenamientos D/X (con actualización e invertidos). Caché de 7 GPR invitados en x22-x28.
+- **Punto flotante y paired singles nativos:** fadd/fsub/fmul/fdiv y la familia fmadd (simple y doble), ps_add/sub/mul/div/madd/msub/nmadd/nmsub, ps_sum0/1, ps_muls0/1, ps_madds0/1, frsp, fmr/fneg/fabs/fnabs (y ps_), fsel/ps_sel, ps_merge, fcmpu/fcmpo y ps_cmp. El FPSCR sale exacto: FI/FR del error de redondeo calculado sin error (TwoSum, residuo con FMA, ErrFma), FPRF, XX/FX, VX recalculado. Para simple precisión el doble redondeo solo puede fallar si el resultado doble cae justo en un punto medio tras un primer redondeo inexacto: ese caso, y todo lo que no sea un resultado normal dentro de un margen seguro (NaN, infinitos, desnormales, desbordamientos, RN ≠ 0, excepciones habilitadas, MSR[FP] = 0), lo ejecuta en su sitio la implementación del intérprete antes de escribir nada. Requiere el control FP por defecto del anfitrión (RN, sin FZ/DN); `Jit::run` lo comprueba.
+- **En el bloque por la implementación del intérprete** (con comprobación previa de RAM): cargas/almacenamientos FP y psq, fres/frsqrte/ps_res/ps_rsqrte, fctiw(z), mffs/mtfs*, lmw/stmw, lwarx/stwcx., dcbz y operaciones de caché, sync/eieio, tw/twi, mfmsr, instrucciones de cadena.
+- **Caché de traducción de datos:** 256 entradas por página efectiva de 4 KiB para páginas decididas sin tabla de páginas (modo real o BAT) que caen en RAM sin líneas de la caché bloqueada; las de escritura además exigen página sin código traducido y ningún observador de escrituras de la CPU. Los almacenamientos actualizan las épocas del bus (caché de texturas). Se vacía si cambian MSR[DR/PR], los DBAT, HID4[SBE], la caché bloqueada o los observadores; las entradas de escritura de una página se quitan cuando recibe código.
+- **Enlace directo entre bloques:** las salidas a dirección constante (b, bc tomado y no tomado, fin de bloque) se parchean tras la primera pasada para saltar a la entrada enlazada del destino, que solo ejecuta el bloque si cabe en el presupuesto de pasos. Un enlace solo se toma con el contexto de traducción de instrucciones (MSR[IR/PR], IBAT, HID4[SBE]) que tenía al parchearse, y solo hacia bloques traducidos sin tabla de páginas. Invalidar un bloque deshace todos los enlaces que llegan a él.
+- **Exactitud por construcción:** lo que no se traduce y todo acceso que no sea RAM normal sale del bloque *antes* de la instrucción y lo ejecuta el intérprete, excepciones incluidas. Los almacenamientos en código traducido invalidan bloques y detienen el bloque en curso si se escribe a sí mismo (identificado por el PC de la instrucción, también a través de enlaces).
+- **Tiempo exacto:** `System::run` solo entra en bloques que caben antes del siguiente evento del planificador, del desborde del decrementador y del fin del tramo; los bloques enlazados comprueban el mismo límite.
+- **Validado en ARM64 real (CI):** 3000 programas aleatorios (enteros, memoria, saltos, autoescritura, traducción por DBAT0 cambiada con mtspr, líneas de caché bloqueada, FP, paired singles, psq) y 2000 programas de FP/paired singles con valores difíciles: 0 diferencias con el intérprete (estado, RAM, épocas de escritura del bus e instrucciones retiradas); enlaces a través de 60 cambios de contexto de traducción; integer_suite, float_suite y hardware_suite idénticos con y sin JIT. El algoritmo FP se comprueba además contra `fpu::arith` en cualquier anfitrión (2,55 millones de operaciones, 0 diferencias).
+- **Tiempos del System completo en el mismo runner ARM64** (intérprete → JIT): integer_suite 157,5 → 6,7 ms; float_suite 39,6 → 7,9 ms; hardware_suite 3,5 → 1,6 ms. Evolución de integer_suite: 39,7 ms (primer JIT) → 32,7 (encadenado en C++) → 14,3 (caché de traducción) → 6,7 (enlaces). Son medidas del runner del CI, no del teléfono.
+- **Por diseño en el intérprete:** mftb, mtmsr, rfi, sc, mtspr/mfspr de sistema, mtsr, tlbie, dcbz_l (cambian el contexto o el tiempo); terminan el bloque.
+
+**Discos Wii: AES-128, SHA-1 y particiones cifradas (M020)** — fuentes: FIPS-197, NIST SP 800-38A, FIPS 180-4; WiiBrew ("Wii disc", "Ticket", "Title metadata", "BootMii keys.bin") como información:
+- `crypto::Aes128` (cifrado y descifrado, CBC con IV encadenado; la S-box se deriva de su definición) y `crypto::Sha1`, comprobados con los vectores oficiales.
+- `disc::list_wii_partitions` (cuatro grupos en 0x40000), `parse_ticket` (clave cifrada 0x1BF, ID de título 0x1DC, índice de clave común 0x1F1) y `decrypt_title_key` (IV = ID de título + 8 ceros).
+- `disc::WiiPartition`: lectura descifrada de la partición como `DiscReader`; al abrir comprueba el SHA-1 de la tabla H3 contra el TMD; cada bloque de 0x8000 se descifra (hashes con IV 0, datos con IV = bytes cifrados 0x3D0-0x3DF) y se verifica contra H0 (31 trozos), H1, H2 y la tabla H3; cualquier diferencia hace fallar la lectura con el nivel que falló.
+- Las claves comunes son de Nintendo y no están en Orca: el usuario aporta un archivo de 16 bytes o el `keys.bin` de BootMii (clave en 0x114). Sin clave: error claro. No se comprueban las firmas RSA (no hacen falta para leer).
+- **Sin verificar con un disco real** (no hay imágenes ni claves en este entorno): la prueba usa un disco cifrado construido con una clave de prueba, con dos grupos de hashes y manipulación de datos, H1, H2, H3 y claves.
+
+**Unidad de disco, audio por streaming y mezclador (M020)** — fuentes: YAGCD y Dolphin (`DVDInterface.cpp`, `StreamADPCM.cpp`, `AudioInterface.cpp`, `Mixer.cpp`) como información:
+- **Unidad:** estado (ID de disco sin leer → lista sin lecturas → lista; motor parado; sin disco) y código de error que devuelve 0xE0 como (estado << 24) | error. Comandos: 0x12 identificación, 0xA8/0x00 lectura, 0xA8/0x40 ID del disco, 0xAB búsqueda, 0xE0 pedir error, 0xE1 streaming (reproducir/encolar, parar al final de la pista), 0xE2 estado del streaming, 0xE3 parar motor, 0xE4 configurar el búfer de streaming (solo antes de la primera lectura). Leer sin disco, con el motor parado, sin ID o fuera del disco da DEINT con su error. El arranque HLE deja la unidad como el IPL (lista; streaming según los bytes 8/9 de la cabecera).
+- **Streaming (DTK):** decodificador ADPCM de bloques de 32 bytes (28 muestras estéreo; filtros 0-3, desplazamiento por canal), avance de pistas y cola.
+- **AI:** frecuencias reales 108 MHz / 2248 (GameCube, 48.043 Hz) o 2250 (Wii, 48.000 Hz) y 3/2 de eso para "32 kHz"; AISFR = 1 es 48 kHz; mientras PSTAT = 1, se leen bloques de 28 muestras de streaming y pasan al mezclador con AIVR.
+- **`audio::Mixer`:** pasa la DMA del DSP (tramas derecha-izquierda big-endian) y el streaming a 48 kHz con pasos racionales exactos e interpolación lineal, suma con saturación y escribe en un anillo SPSC para el frontend (hilo de audio de Android). Todo en tiempo emulado, con una latencia fija de 10 ms: el resultado no depende de cuándo se llama. `orca_run --dump-audio=archivo.wav`.
 
 **Caché de texturas del backend GLES sin hash por dibujo (M018)**:
 - Antes, cada dibujo decodificaba la textura entera (con sus mipmaps) y solo después comprobaba si ya estaba subida. Ahora: (1) clave de parámetros y paleta, nivel por nivel, sin tocar los texels; (2) si la textura está en RAM y ninguna escritura tocó sus páginas desde la última comprobación, se reutiliza sin hash; (3) si no, se hace el hash de los texels; (4) solo si cambiaron se decodifica y se sube.
@@ -180,8 +197,8 @@
 2. **CPU, lo que queda detenido a propósito:** modo little-endian, modo traza (MSR[SE]/[BE]), breakpoints IABR/DABR activos, machine check, eciwx/ecowx con EAR[E] = 1, y los casos de FP que el PEM no fija (ver la tabla de verificación). Ningún juego conocido los usa; cada uno da una parada que explica el motivo. Sin TLB ni caché L1/L2 normal (solo la bloqueada).
 3. **M018 — rendimiento del backend GLES y app Android:** probar en el Redmi 15C (Mali-G52) que existen `GL_EXT_shader_framebuffer_fetch` y la lectura de adjuntos enteros, y medir; mover la transformación de vértices y las copias del EFB a la GPU; shaders especializados por estado (con el ubershader mientras compilan); caché de texturas sin hash por dibujo; ventana/superficie Android, entrada y audio. Después Vulkan (aquí solo compila: no hay controlador; hay que decidir glslang o un generador SPIR-V propio).
 4. **Lo que queda de la GPU por software:** texturas RGBA8 en TMEM con mipmaps, anti-aliasing de RGB565_Z16, formatos de píxel 4-7 (YUV) y el contador de ciclos de copia del EFB (bounding box y contadores de quads hechos en M018).
-5. **M019 — JIT ARM64:** emisor ARM64 verificado con el desensamblador de LLVM, bloques básicos, asignación de registros, caché de bloques conectada a la invalidación del bus, y pruebas diferenciales intérprete vs JIT, que tienen que correr en un dispositivo ARM64.
-6. **Después:** audio real, DI y discos, SI y controles, EXI, AI y los componentes de Wii (Hollywood, IOS, Bluetooth).
+5. **(Hecho en M019: JIT ARM64 completo; ver arriba.)** Mejoras posibles medidas en el teléfono: asignación de FPR en registros, comprobación de MSR/FPSCR una vez por bloque, código del camino lento compartido para reducir el tamaño.
+6. **M020 en curso — hardware, DSP/audio y Wii:** HLE del DSP (ucode ROM, AX, AXWii) con la salida de audio de Android; después el sistema Wii: Hollywood (IPC, GPIO, temporizadores), IOS de alto nivel (ES, FS sobre NAND, DI, STM, USB/Bluetooth), Wiimote y Nunchuk.
 
 ## Pendiente de verificación en hardware real
 
@@ -218,6 +235,11 @@ Son comportamientos que el PEM deja indefinidos o que el manual del 750CL no det
 | VI: INT de DIn solo se activa con ENB=1 | YAGCD no aclara si se activa sin ENB |
 | VI: escribir DPV/DPH se ignora | Son contadores de solo lectura |
 | SI: bit EN del canal c = bit (7 − c) de SIPOLL; Y (sondeos por cuadro) y VBCPY no se modelan; el sondeo empieza en el siguiente campo de video | Sin verificar |
+| AI: AISFR = 1 significa 48 kHz (YAGCD dice lo contrario; Dolphin documenta que los juegos lo usan así) | Se sigue a Dolphin |
+| Respuesta de 0x12 (identificación de la unidad) | Los valores que Dolphin tomó de una unidad de Wii (0x00000002, 0x20060526, 0x41000000); no sé los de una unidad de GameCube |
+| DTK: el canal del byte de cabecera 0 (nibbles bajos) sale por la derecha y el del byte 1 por la izquierda | Como lo reproduce Dolphin |
+| Volumen del streaming: ganancia (v + v/128) / 256 | Como Dolphin |
+| Estado de la unidad tras el IPL | "Lista" (el IPL ya leyó el apploader); Dolphin la deja "lista sin lecturas" |
 | SI: solo el modo analógico 3 del mando (el que usa el SDK); los modos 0-2 y 4 dan una parada clara | El orden exacto de los nibbles en esos modos no está confirmado |
 | SI: las transferencias terminan en el siguiente paso del planificador (sin el tiempo real del bus Joy-Bus) | Aproximación |
 | SI: bit 7 del segundo byte de estado = 1 (USE_ORIGIN) | Coinciden dos fuentes independientes; YAGCD lo marca como "unused" |
@@ -297,7 +319,7 @@ Son comportamientos que el PEM deja indefinidos o que el manual del 750CL no det
 |---|---|---|
 | 1 | (Resuelto en M017: DSISR de alineación) | — |
 | 2 | (Resuelto en M017: DAR al cruzar página según el PEM) | — |
-| 3 | Sin TLB: cada acceso recorre los BAT y la tabla de páginas | Rendimiento |
+| 3 | El intérprete no tiene TLB (cada acceso recorre los BAT y la tabla de páginas); el JIT tiene su caché de traducción para BAT y modo real | Rendimiento del intérprete |
 | 4 | No se emulan las cachés normales de datos e instrucciones (el gather pipe sí existe desde M005) | — |
 | 5 | Modo little-endian, modo traza y breakpoints IABR/DABR activos: parada del anfitrión | No se ejecuta nada mal en silencio |
 | 6 | Machine check no modelado (`MemoryFault`) | Diagnóstico |
@@ -311,4 +333,4 @@ Son comportamientos que el PEM deja indefinidos o que el manual del 750CL no det
 | 14 | No se ha compilado para Android/ARM64 (no hay NDK en este entorno) | Hay que verificarlo |
 | 15 | `lswx`, `stswx`, `mcrxr` y todas las instrucciones paired-single y `psq` no se pueden verificar con LLVM. Se revisaron contra las tablas de opcodes del manual del 750CL | Medio: hace falta otra fuente (binutils con -m750cl o hardware) |
 | 16 | La imagen del XFB se puede obtener (`orca_run --dump-xfb`), pero no hay ventana ni app Android que la muestre, ni salida de audio | Sin frontend todavía |
-| 17 | DI: solo existe la lectura 0xA8 por DMA; los discos Wii, el audio streaming y los formatos comprimidos no están implementados | Parada clara con el comando |
+| 17 | DI: comandos de GameCube completos (M020); faltan los de Wii (los usa IOS), la expulsión, los formatos comprimidos (CISO, GCZ, RVZ, WBFS) y la salida de audio real de Android | Parada clara con el comando |
