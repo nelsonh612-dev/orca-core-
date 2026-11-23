@@ -1,0 +1,81 @@
+# Orca Core 0.1 — validation on real ARM64 and an Android NDK build of the core.
+# No APK is produced here: the APK is built only when CPU, GPU and JIT are finished.
+name: orca-core-0.1 validation
+
+on:
+  push:
+    branches: [orca-core-0.1]
+  workflow_dispatch:
+
+concurrency:
+  group: orca-core-0.1-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  arm64-native:
+    name: Core tests on native ARM64 (Linux)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [gcc, clang]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q ninja-build clang lld libegl-dev libgles-dev libegl-mesa0 libgl1-mesa-dri
+          uname -m; gcc --version | head -1; clang --version | head -1
+      - name: Configure
+        run: |
+          if [ "${{ matrix.compiler }}" = gcc ]; then export CC=gcc CXX=g++; else export CC=clang CXX=clang++; fi
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DORCA_WERROR=ON
+      - name: Build
+        run: ninja -C build
+      - name: Test
+        env:
+          EGL_PLATFORM: surfaceless
+        run: ctest --test-dir build --output-on-failure
+
+  arm64-sanitizers:
+    name: Core tests on native ARM64 with ASan+UBSan
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q ninja-build clang lld libegl-dev libgles-dev libegl-mesa0 libgl1-mesa-dri
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DORCA_WERROR=ON -DORCA_SANITIZE=ON
+      - name: Build
+        run: ninja -C build
+      - name: Test
+        env:
+          EGL_PLATFORM: surfaceless
+        run: ctest --test-dir build --output-on-failure
+
+  android-ndk:
+    name: Android NDK arm64-v8a build of the core (no APK)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tools
+        run: sudo apt-get install -y -q ninja-build
+      - name: Configure (NDK, API 26, arm64-v8a)
+        run: |
+          echo "NDK: $ANDROID_NDK_LATEST_HOME"
+          cmake -S . -B build-android -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_LATEST_HOME/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-26 \
+            -DCMAKE_BUILD_TYPE=Release -DORCA_WERROR=ON
+      - name: Build
+        run: ninja -C build-android
+      - name: Check the binaries are AArch64
+        run: |
+          file build-android/liborca_core.a || true
+          for f in build-android/orca_test_*; do file "$f"; done | head -5
+          file build-android/orca_test_cpu_fpu | grep -q "ARM aarch64"
