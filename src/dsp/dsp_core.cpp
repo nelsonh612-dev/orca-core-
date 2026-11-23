@@ -28,6 +28,7 @@ void DspCore::reset(u16 pc) {
     s_.pc = pc;
     rep_count_ = 0;
     int_pending_ = false;
+    exc_pending_ = 0;
     failed_ = false;
     error_.clear();
 }
@@ -323,7 +324,8 @@ bool DspCore::ifx_read(u16 a, u16& v) {
     case ifx::DMBH: v = static_cast<u16>(dmb_ >> 16); return true;
     case ifx::CMBH: v = static_cast<u16>(cmb_ >> 16); return true;
     case ifx::CMBL: v = static_cast<u16>(cmb_); cmb_ &= 0x7FFFFFFFU; return true; // clears CMBH.M
-    case ifx::ACDRAW: case ifx::ACDSAMP: return fail("accelerator data reads are not implemented yet");
+    case ifx::ACDSAMP: return acc_read_sample(v);
+    case ifx::ACDRAW: return acc_read_raw(v);
     default: {
         char buf[64];
         std::snprintf(buf, sizeof buf, "IFX register %04X cannot be read (undocumented)", a);
@@ -360,7 +362,7 @@ bool DspCore::ifx_write(u16 a, u16 v) {
         return true;
     case ifx::DMBH: dmb_ = (dmb_ & 0x8000FFFFU) | (static_cast<u32>(v & 0x7FFFU) << 16); return true;
     case ifx::DMBL: dmb_ = (dmb_ & 0xFFFF0000U) | v | 0x80000000U; return true; // sets DMBH.M
-    case ifx::ACDRAW: return fail("accelerator raw writes are not implemented yet");
+    case ifx::ACDRAW: return acc_write_raw(v);
     default: {
         char buf[64];
         std::snprintf(buf, sizeof buf, "IFX register %04X cannot be written (undocumented)", a);
@@ -403,6 +405,78 @@ bool DspCore::dsp_dma(u16 bytes) {
         for (u32 i = 0; i < words; ++i)
             mem[dspa_ + i] = static_cast<u16>((static_cast<u16>(data[2 * i]) << 8) | data[2 * i + 1]);
     }
+    return true;
+}
+
+// ------------------------------------------------------------------ accelerator
+// DSP manual "Accelerator": after a read ACCA is incremented; when it grows past
+// ACEA it is reloaded from ACSA and ACRROV / ACRWOV / ACSOV is raised.
+void DspCore::acc_advance(u32 amount, unsigned level) {
+    const u32 ca = acc_ca() + amount;
+    if (ca > acc_ea()) {
+        acc_set_ca(acc_sa());
+        exc_pending_ = static_cast<u8>(exc_pending_ | (1U << level));
+    } else {
+        acc_set_ca(ca);
+    }
+}
+
+bool DspCore::acc_read_sample(u16& v) {
+    // Implemented: FORMAT = ADPCM from ARAM, 4-bit (dd = 0, ss = 0). Addresses
+    // are nibbles and include the frame headers (Nintendo DSPADPCM spec); each
+    // 8-byte frame starts with a predictor/scale byte (DSP file format docs).
+    const unsigned size = format_ & 3U, src = (format_ >> 2) & 3U;
+    if (src != 0U || size != 0U) {
+        char buf[96];
+        std::snprintf(buf, sizeof buf, "accelerator FORMAT %04X: only ADPCM (0x0000) is implemented (PCM formula undocumented)", format_);
+        return fail(buf);
+    }
+    u8 byte = 0;
+    u32 ca = acc_ca();
+    if ((ca & 15U) == 0U) { // frame header: predictor (bits 6-4) and scale (bits 3-0)
+        if (!host_.dsp_aram_read8(ca >> 1, byte)) return fail("accelerator ARAM read failed (no ARAM or out of range)");
+        pred_scale_ = static_cast<u16>(byte & 0x7FU);
+        ca += 2U;
+        acc_set_ca(ca);
+    }
+    if (!host_.dsp_aram_read8(ca >> 1, byte)) return fail("accelerator ARAM read failed (no ARAM or out of range)");
+    const unsigned raw = (ca & 1U) != 0U ? (byte & 0xFU) : (byte >> 4U); // high nibble first
+    const s32 nibble = raw >= 8U ? static_cast<s32>(raw) - 16 : static_cast<s32>(raw);
+    const s32 scale = 1 << (pred_scale_ & 0xFU);
+    const unsigned idx = (pred_scale_ >> 4) & 7U;
+    const s32 c1 = static_cast<s16>(adpcm_coef_[2U * idx]), c2 = static_cast<s16>(adpcm_coef_[2U * idx + 1U]);
+    s32 val = ((nibble * scale) * 2048 + 1024 + c1 * static_cast<s16>(yn1_) + c2 * static_cast<s16>(yn2_)) >> 11;
+    if (val > 32767) val = 32767;
+    if (val < -32768) val = -32768;
+    yn2_ = yn1_;
+    yn1_ = static_cast<u16>(val);
+    v = static_cast<u16>(val);
+    acc_advance(1, 5); // ACSOV
+    return true;
+}
+
+bool DspCore::acc_read_raw(u16& v) {
+    // "Reads respect the FORMAT size": implemented for 16-bit (word addresses).
+    if ((format_ & 3U) != 2U) {
+        char buf[96];
+        std::snprintf(buf, sizeof buf, "accelerator raw read with FORMAT size %u: only 16-bit is implemented", format_ & 3U);
+        return fail(buf);
+    }
+    const u32 byte_addr = (acc_ca() & 0x7FFFFFFFU) << 1;
+    u8 hi = 0, lo = 0;
+    if (!host_.dsp_aram_read8(byte_addr, hi) || !host_.dsp_aram_read8(byte_addr + 1U, lo))
+        return fail("accelerator ARAM read failed (no ARAM or out of range)");
+    v = static_cast<u16>((static_cast<u16>(hi) << 8) | lo);
+    acc_advance(1, 3); // ACRROV
+    return true;
+}
+
+bool DspCore::acc_write_raw(u16 v) {
+    // "Writes are always 16-bit ... require that the uppermost bit of the current address is set."
+    const u32 ca = acc_ca();
+    if ((ca & 0x80000000U) == 0U) return fail("accelerator raw write with ACCA bit 31 clear (behaviour undocumented)");
+    if (!host_.dsp_aram_write16((ca & 0x7FFFFFFFU) << 1, v)) return fail("accelerator ARAM write failed (no ARAM or out of range)");
+    acc_advance(1, 4); // ACRWOV
     return true;
 }
 
@@ -635,6 +709,19 @@ bool DspCore::apply_extension(const ExtPlan& p) {
 // ------------------------------------------------------------------ execution
 bool DspCore::step() {
     if (halted_ || failed_) return false;
+    // Accelerator exceptions (levels 3-5, vectors 0x0006/0x0008/0x000A), lowest
+    // level first, taken when $sr.IE is set (model; the manual does not say).
+    if (exc_pending_ != 0U && rep_count_ == 0U && (s_.sr & SR_IE) != 0U) {
+        for (unsigned level = 3; level <= 5; ++level) {
+            if ((exc_pending_ & (1U << level)) == 0U) continue;
+            cur_pc_ = s_.pc;
+            if (!push(0, s_.pc) || !push(1, s_.sr)) return false;
+            s_.pc = static_cast<u16>(level * 2U);
+            exc_pending_ = static_cast<u8>(exc_pending_ & ~(1U << level));
+            ++cycles_;
+            return true;
+        }
+    }
     // External interrupt (level 7, vector 0x000E) when IE and EIE are set (model).
     if (int_pending_ && rep_count_ == 0U && (s_.sr & SR_IE) != 0U && (s_.sr & SR_EIE) != 0U) {
         cur_pc_ = s_.pc;

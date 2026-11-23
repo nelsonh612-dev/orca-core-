@@ -1,4 +1,4 @@
-# Estado del proyecto — Milestone 010
+# Estado del proyecto — Milestone 011
 
 ## Funciones implementadas (todas con pruebas)
 
@@ -70,10 +70,16 @@
 - `hw::DspInterface`: RES reinicia el núcleo; con el bit 11 copia los 1024 bytes de 0x01000000 a la IRAM y arranca en 0 (como describe el manual a partir de libogc); HALT del CSR detiene el núcleo y la instrucción HALT lo activa; PIINT pide la interrupción externa; el núcleo corre en porciones de 100 instrucciones cada 600 ciclos de CPU.
 - `System::run` se detiene con `device_stop` y el motivo cuando el DSP encuentra algo no documentado; `orca_run` lo muestra.
 
+**Acelerador del DSP (M011)**
+- ACDSAMP con FORMAT = 0x0000 (ADPCM desde la ARAM, 4 bits): direcciones en nibbles; al empezar cada trama de 16 nibbles se lee el byte de cabecera a PRED_SCALE (predictor en los bits 6-4, escala en 3-0) y ACCA avanza 2; cada muestra = sat16((n·2^s·2048 + 1024 + A1·YN1 + A2·YN2) >> 11), con el nibble alto primero; YN2 ← YN1, YN1 ← muestra.
+- ACDRAW con tamaño de 16 bits: lectura de una palabra (dirección en palabras); escritura de 16 bits que exige el bit 31 de ACCA, como dice el manual.
+- Tras cada acceso, ACCA + 1; si pasa de ACEA se recarga ACSA y queda pendiente ACRROV, ACRWOV o ACSOV (niveles 3, 4 y 5; vectores 0x0006, 0x0008 y 0x000A).
+- `DspHost` da acceso a la ARAM de la consola; en Wii no hay ARAM y el acelerador se detiene con el motivo.
+
 ## Funciones pendientes (en orden)
 
-1. **M011 — acelerador del DSP y tarjeta de memoria:** el acelerador (ACDRAW/ACDSAMP, decodificación ADPCM y PCM con las fórmulas del manual, excepciones ACRROV/ACRWOV/ACSOV) y la reproducción por DMA de audio; después la tarjeta de memoria en EXI0/CS0 y EXI1/CS0. No se implementó porque las fuentes accesibles no fijan dos datos: el número de bytes de espera de la lectura 0x52 (depende del reloj EXI) y el formato de la respuesta de identificación (tamaño de la tarjeta). Una fuente (gc-memcard-adapter, licencia MIT, capturas de un bus real), todavía sin contrastar con otra, da los códigos 0x52 lectura, 0xF2 escritura, 0xF1 borrado de sector, 0x83 estado, 0x89 borrar estado, 0x81 interrupciones y 0x87 despertar, con la dirección empaquetada en 4 bytes (>> 17, >> 9, (>> 7) & 3, & 0x7F). Los juegos oficiales desbloquean la tarjeta con un microcódigo del DSP; ahora que el núcleo existe, ese camino se puede probar. También quedan el puerto serie 1 (EXI0/CS2), el AD16 (EXI2/CS0), el mapeo de la ROM en el vector de reset 0xFFF00000, la aplicación de la protección del MI y los comandos restantes de la DI.
-2. **M012 — GPU (CP/XF/BP/TEV) y M013 — JIT ARM64:** emisor ARM64 verificado con el desensamblador de LLVM, bloques básicos, asignación de registros, caché de bloques conectada a la invalidación del bus, y pruebas diferenciales intérprete vs JIT, que tienen que correr en un dispositivo ARM64.
+1. **M012 — tarjeta de memoria, PCM del acelerador y DMA de audio:** la fórmula exacta de los formatos PCM (GAIN y su escala, combinación con YN1/YN2) y de las lecturas crudas de 8/4 bits no está documentada; hace falta una fuente más. La reproducción por DMA de audio necesita su ritmo confirmado; después, la tarjeta de memoria en EXI0/CS0 y EXI1/CS0. No se implementó porque las fuentes accesibles no fijan dos datos: el número de bytes de espera de la lectura 0x52 (depende del reloj EXI) y el formato de la respuesta de identificación (tamaño de la tarjeta). Una fuente (gc-memcard-adapter, licencia MIT, capturas de un bus real), todavía sin contrastar con otra, da los códigos 0x52 lectura, 0xF2 escritura, 0xF1 borrado de sector, 0x83 estado, 0x89 borrar estado, 0x81 interrupciones y 0x87 despertar, con la dirección empaquetada en 4 bytes (>> 17, >> 9, (>> 7) & 3, & 0x7F). Los juegos oficiales desbloquean la tarjeta con un microcódigo del DSP; ahora que el núcleo existe, ese camino se puede probar. También quedan el puerto serie 1 (EXI0/CS2), el AD16 (EXI2/CS0), el mapeo de la ROM en el vector de reset 0xFFF00000, la aplicación de la protección del MI y los comandos restantes de la DI.
+2. **M013 — GPU (CP/XF/BP/TEV) y M014 — JIT ARM64:** emisor ARM64 verificado con el desensamblador de LLVM, bloques básicos, asignación de registros, caché de bloques conectada a la invalidación del bus, y pruebas diferenciales intérprete vs JIT, que tienen que correr en un dispositivo ARM64.
 3. **Después:** GPU (CP/FIFO, XF, BP, TEV, EFB/XFB → Vulkan para Mali), DSP y audio, DI y discos, SI y controles, EXI, AI y los componentes de Wii (Hollywood, IOS, Bluetooth).
 
 ## Pendiente de verificación en hardware real
@@ -136,6 +142,11 @@ Son comportamientos que el PEM deja indefinidos o que el manual del 750CL no det
 | DSP: DMA del DSP | Termina al instante; DSCR.t nunca se ve a 1 |
 | DSP: arranque con el bit 11 | HLE de lo que describe el manual (copia de 1024 bytes); el código real del IROM no se ejecuta |
 | DSP: IFcc falso seguido de una instrucción de 2 palabras, LOOP sobre una de 2 palabras o que cambia el flujo | Parada clara (no documentado) |
+| Acelerador: fórmula ADPCM | La del formato de archivo DSP-ADPCM (tres fuentes coinciden); no se midió en hardware que el decodificador de la consola redondee igual |
+| Acelerador: lectura de la cabecera de trama | Cuando ACCA es múltiplo de 16 nibbles; deducido de que las direcciones incluyen las cabeceras (DSPADPCM) |
+| Acelerador: excepciones ACRROV/ACRWOV/ACSOV | Se toman con $sr.IE = 1 (no durante LOOP); con IE = 0 quedan pendientes |
+| Acelerador: "cuando no quedan datos devuelve 0" | No se modela: ACCA siempre se recarga desde ACSA |
+| Acelerador: PCM, lecturas crudas de 8/4 bits, ARAM en Wii | Parada clara (no documentado) |
 | DSP: accesos genéricos a $st0-$st3, desbordamiento de pilas (STOVF), aritmética de direcciones con $wrN ≠ 0xFFFF | Parada clara (no documentado) |
 
 ## Problemas conocidos
@@ -153,7 +164,7 @@ Son comportamientos que el PEM deja indefinidos o que el manual del 750CL no det
 | 9 | `lmw/stmw`, instrucciones de cadena y `lwarx/stwcx.` no pasan por la caché bloqueada | Bajo |
 | 10 | El DMA de la caché bloqueada y las ráfagas del gather pipe terminan al instante | Falta conectarlos al planificador con tiempos reales |
 | 11 | Coste fijo de 1 ciclo por instrucción: no hay modelo de pipeline ni de caché | El tiempo es determinista, no exacto al ciclo |
-| 12 | Existen PI, gather pipe, DI, VI, SI, AI, EXI (con RTC/SRAM/ROM), MI, la interfaz del DSP con ARAM y el núcleo del DSP; CP/PE (GPU) dan `MemoryFault` al tocarse | Un juego comercial se detiene al acceder a la tarjeta de memoria, cuando su microcódigo usa el acelerador del DSP o lee el IROM/COEF sin volcados, al iniciar el audio por DMA o al usar la GPU, siempre con una parada que explica el motivo |
+| 12 | Existen PI, gather pipe, DI, VI, SI, AI, EXI (con RTC/SRAM/ROM), MI, la interfaz del DSP con ARAM y el núcleo del DSP; CP/PE (GPU) dan `MemoryFault` al tocarse | Un juego comercial se detiene al acceder a la tarjeta de memoria, cuando su microcódigo usa PCM en el acelerador o lee el IROM/COEF sin volcados, al iniciar el audio por DMA o al usar la GPU, siempre con una parada que explica el motivo |
 | No hay salida de video (no se convierte el XFB a imagen) ni de audio | Sin frontend todavía |
 | DI: solo existe la lectura 0xA8 por DMA; los discos Wii, el audio streaming y los formatos comprimidos no están implementados | Parada clara con el comando |
 | 13 | Rendimiento en el anfitrión x86: unos 20 M instr/s en enteros y unos 4 M instr/s en FP. El motor FP cambia el modo de redondeo del anfitrión en cada operación | Esperado: el intérprete es la referencia de precisión; la velocidad vendrá del JIT |

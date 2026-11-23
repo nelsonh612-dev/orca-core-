@@ -10,8 +10,9 @@
 //   * stack overflow/underflow (STOVF): host stop;
 //   * address arithmetic when the matching $wrN != 0xFFFF (wrapping is not
 //     described): host stop;
-//   * accelerator data path (ACDRAW, ACDSAMP): host stop; its registers are
-//     stored;
+//   * accelerator: ADPCM sample reads (FORMAT 0x0000: ADPCM from ARAM, 4-bit)
+//     and 16-bit raw reads/writes are implemented; PCM formats and 8/4-bit raw
+//     reads (formula / extension not documented) are host stops;
 //   * IROM (0x8000-0x8FFF) and COEF (0x1000-0x17FF) need user dumps; reading or
 //     executing them without one is a host stop;
 //   * unknown opcodes, undocumented memory addresses and IFX registers: host
@@ -51,6 +52,9 @@ public:
     virtual bool dsp_dma_write(u32 physical, std::span<const u8> in) = 0;
     virtual void dsp_interrupt_cpu() = 0; // DIRQ
     virtual void dsp_halted() = 0;        // HALT instruction
+    // Accelerator access to ARAM (byte addresses). false = no ARAM / out of range.
+    virtual bool dsp_aram_read8(u32 byte_address, u8& v) = 0;
+    virtual bool dsp_aram_write16(u32 byte_address, u16 v) = 0;
 };
 
 struct DspStack {
@@ -104,6 +108,8 @@ public:
     void clear_mailboxes() noexcept { cmb_ = 0; dmb_ = 0; }
     void request_external_interrupt() noexcept { int_pending_ = true; }
     bool external_interrupt_pending() const noexcept { return int_pending_; }
+    // Pending accelerator exceptions: bit 3 ACRROV, bit 4 ACRWOV, bit 5 ACSOV.
+    u8 pending_exceptions() const noexcept { return exc_pending_; }
 
     // 40-bit helpers (public for tests)
     s64 acc(unsigned d) const noexcept;
@@ -128,6 +134,15 @@ private:
     bool ifx_write(u16 addr, u16 v);
     bool fetch(u16 addr, u16& v) { return imem_read(addr, v); }
     bool dsp_dma(u16 bytes);
+    bool acc_read_sample(u16& v);
+    bool acc_read_raw(u16& v);
+    bool acc_write_raw(u16 v);
+    u32 acc_ca() const noexcept { return (static_cast<u32>(accah_) << 16) | accal_; }
+    u32 acc_sa() const noexcept { return (static_cast<u32>(acsah_) << 16) | acsal_; }
+    u32 acc_ea() const noexcept { return (static_cast<u32>(aceah_) << 16) | aceal_; }
+    void acc_set_ca(u32 v) noexcept { accah_ = static_cast<u16>(v >> 16); accal_ = static_cast<u16>(v); }
+    // Increments ACCA; past ACEA it reloads ACSA and raises exception `level`.
+    void acc_advance(u32 amount, unsigned level);
 
     // registers
     bool reg_read(unsigned r, u16& v, bool saturate);
@@ -207,6 +222,7 @@ private:
         yn1_{0}, yn2_{0}, gain_{0}, acin_{0}, amdm_a_{0}, amdm_b_{0};
     u32 cmb_{0}, dmb_{0};
     bool int_pending_{false};
+    u8 exc_pending_{0};
 
     bool halted_{true};
     bool failed_{false};

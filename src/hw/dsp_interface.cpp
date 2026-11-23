@@ -24,6 +24,18 @@ bool DspInterface::dsp_dma_write(u32 pa, std::span<const u8> in) {
     return bus_.is_ram(pa, static_cast<u32>(in.size())) && bus_.dma_write(pa, in) == mem::BusStatus::Ok;
 }
 
+bool DspInterface::dsp_aram_read8(u32 a, u8& v) {
+    if (a >= aram_.size()) return false; // also covers Wii (no ARAM)
+    v = aram_[a];
+    return true;
+}
+bool DspInterface::dsp_aram_write16(u32 a, u16 v) {
+    if (aram_.size() < 2U || a > aram_.size() - 2U) return false;
+    aram_[a] = static_cast<u8>(v >> 8);
+    aram_[a + 1U] = static_cast<u8>(v);
+    return true;
+}
+
 void DspInterface::dsp_reset(bool boot_from_ram) {
     core_.clear_mailboxes();
     if (boot_from_ram) {

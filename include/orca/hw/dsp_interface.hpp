@@ -94,6 +94,8 @@ private:
     bool dsp_dma_write(u32 physical, std::span<const u8> in) override;
     void dsp_interrupt_cpu() override { raise_dspint(); }
     void dsp_halted() override { csr_ |= dsp::CSR_HALT; }
+    bool dsp_aram_read8(u32 byte_address, u8& v) override;
+    bool dsp_aram_write16(u32 byte_address, u16 v) override;
 
     mem::Bus& bus_;
     core::Scheduler& scheduler_;

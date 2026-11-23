@@ -1,4 +1,4 @@
-# Registro de pruebas — Milestone 010
+# Registro de pruebas — Milestone 011
 
 Todos los resultados son de ejecuciones reales del 2026-11-14 en este entorno, sobre una copia limpia de los fuentes entregados.
 
@@ -8,9 +8,9 @@ Todos los resultados son de ejecuciones reales del 2026-11-14 en este entorno, s
 
 | Configuración | Compilación | Advertencias (`-Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion -Wshadow -Werror`) | CTest |
 |---|---|---|---|
-| GCC Release | OK | 0 | 15/15 pasan (4,1 s) |
-| Clang Release | OK | 0 | 15/15 pasan (3,3 s) |
-| GCC Debug + ASan + UBSan (`-fno-sanitize-recover=all`) | OK | 0 | 15/15 pasan (75,6 s) |
+| GCC Release | OK | 0 | 15/15 pasan (3,9 s) |
+| Clang Release | OK | 0 | 15/15 pasan (3,2 s) |
+| GCC Debug + ASan + UBSan (`-fno-sanitize-recover=all`) | OK | 0 | 15/15 pasan (74,4 s) |
 | Clang + ASan/UBSan | **NO EJECUTADO**: falta `compiler-rt` en el entorno | — | — |
 | Android NDK arm64-v8a | **NO EJECUTADO**: no hay NDK ni sysroot AArch64 | — | — |
 
@@ -31,8 +31,17 @@ Todos los resultados son de ejecuciones reales del 2026-11-14 en este entorno, s
 | **av** (M007) | 12 | 292 | 0 |
 | **exi** (M008) | 16 | 481 | 0 |
 | **dsp_mi** (M009, actualizada en M010) | 13 | 385 | 0 |
-| **dsp_core** (M010) | 23 | 453 | 0 |
+| **dsp_core** (M010 + M011) | 28 | 491 | 0 |
 | encodings (vs `llvm-mc`) | 189 instrucciones | 181 ensambladas + 8 desensambladas | 0 diferencias |
+
+### Acelerador del DSP (M011)
+
+- Valores calculados a mano: trama con cabecera 0x00, A1 = 0x0800 (1,0), nibbles 1, 2, 3, −1 → muestras **1, 3, 6, 5**; al pasar ACEA = 5 la dirección vuelve a ACSA = 2 y la quinta muestra es **6** (mismo nibble con otra historia); el manejador de ACSOV corre una vez y RTI vacía las pilas.
+- 84 muestras (6 tramas con 6 pares de coeficientes y escalas distintas, YN1 = 100, YN2 = −50) comparadas con un decodificador de referencia escrito aparte a partir de las descripciones del formato: **0 diferencias**; al consumir todo el rango queda ACSOV pendiente.
+- Saturación: escala 2^15 con nibbles 7 y −8 → 0x7FFF y 0x8000; PRED_SCALE cargado de la cabecera, YN1/YN2 y ACCA (cabecera + 2 muestras = 4).
+- Crudas de 16 bits: escritura con el bit 31 (0xBEEF, 0x1234 en la ARAM), lectura, recarga desde ACSA al pasar ACEA y manejador de ACRROV tomado al activar IE.
+- Paradas claras: formato PCM, lectura cruda de 8 bits, escritura cruda sin el bit 31, ARAM fuera de rango y ARAM en Wii.
+- Integración: el núcleo lee la ARAM de 16 MiB del `System` de GameCube.
 
 ### Núcleo del DSP (M010)
 
@@ -193,7 +202,14 @@ I5 (liberar CS no reinicia la secuencia) sobrevivió y es **equivalente**: cada 
 
 **Núcleo del DSP (M010), 32 de 32 detectadas tras completar las pruebas:** Q1 acarreo de la resta con > · Q2 sin desbordamiento · **Q3 OS deja de ser persistente: no se detectaba al principio** → se añadió `dsp_os_is_sticky_and_orc_keeps_flags` · Q4 TB sobre los bits 39/38 · Q5 AM invertido · Q6 siempre con signo · Q7 extensión de signo también en modo 16 bits · Q8 sin saturación · Q9 $acX.h sin extensión de signo · Q10 condición G sin Z · Q11 condición xA con AND · Q12 sin la regla OR · Q13 LS/SL intercambiados · Q14 N/M intercambiados · Q15 mitades de 'LDAX intercambiadas · Q16 el nibble 3 sin extensión · Q17 extensión de 8 bits en el nibble 3 · Q18 LOOP con una iteración menos · Q19 fin de BLOOP comparado con el PC siguiente · Q20 leer CMBL no borra M · Q21 escribir DMBL no activa M · Q22 bits de DSCR intercambiados · Q23 CLRL sin redondeo a par · Q24 CLRP a ceros · Q25 LSR aritmético · Q26 sin comprobar $wr · Q27 interrupción sin EIE · Q28 el bit 8 de $sr se puede escribir · Q29 campos de CMPAXH intercambiados · **Q30 ORC actualiza banderas: no se detectaba al principio** → misma prueba nueva · Q31 $prod sin m2 · Q32 RES ignora el bit 11. Tres mutaciones se reescribieron porque no compilaban con `-Werror` y tres porque no encontraban el texto; se reportan con su versión final.
 
-**Total: 142 mutaciones detectadas.**
+**Acelerador (M011), 16 de 16 detectadas tras completar las pruebas:** A1 fin con >= · A2 sin recarga desde ACSA · A3 cabecera cada 8 nibbles · A4 cabecera de 1 nibble · A5 nibble bajo primero · A6 nibble sin signo · A7 sin el +1024 de redondeo · A8 sin saturación positiva · A9 historia actualizada en orden inverso · A10 índice de coeficientes desde la escala · A11 excepción equivocada · A12 escritura cruda sin exigir el bit 31 · A13 bytes de la palabra cruda invertidos · A14 excepciones sin IE · **A15 vector desplazado: no se detectaba al principio**, porque los vectores vacíos contenían ceros (NOP) y la ejecución resbalaba hasta el manejador correcto → ahora las pruebas llenan los vectores no usados con HALT · A16 PRED_SCALE mal extraído.
+
+**Total: 158 mutaciones detectadas.**
+
+## Errores encontrados durante M011
+
+- No apareció ningún error en el acelerador.
+- **Errores en mis pruebas:** el programa principal se cargaba encima de los vectores de excepción (0x0006 y 0x000A) y la dirección de fin de un BLOOPI estaba mal contada (0x24 en lugar de 0x1F). Ahora las pruebas del acelerador ponen el código principal en 0x0060 detrás de un salto de reset, como los microcódigos reales.
 
 ## Errores encontrados durante M010
 

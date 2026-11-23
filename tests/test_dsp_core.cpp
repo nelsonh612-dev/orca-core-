@@ -32,6 +32,13 @@ struct Host final : DspHost {
     }
     void dsp_interrupt_cpu() override { ++irqs; }
     void dsp_halted() override { ++halts; }
+    std::vector<u8> aram = std::vector<u8>(0x1000, 0);
+    bool dsp_aram_read8(u32 a, u8& v) override { if (a >= aram.size()) return false; v = aram[a]; return true; }
+    bool dsp_aram_write16(u32 a, u16 v) override {
+        if (a + 2U > aram.size()) return false;
+        aram[a] = static_cast<u8>(v >> 8); aram[a + 1] = static_cast<u8>(v);
+        return true;
+    }
 };
 
 struct Rig {
@@ -521,6 +528,174 @@ TEST_CASE(dsp_every_extended_opcode) {
     }
 }
 
+
+// ------------------------------------------------------------------ accelerator (M011)
+namespace {
+// Independent reference written from the DSP-ADPCM file-format descriptions:
+// 8-byte frames, header = predictor (bits 6-4) / scale (bits 3-0), 14 nibbles,
+// high nibble first, y = clamp(((n * 2^s) << 11) + 1024 + c1*y1 + c2*y2) >> 11).
+std::vector<s16> reference_adpcm(const std::vector<u8>& data, const std::array<s16, 16>& coef, s16 y1, s16 y2) {
+    std::vector<s16> out;
+    for (std::size_t f = 0; f + 8 <= data.size(); f += 8) {
+        const int scale = 1 << (data[f] & 0xF);
+        const int c1 = coef[((data[f] >> 4) & 7) * 2], c2 = coef[((data[f] >> 4) & 7) * 2 + 1];
+        for (int i = 0; i < 14; ++i) {
+            const u8 b = data[f + 1 + static_cast<std::size_t>(i / 2)];
+            int n = (i % 2 == 0) ? (b >> 4) : (b & 0xF);
+            if (n >= 8) n -= 16;
+            int v = ((n * scale) * 2048 + 1024 + c1 * y1 + c2 * y2) >> 11;
+            v = v > 32767 ? 32767 : (v < -32768 ? -32768 : v);
+            y2 = y1;
+            y1 = static_cast<s16>(v);
+            out.push_back(y1);
+        }
+    }
+    return out;
+}
+constexpr u16 LRR_AX0L_AR0 = 0x1818, SRRI_AR1_AX0L = 0x1B38;
+// Main code at 0x0060 behind a reset jump, so the exception vectors stay free.
+bool run_main(Rig& t, std::initializer_list<u16> main_code, u64 budget = 10000) {
+    t.load({0x029F, 0x0060}, 0x0000);
+    for (u16 a = 0x0002; a < 0x0010; ++a)
+        if (t.dsp.iram()[a] == 0U) t.dsp.iram()[a] = HALT; // a wrong vector stops at once
+    t.load(main_code, 0x0060);
+    t.dsp.reset(0);
+    t.dsp.set_halted(false);
+    t.dsp.run(budget);
+    if (t.dsp.failed()) std::fprintf(stderr, "    DSP failed: %s\n", t.dsp.error().c_str());
+    return t.dsp.halted() && !t.dsp.failed();
+}
+} // namespace
+
+TEST_CASE(dsp_accelerator_adpcm_hand_values_loop_and_acsov) {
+    Rig t;
+    // frame 0: header 0x00 (pair 0, scale 1), nibbles 1, 2, 3, -1, ...
+    t.host.aram[0] = 0x00; t.host.aram[1] = 0x12; t.host.aram[2] = 0x3F;
+    t.load({0x029F, 0x0040}, 0x000A);                    // ACSOV vector -> 0x40
+    t.load({LRI(AC1M), 0x00AA, 0x02FF}, 0x0040);         // handler: mark, RTI
+    // main at 0x60: 14 two-word setup instructions (0x60-0x7B), BLOOPI at 0x7C, body 0x7E-0x7F
+    CHECK(run_main(t, {LRI(SR_), SR_IE, SI(0xFFA0), 0x0800, SI(0xFFA1), 0x0000, SI(ifx::FORMAT), 0x0000,
+                       SI(ifx::ACSAH), 0, SI(ifx::ACSAL), 2, SI(ifx::ACEAH), 0, SI(ifx::ACEAL), 5,
+                       SI(ifx::ACCAH), 0, SI(ifx::ACCAL), 0, SI(ifx::YN1), 0, SI(ifx::YN2), 0,
+                       LRI(AR0), ifx::ACDSAMP, LRI(1), 0x0100,
+                       0x1105, 0x007F, LRR_AX0L_AR0, SRRI_AR1_AX0L, // BLOOPI 5 (end = 0x7F)
+                       HALT}));
+    // y = ((n << 11) + 1024 + 2048*y1) >> 11: 1, 3, 6, 5; then the loop restarts at nibble 2 -> 6
+    const u16 expect[] = {1, 3, 6, 5, 6};
+    for (unsigned i = 0; i < 5; ++i) CHECK_EQ(t.dsp.dram()[0x100 + i], expect[i]);
+    CHECK_EQ(t.s().ac_m[1], 0x00AAU); // ACSOV handler ran once
+    CHECK_EQ(t.dsp.pending_exceptions(), 0U);
+    CHECK(t.s().st[0].empty());
+    CHECK(t.s().st[1].empty());
+}
+
+TEST_CASE(dsp_accelerator_adpcm_matches_reference_over_frames) {
+    std::array<s16, 16> coef{};
+    const s16 pairs[16] = {0x0800, 0, 0x0F00, -0x0700, 0x1000, -0x0800, 0x0400, 0x0200,
+                           -0x0300, 0x0100, 0x0C00, -0x0400, 0x07FF, -0x07FF, 0x0000, 0x0800};
+    for (int i = 0; i < 16; ++i) coef[static_cast<std::size_t>(i)] = pairs[i];
+    std::vector<u8> data(8 * 6);
+    u32 x = 12345;
+    for (std::size_t f = 0; f < 6; ++f) {
+        data[f * 8] = static_cast<u8>((f % 8) << 4 | (f * 3 % 13)); // varied predictor / scale
+        for (std::size_t i = 1; i < 8; ++i) { x = x * 1103515245U + 12345U; data[f * 8 + i] = static_cast<u8>(x >> 16); }
+    }
+    const auto ref = reference_adpcm(data, coef, 100, -50);
+    Rig t;
+    for (std::size_t i = 0; i < data.size(); ++i) t.host.aram[0x200 + i] = data[i];
+    std::vector<u16> prog = {SI(ifx::FORMAT), 0x0000};
+    for (unsigned i = 0; i < 16; ++i) { prog.push_back(SI(static_cast<u16>(0xFFA0U + i))); prog.push_back(static_cast<u16>(coef[i])); }
+    const u16 rest[] = {SI(ifx::ACSAH), 0, SI(ifx::ACSAL), 0x0400, SI(ifx::ACEAH), 0, SI(ifx::ACEAL), 0x045F,
+                        SI(ifx::ACCAH), 0, SI(ifx::ACCAL), 0x0400, SI(ifx::YN1), 100, SI(ifx::YN2), static_cast<u16>(-50),
+                        LRI(AR0), ifx::ACDSAMP, LRI(1), 0x0100};
+    prog.insert(prog.end(), std::begin(rest), std::end(rest));
+    const u16 loop_at = static_cast<u16>(prog.size());
+    prog.push_back(0x1154); // BLOOPI 84
+    prog.push_back(static_cast<u16>(loop_at + 3));
+    prog.push_back(LRR_AX0L_AR0);
+    prog.push_back(SRRI_AR1_AX0L);
+    prog.push_back(HALT);
+    for (std::size_t i = 0; i < prog.size(); ++i) t.dsp.iram()[i] = prog[i];
+    t.dsp.reset(0);
+    t.dsp.set_halted(false);
+    t.dsp.run(5000);
+    CHECK(t.dsp.halted() && !t.dsp.failed());
+    if (t.dsp.failed()) std::fprintf(stderr, "    %s\n", t.dsp.error().c_str());
+    CHECK_EQ(ref.size(), 84U);
+    unsigned bad = 0;
+    for (std::size_t i = 0; i < ref.size(); ++i) bad += t.dsp.dram()[0x100 + i] != static_cast<u16>(ref[i]) ? 1U : 0U;
+    CHECK_EQ(bad, 0U);
+    // the whole range (0x400-0x45F nibbles) was consumed: ACCA wrapped to ACSA, ACSOV pending (IE clear)
+    CHECK_EQ(t.dsp.pending_exceptions(), 1U << 5);
+}
+
+TEST_CASE(dsp_accelerator_adpcm_clamps) {
+    Rig t;
+    t.host.aram[0] = 0x0F; t.host.aram[1] = 0x78; // scale 2^15, nibbles 7 and -8
+    CHECK(t.run({SI(ifx::FORMAT), 0, SI(ifx::ACEAH), 0, SI(ifx::ACEAL), 0x000F, SI(ifx::ACCAH), 0, SI(ifx::ACCAL), 0,
+                 LR(AX0L), ifx::ACDSAMP, LR(AX0H), ifx::ACDSAMP, LR(AX1L), ifx::PRED_SCALE, LR(AX1H), ifx::YN1,
+                 LR(AC0L), ifx::YN2, LR(AC1L), ifx::ACCAL, HALT}));
+    CHECK_EQ(t.s().ax_l[0], 0x7FFFU);
+    CHECK_EQ(t.s().ax_h[0], 0x8000U);
+    CHECK_EQ(t.s().ax_l[1], 0x000FU); // PRED_SCALE loaded from the frame header
+    CHECK_EQ(t.s().ax_h[1], 0x8000U); // YN1 = last sample
+    CHECK_EQ(t.s().ac_l[0], 0x7FFFU); // YN2 = previous one
+    CHECK_EQ(t.s().ac_l[1], 0x0004U); // header (2 nibbles) + 2 samples
+}
+
+TEST_CASE(dsp_accelerator_raw_16bit_and_overflow) {
+    Rig t;
+    t.load({0x029F, 0x0050}, 0x0006); // ACRROV vector
+    t.load({LRI(AC1M), 0x00BB, 0x02FF}, 0x0050);
+    CHECK(run_main(t, {SI(ifx::FORMAT), 0x0002, SI(ifx::ACSAH), 0, SI(ifx::ACSAL), 0x0008,
+                 SI(ifx::ACEAH), 0xFFFF, SI(ifx::ACEAL), 0xFFFF,
+                 SI(ifx::ACCAH), 0x8000, SI(ifx::ACCAL), 0x0010, SI(ifx::ACDRAW), 0xBEEF, SI(ifx::ACDRAW), 0x1234,
+                 LR(AX0L), ifx::ACCAL,                                      // 0x0012 after two writes
+                 SI(ifx::ACEAH), 0, SI(ifx::ACEAL), 0x0010,
+                 SI(ifx::ACCAH), 0, SI(ifx::ACCAL), 0x0010, LR(AX0H), ifx::ACDRAW, // reads 0xBEEF, then wraps
+                 LR(AX1L), ifx::ACCAL,
+                 LRI(SR_), SR_IE, NOP,                                      // the pending ACRROV is taken now
+                 HALT}));
+    CHECK_EQ(t.host.aram[0x20], 0xBEU);
+    CHECK_EQ(t.host.aram[0x21], 0xEFU);
+    CHECK_EQ(t.host.aram[0x22], 0x12U);
+    CHECK_EQ(t.s().ax_l[0], 0x0012U);
+    CHECK_EQ(t.s().ax_h[0], 0xBEEFU);
+    CHECK_EQ(t.s().ax_l[1], 0x0008U); // 0x11 > ACEA 0x10 -> reloaded from ACSA
+    CHECK_EQ(t.s().ac_m[1], 0x00BBU); // ACRROV handler
+    // ARAM out of range / no ARAM is a host stop
+    Rig u;
+    u.host.aram.clear();
+    u.load({SI(ifx::FORMAT), 0, LR(AC0M), ifx::ACDSAMP, HALT});
+    u.dsp.reset(0);
+    u.dsp.set_halted(false);
+    u.dsp.run(10);
+    CHECK(u.dsp.failed());
+    CHECK(u.dsp.error().find("no ARAM") != std::string::npos);
+}
+
+TEST_CASE(dsp_accelerator_reads_the_system_aram) {
+    system::System gc({});
+    gc.dsp().aram()[0x1000] = 0x00;
+    gc.dsp().aram()[0x1001] = 0x70; // nibble 7, scale 1, pair 0 = 0 -> (7*2048 + 1024) >> 11 = 7
+    auto& core = gc.dsp().core();
+    const u16 prog[] = {SI(ifx::FORMAT), 0, SI(ifx::ACEAH), 0, SI(ifx::ACEAL), 0x2FFF, SI(ifx::ACCAH), 0,
+                        SI(ifx::ACCAL), 0x2000, LR(AC0M), ifx::ACDSAMP, HALT};
+    for (std::size_t i = 0; i < std::size(prog); ++i) core.iram()[i] = prog[i];
+    core.reset(0);
+    core.set_halted(false);
+    core.run(100);
+    CHECK(!core.failed());
+    CHECK_EQ(core.state().ac_m[0], 7U);
+    system::System wii({system::Console::Wii, 0, 1});
+    auto& wc = wii.dsp().core();
+    for (std::size_t i = 0; i < std::size(prog); ++i) wc.iram()[i] = prog[i];
+    wc.reset(0);
+    wc.set_halted(false);
+    wc.run(100);
+    CHECK(wc.failed()); // Wii has no ARAM; what the accelerator reads there is not documented
+}
+
 // ------------------------------------------------------------------ IFX: mailboxes, DMA, IRQ
 TEST_CASE(dsp_mailboxes_irq_and_dma) {
     Rig t;
@@ -591,7 +766,9 @@ TEST_CASE(dsp_undocumented_behaviour_stops_clearly) {
         {{LR(AC0M), 0x1000, HALT}, "COEF"},
         {{SR(AC0M), 0x1000, HALT}, "read-only"},
         {{LR(AC0M), 0x2000, HALT}, "data memory address 2000"},
-        {{LR(AC0M), ifx::ACDSAMP, HALT}, "accelerator"},
+        {{SI(ifx::FORMAT), 0x000A, LR(AC0M), ifx::ACDSAMP, HALT}, "only ADPCM"},
+        {{SI(ifx::FORMAT), 0x0001, LR(AC0M), ifx::ACDRAW, HALT}, "only 16-bit"},
+        {{SI(ifx::ACCAH), 0x0000, SI(ifx::ACDRAW), 0x1234, HALT}, "bit 31 clear"},
         {{LR(AC0M), 0xFF00, HALT}, "IFX register FF00"},
         {{0x02DF}, "underflow"},
         {{0x1002, 0x0080, 0x0001, HALT}, "2-word"},
