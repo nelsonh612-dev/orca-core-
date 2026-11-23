@@ -216,6 +216,36 @@ TEST_CASE(jit_matches_interpreter_on_random_programs) {
             (void)b.bus.read32(x, vb);
             same = va == vb;
         }
+        if (!same && failures < 3) {
+            // lockstep replay: find the first translated block whose result differs
+            Machine c(kCode), d(kCode);
+            Rng rc{seed}, rd{seed};
+            setup(c, rc, prog);
+            setup(d, rd, prog);
+            Jit jd(*d.cpu, d.bus);
+            u64 k = 0;
+            while (k < n) {
+                const CpuState before = d.s();
+                const Jit::Result r = jd.run(n - k);
+                for (u64 t = 0; t < r.steps; ++t) (void)c.cpu->step();
+                k += r.steps;
+                if (!(c.s() == d.s())) {
+                    std::printf("    first divergence: block at %08X, %llu steps\n", before.pc, static_cast<unsigned long long>(r.steps));
+                    for (u64 t = 0; t < r.steps + 1U && t < 70U; ++t) {
+                        u32 w = 0;
+                        (void)d.bus.read32(before.pc + 4U * static_cast<u32>(t), w);
+                        std::printf("      %08X: %08X\n", before.pc + 4U * static_cast<u32>(t), w);
+                    }
+                    for (unsigned g = 0; g < 32; ++g)
+                        if (c.s().gpr[g] != d.s().gpr[g] || before.gpr[g] != c.s().gpr[g])
+                            std::printf("      r%-2u before %08X  interp %08X  jit %08X\n", g, before.gpr[g], c.s().gpr[g], d.s().gpr[g]);
+                    std::printf("      cr %08X/%08X/%08X xer %08X/%08X/%08X lr %08X/%08X ctr %08X/%08X\n", before.cr, c.s().cr, d.s().cr,
+                                before.xer, c.s().xer, d.s().xer, c.s().lr, d.s().lr, c.s().ctr, d.s().ctr);
+                    break;
+                }
+                if (r.result != StepResult::Executed && r.result != StepResult::ExceptionTaken) break;
+            }
+        }
         if (!same) {
             if (failures++ < 5) {
                 std::printf("    program %d (seed %llx): interp %s/%llu jit %s/%llu pc %08X/%08X\n", p, static_cast<unsigned long long>(seed),
