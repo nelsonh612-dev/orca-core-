@@ -219,7 +219,7 @@ StepResult Cpu::run_jit(u64 budget, u64* completed, const u32* stop_pc) {
             continue;
         }
         const u32 pc = state_.pc;
-        if ((pc & 3U) != 0U) {
+        if ((pc & 3U) != 0U || config_.jit_max_cached_blocks == 0U) {
             const StepResult r = step();
             if (r != StepResult::Executed && r != StepResult::ExceptionTaken) { if (completed != nullptr) *completed = done; return r; }
             ++done;
@@ -284,6 +284,11 @@ StepResult Cpu::run_jit(u64 budget, u64* completed, const u32* stop_pc) {
                 ++done;
                 continue;
             }
+            // ExecutableBlock currently allocates page-granular mappings.
+            // Flush the cache before inserting beyond the configured budget,
+            // keeping peak JIT memory bounded on low-RAM Android devices.
+            if (jit_blocks_.size() >= config_.jit_max_cached_blocks)
+                invalidate_jit_cache();
             auto entry = std::make_unique<JitBlockEntry>();
             entry->block = std::move(block);
             entry->executable = jit::ExecutableBlock(entry->block);
