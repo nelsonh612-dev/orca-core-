@@ -6,7 +6,7 @@ tests must fail for it ("killed"). A mutation that builds and passes ("survived"
 shows a gap in the tests. The build is not -Werror (an unused variable is not a kill).
 Usage: tools/jit_mutations.py <build-dir>
 """
-import subprocess, sys, pathlib
+import os, subprocess, sys, pathlib
 
 SRC = pathlib.Path("src/ppc/jit.cpp")
 MUTATIONS = [
@@ -38,7 +38,7 @@ def run(cmd, cwd=None):
     return subprocess.run(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
 
 def main():
-    build = sys.argv[1]
+    build = os.path.abspath(sys.argv[1])
     original = SRC.read_text()
     results = []
     for name, old, new in MUTATIONS:
