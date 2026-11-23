@@ -30,6 +30,8 @@
 #include "orca/hw/memory_interface.hpp"
 #include "orca/hw/hollywood_ipc.hpp"
 #include "orca/ios/kernel.hpp"
+#include "orca/ios/stm.hpp"
+#include "orca/ios/es.hpp"
 #include "orca/hw/processor_interface.hpp"
 #include "orca/loader/executable.hpp"
 #include "orca/memory/bus.hpp"
@@ -102,6 +104,10 @@ public:
     // Wii only (nullptr on GameCube): Hollywood registers and the IOS kernel (HLE).
     hw::HollywoodIpc* hollywood() noexcept { return hollywood_.get(); }
     ios::Kernel* ios() noexcept { return ios_.get(); }
+    ios::Es* es() noexcept { return es_; }
+    // Wii reset (or power) button: answers the game's STM event hook. False on
+    // GameCube or when the game has no hook installed (the press has no effect).
+    bool press_console_button(bool power);
     // RTC/SRAM/IPL-ROM chip on EXI channel 0, CS1 (ROM image supplied by the user).
     hw::IplRtcSram& ipl() noexcept { return *ipl_; }
     // Inserts a memory card in slot 0 (A, EXI0) or 1 (B, EXI1); empty image = blank card.
@@ -189,6 +195,8 @@ private:
     std::unique_ptr<hw::DspInterface> dsp_;
     std::unique_ptr<hw::HollywoodIpc> hollywood_;
     std::unique_ptr<ios::Kernel> ios_;
+    ios::StmEventHook* stm_hook_{nullptr};
+    ios::Es* es_{nullptr};
     std::function<void(bool)> field_listener_;
     std::optional<u32> stop_pc_;
     u64 timebase_remainder_{0};

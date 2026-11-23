@@ -65,6 +65,13 @@ System::System(SystemConfig config) : config_(config), clocks_(clocks_for(config
         bus_.map_mmio("Hollywood", hw::hollywood::kBase, 0x1000, *hollywood_);
         bus_.map_mmio("DI/SI/EXI/AI (Hollywood)", 0x0D006000U, 0x1000, *page_0c006_);
         ios_ = std::make_unique<ios::Kernel>(bus_, scheduler_, *hollywood_, clocks_.cpu_cycles_per_timebase_tick);
+        auto hook = std::make_unique<ios::StmEventHook>();
+        stm_hook_ = hook.get();
+        ios_->add_device(std::make_unique<ios::StmImmediate>(*hook));
+        ios_->add_device(std::move(hook));
+        auto es = std::make_unique<ios::Es>();
+        es_ = es.get();
+        ios_->add_device(std::move(es));
     }
     ai_->set_stream_sink([this](std::span<const s16> pcm, u32 divisor, u32 vol) { mixer_->push_stream(pcm, divisor, vol); });
 }
@@ -247,6 +254,11 @@ RunResult System::run(u64 max_cycles) {
     r.cycles = scheduler_.now() - start;
     r.instructions = cpu_->instructions_retired() - retired0;
     return r;
+}
+
+bool System::press_console_button(bool power) {
+    if (stm_hook_ == nullptr) return false;
+    return stm_hook_->trigger(*ios_, power ? ios::kStmEventPower : ios::kStmEventReset, 0);
 }
 
 bool System::insert_memory_card(unsigned slot, u32 size_mbit, std::vector<u8> image, std::string& error) {

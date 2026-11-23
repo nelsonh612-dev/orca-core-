@@ -2,6 +2,8 @@
 // acknowledge/reply handshake, descriptors, ordering, explicit stops).
 #include "orca/hw/hollywood_ipc.hpp"
 #include "orca/ios/kernel.hpp"
+#include "orca/ios/stm.hpp"
+#include "orca/ios/es.hpp"
 #include "orca/memory/console_maps.hpp"
 #include "orca/system/system.hpp"
 #include "test_framework.hpp"
@@ -333,6 +335,203 @@ TEST_CASE(system_maps_hollywood_only_on_wii) {
     const auto res = w.run(1000);
     CHECK(res.device_stop);
     CHECK(res.device_error == "test stop");
+}
+
+TEST_CASE(stm_event_hook_release_and_buttons) {
+    Rig r;
+    auto hook = std::make_unique<ios::StmEventHook>();
+    ios::StmEventHook* h = hook.get();
+    r.kernel.add_device(std::move(hook));
+    auto imm = std::make_unique<ios::StmImmediate>(*h);
+    ios::StmImmediate* im = imm.get();
+    r.kernel.add_device(std::move(imm));
+    r.set(PPC_IRQMASK, IRQ_IPC_BROADWAY);
+    r.set(PPCCTRL, CTRL_IY1 | CTRL_IY2);
+    r.put_string(0x2000, "/dev/stm/eventhook");
+    r.put_string(0x2040, "/dev/stm/immediate");
+    r.block(0x1000, 1, 0, {0x2000, 0});
+    CHECK_EQ(r.call(0x1000), 0);
+    r.block(0x1000, 1, 0, {0x2040, 0});
+    CHECK_EQ(r.call(0x1000), 1);
+    // release with no hook: not found
+    r.block(0x1000, 6, 1, {0x3002, 0x3000, 0x20, 0x3100, 0x20});
+    CHECK_EQ(r.call(0x1000), ios::err::kNotFound);
+    // install the hook (stays pending), then a second one: exists
+    r.bus.write32(0x3200, 0xFFFFFFFFU);
+    r.block(0x1100, 6, 0, {0x1000, 0, 0, 0x3200, 0x20});
+    r.send(0x1100);
+    CHECK(r.service(2000) == std::optional<u32>(0U));
+    CHECK(h->hook_installed());
+    r.block(0x1000, 6, 0, {0x1000, 0, 0, 0x3300, 0x20});
+    CHECK_EQ(r.call(0x1000), ios::err::kExists);
+    // reset button: the hook answers with the event
+    CHECK(h->trigger(r.kernel, ios::kStmEventReset, 0));
+    CHECK(r.service(1000) == std::optional<u32>(0x1100U));
+    CHECK_EQ(r.mem32(0x3200), ios::kStmEventReset);
+    CHECK(!h->hook_installed());
+    CHECK(!h->trigger(r.kernel, ios::kStmEventPower, 0));
+    // install again, release from immediate: hook answers 0 first, then the release
+    r.block(0x1100, 6, 0, {0x1000, 0, 0, 0x3200, 0x20});
+    r.send(0x1100);
+    CHECK(r.service(2000) == std::optional<u32>(0U));
+    r.block(0x1000, 6, 1, {0x3002, 0x3000, 0x20, 0x3100, 0x20});
+    r.send(0x1000);
+    CHECK(r.service(2000) == std::optional<u32>(0U));
+    CHECK(r.service(1000) == std::optional<u32>(0x1100U));
+    CHECK_EQ(r.mem32(0x3200), 0U);
+    CHECK(r.service(10000) == std::optional<u32>(0x1000U));
+    CHECK_EQ(static_cast<s32>(r.mem32(0x1004)), 0);
+    // dimming / LED mode are recorded
+    r.bus.write32(0x3000, 1);
+    r.block(0x1000, 6, 1, {0x5001, 0x3000, 0x14, 0x3100, 0x14});
+    CHECK_EQ(r.call(0x1000), 0);
+    CHECK(im->dimming_request() == std::optional<u32>(1U));
+    r.bus.write32(0x3000, 2);
+    r.block(0x1000, 6, 1, {0x6002, 0x3000, 0x14, 0x3100, 0x14});
+    CHECK_EQ(r.call(0x1000), 0);
+    CHECK(im->led_mode_request() == std::optional<u32>(2U));
+    // power off: explicit stop
+    r.block(0x1000, 6, 1, {0x2003, 0, 0, 0, 0});
+    r.send(0x1000);
+    r.ticks(600);
+    CHECK(r.kernel.stopped());
+    CHECK(r.kernel.stop_reason().find("power off") != std::string::npos);
+}
+
+namespace {
+void put64(std::vector<u8>& b, std::size_t at, u64 v) { for (int i = 0; i < 8; ++i) b[at + static_cast<std::size_t>(i)] = static_cast<u8>(v >> (56 - 8 * i)); }
+std::vector<u8> make_ticket(u64 title) {
+    std::vector<u8> t(0x2A4);
+    for (std::size_t i = 0; i < t.size(); ++i) t[i] = static_cast<u8>(i * 7 + 1);
+    t[0x1BC] = 0;  // ticket version
+    put64(t, 0x1DC, title);
+    return t;
+}
+std::vector<u8> make_tmd(u64 title, u16 contents) {
+    std::vector<u8> t(0x1E4 + 0x24U * contents);
+    for (std::size_t i = 0; i < t.size(); ++i) t[i] = static_cast<u8>(i * 13 + 5);
+    put64(t, 0x18C, title);
+    t[0x1DE] = static_cast<u8>(contents >> 8);
+    t[0x1DF] = static_cast<u8>(contents);
+    return t;
+}
+std::vector<u8> read_mem(Rig& r, u32 a, std::size_t n) {
+    std::vector<u8> v(n);
+    for (std::size_t i = 0; i < n; ++i) r.bus.read8(a + static_cast<u32>(i), v[i]);
+    return v;
+}
+void write_mem(Rig& r, u32 a, const std::vector<u8>& v) {
+    for (std::size_t i = 0; i < v.size(); ++i) r.bus.write8(a + static_cast<u32>(i), v[i]);
+}
+// ioctlv on fd 0 with vectors {address, size}...; the vector table at 0x2800
+s32 ioctlv(Rig& r, u32 n, std::vector<std::pair<u32, u32>> in, std::vector<std::pair<u32, u32>> io) {
+    u32 i = 0;
+    for (auto& v : in) { r.bus.write32(0x2800 + 8 * i, v.first); r.bus.write32(0x2804 + 8 * i, v.second); ++i; }
+    for (auto& v : io) { r.bus.write32(0x2800 + 8 * i, v.first); r.bus.write32(0x2804 + 8 * i, v.second); ++i; }
+    r.block(0x1000, 7, 0, {n, static_cast<u32>(in.size()), static_cast<u32>(io.size()), 0x2800});
+    return r.call(0x1000);
+}
+} // namespace
+
+TEST_CASE(es_active_title_ids_views_and_tmd) {
+    Rig r;
+    auto es_dev = std::make_unique<ios::Es>();
+    ios::Es* es = es_dev.get();
+    r.kernel.add_device(std::move(es_dev));
+    r.set(PPC_IRQMASK, IRQ_IPC_BROADWAY);
+    r.set(PPCCTRL, CTRL_IY1 | CTRL_IY2);
+    r.put_string(0x2000, "/dev/es");
+    r.block(0x1000, 1, 0, {0x2000, 0});
+    CHECK_EQ(r.call(0x1000), 0);
+    // no active title yet
+    CHECK_EQ(ioctlv(r, 0x20, {}, {{0x4000, 8}}), ios::es_err::kInvalid);
+    const u64 title = 0x0001000052534245ULL; // 00010000/RSBE
+    std::string error;
+    CHECK(!es->set_active_title(make_ticket(title + 1), make_tmd(title, 2), error));
+    CHECK(error.find("does not match") != std::string::npos);
+    CHECK(!es->set_active_title(make_ticket(title), std::vector<u8>(0x100), error));
+    const auto ticket = make_ticket(title);
+    const auto tmd = make_tmd(title, 2);
+    CHECK(es->set_active_title(ticket, tmd, error));
+    // title ID
+    CHECK_EQ(ioctlv(r, 0x20, {}, {{0x4000, 8}}), 0);
+    CHECK_EQ(r.mem32(0x4000), 0x00010000U);
+    CHECK_EQ(r.mem32(0x4004), 0x52534245U);
+    CHECK_EQ(ioctlv(r, 0x20, {}, {{0x4000, 4}}), ios::es_err::kInvalid);
+    // title directory
+    r.bus.write32(0x4100, 0x00010000U); r.bus.write32(0x4104, 0x52534245U);
+    CHECK_EQ(ioctlv(r, 0x1D, {{0x4100, 8}}, {{0x4200, 30}}), 0);
+    const auto dir = read_mem(r, 0x4200, 30);
+    CHECK(std::string(reinterpret_cast<const char*>(dir.data())) == "/title/00010000/52534245/data");
+    // ticket views
+    CHECK_EQ(ioctlv(r, 0x12, {{0x4100, 8}}, {{0x4300, 4}}), 0);
+    CHECK_EQ(r.mem32(0x4300), 1U);
+    r.bus.write32(0x4310, 1);
+    CHECK_EQ(ioctlv(r, 0x13, {{0x4100, 8}, {0x4310, 4}}, {{0x5000, 0xD8}}), 0);
+    const auto tv = read_mem(r, 0x5000, 0xD8);
+    CHECK_EQ(tv[0], ticket[0x1BC]);
+    CHECK(tv[1] == 0 && tv[2] == 0 && tv[3] == 0);
+    CHECK(std::equal(tv.begin() + 4, tv.end(), ticket.begin() + 0x1D0));
+    // TMD view: 0x5C + 2 * 0x10 bytes
+    CHECK_EQ(ioctlv(r, 0x14, {{0x4100, 8}}, {{0x4300, 4}}), 0);
+    CHECK_EQ(r.mem32(0x4300), 0x7CU);
+    r.bus.write32(0x4310, 0x7C);
+    CHECK_EQ(ioctlv(r, 0x15, {{0x4100, 8}, {0x4310, 4}}, {{0x5100, 0x7C}}), 0);
+    const auto view = read_mem(r, 0x5100, 0x7C);
+    CHECK(std::equal(view.begin(), view.begin() + 0x58, tmd.begin() + 0x180));
+    CHECK(std::equal(view.begin() + 0x58, view.begin() + 0x5C, tmd.begin() + 0x1DC));
+    CHECK(std::equal(view.begin() + 0x5C, view.begin() + 0x6C, tmd.begin() + 0x1E4));
+    CHECK(std::equal(view.begin() + 0x6C, view.begin() + 0x7C, tmd.begin() + 0x1E4 + 0x24));
+    r.bus.write32(0x4310, 0x7B);
+    CHECK_EQ(ioctlv(r, 0x15, {{0x4100, 8}, {0x4310, 4}}, {{0x5100, 0x7C}}), ios::es_err::kInvalid);
+    // DI views: active title, and a TMD passed in
+    CHECK_EQ(ioctlv(r, 0x19, {{0, 0}}, {{0x4300, 4}}), 0);
+    CHECK_EQ(r.mem32(0x4300), 0x7CU);
+    const auto tmd3 = make_tmd(title, 3);
+    write_mem(r, 0x6000, tmd3);
+    CHECK_EQ(ioctlv(r, 0x19, {{0x6000, static_cast<u32>(tmd3.size())}}, {{0x4300, 4}}), 0);
+    CHECK_EQ(r.mem32(0x4300), 0x8CU);
+    r.bus.write32(0x4310, 0x8C);
+    CHECK_EQ(ioctlv(r, 0x1A, {{0x6000, static_cast<u32>(tmd3.size())}, {0x4310, 4}}, {{0x5200, 0x8C}}), 0);
+    CHECK(read_mem(r, 0x5200, 0x8C) == ios::tmd_view(tmd3));
+    CHECK_EQ(ioctlv(r, 0x1B, {{0, 0}}, {{0x5300, 0xD8}}), 0);
+    CHECK(read_mem(r, 0x5300, 0xD8) == tv);
+    CHECK_EQ(ioctlv(r, 0x1B, {{0x6000, 0x100}}, {{0x5300, 0xD8}}), ios::es_err::kInvalid);
+    CHECK_EQ(ioctlv(r, 0x39, {}, {{0x4300, 4}}), 0);
+    CHECK_EQ(r.mem32(0x4300), static_cast<u32>(tmd.size()));
+    r.bus.write32(0x4310, static_cast<u32>(tmd.size()));
+    CHECK_EQ(ioctlv(r, 0x3A, {{0x4310, 4}}, {{0x7000, static_cast<u32>(tmd.size())}}), 0);
+    CHECK(read_mem(r, 0x7000, tmd.size()) == tmd);
+    // consumption
+    r.bus.write32(0x4320, 0xFFFFFFFFU);
+    CHECK_EQ(ioctlv(r, 0x16, {{0x4100, 8}}, {{0x4400, 0x40}, {0x4320, 4}}), 0);
+    CHECK_EQ(r.mem32(0x4320), 0U);
+    // vector count mismatch
+    CHECK_EQ(ioctlv(r, 0x12, {}, {{0x4300, 4}}), ios::es_err::kInvalid);
+    // another title: explicit stop
+    r.bus.write32(0x4104, 0x41414141U);
+    r.bus.write32(0x2800, 0x4100); r.bus.write32(0x2804, 8);
+    r.bus.write32(0x2808, 0x4300); r.bus.write32(0x280C, 4);
+    r.block(0x1000, 7, 0, {0x12, 1, 1, 0x2800});
+    r.send(0x1000);
+    r.ticks(600);
+    CHECK(r.kernel.stopped());
+    CHECK(r.kernel.stop_reason().find("not the active title") != std::string::npos);
+}
+
+TEST_CASE(es_unimplemented_requests_stop) {
+    Rig r;
+    r.kernel.add_device(std::make_unique<ios::Es>());
+    r.set(PPC_IRQMASK, IRQ_IPC_BROADWAY);
+    r.set(PPCCTRL, CTRL_IY1 | CTRL_IY2);
+    r.put_string(0x2000, "/dev/es");
+    r.block(0x1000, 1, 0, {0x2000, 0});
+    CHECK_EQ(r.call(0x1000), 0);
+    r.block(0x1000, 7, 0, {0x08, 0, 0, 0x2800}); // launch
+    r.send(0x1000);
+    r.ticks(600);
+    CHECK(r.kernel.stopped());
+    CHECK(r.kernel.stop_reason() == "IOS /dev/es: ioctlv 0x00000008 is not emulated");
 }
 
 int main() { return orca::test::run_all("ios"); }

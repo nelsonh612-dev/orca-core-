@@ -82,6 +82,7 @@ std::unique_ptr<WiiPartition> WiiPartition::open(DiscReader& disc, u64 po, const
     std::vector<u8> head(0x2C0);
     if (!read_at(disc, po, head)) { error = "partition header outside the disc"; return nullptr; }
     p->ticket_ = parse_ticket(head);
+    p->ticket_bytes_.assign(head.begin(), head.begin() + 0x2A4);
     const auto key = decrypt_title_key(p->ticket_, keys, error);
     if (!key) return nullptr;
     p->title_key_ = *key;

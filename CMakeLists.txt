@@ -54,6 +54,8 @@ add_library(orca_core
     src/hw/memory_interface.cpp
     src/hw/hollywood_ipc.cpp
     src/ios/kernel.cpp
+    src/ios/stm.cpp
+    src/ios/es.cpp
     src/hw/exi_ipl.cpp
     src/hw/exi_memcard.cpp
     src/gpu/command_stream.cpp

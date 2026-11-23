@@ -70,6 +70,7 @@ public:
     bool read(u64 offset, std::span<u8> out) override;
 
     const WiiTicket& ticket() const noexcept { return ticket_; }
+    const std::vector<u8>& ticket_bytes() const noexcept { return ticket_bytes_; } // 0x2A4 bytes
     const AesKey& title_key() const noexcept { return title_key_; }
     const std::vector<u8>& tmd() const noexcept { return tmd_; }
     const std::vector<u8>& cert_chain() const noexcept { return certs_; }
@@ -84,7 +85,7 @@ private:
     DiscReader& disc_;
     WiiTicket ticket_{};
     AesKey title_key_{};
-    std::vector<u8> tmd_, certs_, h3_;
+    std::vector<u8> ticket_bytes_, tmd_, certs_, h3_;
     u64 partition_offset_{0}, data_offset_{0}, clusters_{0};
     // one-cluster cache
     u64 cached_{~u64{0}};

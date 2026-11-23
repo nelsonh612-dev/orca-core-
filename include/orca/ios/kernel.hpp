@@ -62,6 +62,8 @@ inline constexpr s32 kNoMemory = -22;
 
 inline constexpr u32 kMaxFds = 0x18;  // descriptors available to Broadway
 inline constexpr u32 kMaxPath = 64;   // including the terminating zero
+// Reply delay used where no measurement is known (Dolphin's generic value).
+inline constexpr u64 kDefaultReplyTicks = 4000;
 
 struct IoVector {
     u32 address;

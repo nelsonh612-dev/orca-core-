@@ -1,0 +1,60 @@
+// Orca Core — IOS /dev/es (title management), the part a disc game uses.
+//
+// The active title is the one whose ticket and TMD were handed to ES when its
+// partition was opened (DI open-partition, or the HLE disc boot). Supported
+// ioctlv requests (public Wii documentation, e.g. WiiBrew "/dev/es"):
+//   0x12 ticket view count   0x13 ticket views     0x14 TMD view size
+//   0x15 TMD view            0x16 consumption      0x19 DI TMD view size
+//   0x1A DI TMD view         0x1B DI ticket view   0x1D title data directory
+//   0x20 title ID
+// Views:
+//   ticket view (0xD8 bytes) = ticket version byte, three zero bytes, then the
+//     ticket's 0xD4 bytes from the ticket ID (0x1D0);
+//   TMD view = TMD bytes 0x180-0x1D7 (version .. reserved), title version,
+//     content count, then for each content its first 0x10 bytes (no hash).
+// Titles other than the active one (the NAND title and ticket stores), and
+// every other request (launch, device ID, installs, signing, ...), stop
+// explicitly. Consumption answers zero entries (no time/usage limits), as
+// other independent ES implementations do.
+#pragma once
+#include "orca/ios/kernel.hpp"
+
+#include <optional>
+#include <vector>
+
+namespace orca::ios {
+
+namespace es_err {
+inline constexpr s32 kInvalid = -1017;  // ES: invalid argument
+inline constexpr s32 kFsNotFound = -106;
+} // namespace es_err
+
+struct TitleContext {
+    std::vector<u8> ticket; // signed ticket, 0x2A4 bytes
+    std::vector<u8> tmd;    // signed TMD
+
+    u64 title_id() const;
+    std::vector<u8> ticket_view() const;
+};
+
+// Checks the sizes of a TMD; returns the content count or nullopt.
+std::optional<u32> tmd_content_count(std::span<const u8> tmd);
+std::vector<u8> tmd_view(std::span<const u8> tmd); // empty if the TMD is malformed
+
+class Es final : public Device {
+public:
+    Es() : Device("/dev/es") {}
+    // Validates and installs the active title; false (with `error`) if malformed.
+    bool set_active_title(std::vector<u8> ticket, std::vector<u8> tmd, std::string& error);
+    const std::optional<TitleContext>& active_title() const noexcept { return title_; }
+
+    Result open(Kernel& k, const Request& r, u32 mode) override;
+    Result close(Kernel& k, const Request& r) override;
+    Result ioctlv(Kernel& k, const Request& r, u32 number, std::span<const IoVector> in,
+                  std::span<const IoVector> io) override;
+
+private:
+    std::optional<TitleContext> title_;
+};
+
+} // namespace orca::ios
