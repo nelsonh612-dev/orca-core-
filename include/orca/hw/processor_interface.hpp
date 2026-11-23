@@ -71,6 +71,7 @@ public:
     bool mmio_read(u32 offset, unsigned size, u64& value) override;
     bool mmio_write(u32 offset, unsigned size, u64 value) override;
     const char* mmio_name() const noexcept override { return "PI"; }
+    std::string mmio_error() const override { return "register not implemented, or not a 32-bit access"; }
 
 private:
     void update_line();

@@ -1,8 +1,8 @@
-# Orca Core — Milestone 005
+# Orca Core — Milestone 006
 
 Orca Core es un emulador independiente de GameCube/Wii escrito en C++20, con Android ARM64 como plataforma objetivo. **No contiene código de Dolphin** y no deriva de él.
 
-> **Estado:** la CPU Gekko/Broadway está completa como intérprete de referencia: enteros, sistema, MMU, FPU, paired-singles, cuantización GQR y caché bloqueada. Además, el sistema ya arranca y ejecuta programas DOL/ELF reales con un planificador de tiempo, interrupciones del Processor Interface y el gather pipe. **Todavía no es un emulador jugable.** Faltan VI (video), DSP/audio, discos, controles, EXI, el JIT, la GPU y los componentes de Wii.
+> **Estado:** la CPU Gekko/Broadway está completa como intérprete de referencia: enteros, sistema, MMU, FPU, paired-singles, cuantización GQR y caché bloqueada. Además, el sistema arranca programas DOL/ELF y **discos GameCube (GCM/ISO) a través de su apploader**, con planificador de tiempo, interrupciones, gather pipe y Disc Interface. **Todavía no es un emulador jugable.** Faltan VI (video), SI (controles), EXI (tarjeta de memoria), AI/DSP (audio), el JIT, la GPU y los componentes de Wii.
 
 ## Qué incluye este milestone
 
@@ -24,7 +24,10 @@ Orca Core es un emulador independiente de GameCube/Wii escrito en C++20, con And
 | **Processor Interface (M005)** | INTSR/INTMR y línea de interrupción externa; registros del FIFO de CPU; gather pipe (0x0C008000) con ráfagas de 32 bytes y vuelta al inicio. Los registros no implementados dan una parada clara |
 | **Cargadores (M005)** | DOL y ELF32 big-endian con validación de límites; `orca_elf2dol`; arranque HLE mínimo (BAT estándar, MSR, globales documentados) |
 | **Programas reales (M005)** | 3 programas C compilados con clang para el 750 se ejecutan en Orca como ELF y como DOL; enteros y FP dan resultados **idénticos bit a bit** al mismo programa compilado para el anfitrión |
-| Pruebas | 10 suites; 268.917 casos diferenciales (enteros y FP contra referencias independientes, la de FP con aritmética racional exacta); 189 codificaciones verificadas con `llvm-mc`; 43 mutaciones detectadas; 3 programas C reales compilados con clang |
+| **Discos (M006)** | Lectura de imágenes GCM/ISO crudas (desde archivo o memoria); cabecera de disco y de apploader validadas; los discos Wii se rechazan con un mensaje explícito |
+| **Disc Interface (M006)** | Registros DISR, DICVR, CMDBUF0-2, DIMAR, DILENGTH, DICR, DIIMMBUF; lectura 0xA8 por DMA asíncrona con TCINT/DEINT e interrupción vía PI; cualquier otro comando da una parada clara con el motivo |
+| **Arranque desde disco (M006)** | HLE del IPL: globales documentados en memoria baja, bi2, carga del apploader en 0x81200000 y ejecución de su protocolo entry/init/main/close con llamadas a funciones invitadas |
+| Pruebas | 11 suites; 268.917 casos diferenciales (enteros y FP contra referencias independientes, la de FP con aritmética racional exacta); 189 codificaciones verificadas con `llvm-mc`; 54 mutaciones detectadas; 4 programas C y un apploader compilados con clang, arrancados también desde discos sintéticos |
 
 ## Compilar y probar
 
@@ -47,6 +50,7 @@ Ejecutar un DOL o ELF sin interfaz gráfica (imprime por qué se detuvo y los re
 
 ```sh
 ./build/orca_run programa.dol [ciclos] [gc|wii]
+./build/orca_run juego.iso [ciclos]        # arranca un disco GameCube vía su apploader
 ./build/orca_elf2dol programa.elf programa.dol
 ```
 
@@ -80,7 +84,10 @@ include/orca/ppc/mmu.hpp            traducción BAT + tabla de páginas
 include/orca/core/scheduler.hpp     planificador de eventos
 include/orca/hw/processor_interface.hpp  PI + gather pipe
 include/orca/loader/executable.hpp  DOL/ELF
-include/orca/system/system.hpp      consola: bus + CPU + planificador + dispositivos
+include/orca/system/system.hpp      consola: bus + CPU + planificador + dispositivos + arranque desde disco
+include/orca/disc/disc_image.hpp    imágenes de disco GCM/ISO
+include/orca/hw/disc_interface.hpp  Disc Interface (DI)
+include/orca/hw/mmio_splitter.hpp   reparte la página 0x0C006000 (DI/SI/EXI/AI)
 include/orca/ppc/fpu.hpp            motor de punto flotante (puro, sin estado)
 include/orca/ppc/cpu.hpp            intérprete de referencia
 src/ppc/cpu_fpu.cpp                 FP, paired-singles, psq, caché bloqueada

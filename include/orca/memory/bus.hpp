@@ -37,6 +37,8 @@ public:
     virtual bool mmio_read(u32 offset, unsigned size, u64& value) = 0;
     virtual bool mmio_write(u32 offset, unsigned size, u64 value) = 0;
     virtual const char* mmio_name() const noexcept = 0;
+    // Optional explanation of the last rejected access (shown in CPU stop reasons).
+    virtual std::string mmio_error() const { return {}; }
 };
 
 struct WriteEvent {
@@ -117,6 +119,8 @@ public:
         bool is_ram;
     };
     std::vector<RegionInfo> regions() const;
+    // MMIO device mapped at `address`, or nullptr (RAM or unmapped).
+    MmioDevice* mmio_device_at(u32 address) noexcept;
 
 private:
     struct Region {

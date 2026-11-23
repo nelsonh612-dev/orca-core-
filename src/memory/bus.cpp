@@ -221,6 +221,11 @@ bool Bus::is_code_page(u32 address) const noexcept {
     return ((code_pages_[p >> 6U] >> (p & 63U)) & 1U) != 0U;
 }
 
+MmioDevice* Bus::mmio_device_at(u32 address) noexcept {
+    Region* r = region_for(address);
+    return r == nullptr ? nullptr : r->device;
+}
+
 std::vector<Bus::RegionInfo> Bus::regions() const {
     std::vector<RegionInfo> out;
     for (std::size_t i = 1; i < regions_.size(); ++i)

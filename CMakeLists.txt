@@ -21,6 +21,9 @@ endif()
 
 add_library(orca_core
     src/core/scheduler.cpp
+    src/disc/disc_image.cpp
+    src/hw/disc_interface.cpp
+    src/hw/mmio_splitter.cpp
     src/hw/processor_interface.cpp
     src/loader/executable.cpp
     src/system/system.cpp
@@ -56,13 +59,18 @@ if(ORCA_BUILD_TESTS)
     target_link_libraries(orca_test_programs PRIVATE orca_core orca_host_programs)
     target_include_directories(orca_test_programs PRIVATE tests)
     add_test(NAME programs COMMAND orca_test_programs)
+    add_executable(orca_test_disc tests/test_disc.cpp)
+    target_link_libraries(orca_test_disc PRIVATE orca_core orca_host_programs)
+    target_include_directories(orca_test_disc PRIVATE tests)
+    add_test(NAME disc COMMAND orca_test_disc WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
     set_tests_properties(programs PROPERTIES SKIP_RETURN_CODE 77)
 
     # PowerPC 750 build with clang + ld.lld, if available.
     find_program(ORCA_PPC_CLANG NAMES clang clang-18 clang-17)
     find_program(ORCA_PPC_LLD NAMES ld.lld ld.lld-18 ld.lld-17)
+    find_program(ORCA_OBJCOPY NAMES llvm-objcopy llvm-objcopy-18 llvm-objcopy-17)
     set(ORCA_PPC_OK FALSE)
-    if(ORCA_PPC_CLANG AND ORCA_PPC_LLD)
+    if(ORCA_PPC_CLANG AND ORCA_PPC_LLD AND ORCA_OBJCOPY)
         execute_process(COMMAND ${ORCA_PPC_CLANG} --target=powerpc-unknown-eabi -mcpu=750 -ffreestanding -c -x c /dev/null
                                 -o ${CMAKE_BINARY_DIR}/ppc_probe.o RESULT_VARIABLE ppc_rc OUTPUT_QUIET ERROR_QUIET)
         if(ppc_rc EQUAL 0)
@@ -80,7 +88,7 @@ if(ORCA_BUILD_TESTS)
         add_custom_command(OUTPUT ${ODIR}/runtime.o COMMAND ${ORCA_PPC_CLANG} ${PPC_FLAGS} -c ${PDIR}/runtime.c -o ${ODIR}/runtime.o
                            DEPENDS ${PDIR}/runtime.c)
         set(PPC_OUTPUTS)
-        foreach(prog integer_suite float_suite hardware_suite)
+        foreach(prog integer_suite float_suite hardware_suite dvd_suite)
             add_custom_command(
                 OUTPUT ${ODIR}/${prog}.elf ${ODIR}/${prog}.dol
                 COMMAND ${ORCA_PPC_CLANG} ${PPC_FLAGS} -c ${PDIR}/${prog}.c -o ${ODIR}/${prog}.o
@@ -90,15 +98,26 @@ if(ORCA_BUILD_TESTS)
                 COMMENT "Building PowerPC test program ${prog}")
             list(APPEND PPC_OUTPUTS ${ODIR}/${prog}.elf ${ODIR}/${prog}.dol)
         endforeach()
+        # Apploader: flat binary loaded at 0x81200000 by the HLE IPL.
+        add_custom_command(
+            OUTPUT ${ODIR}/apploader.bin
+            COMMAND ${ORCA_PPC_CLANG} ${PPC_FLAGS} -c ${PDIR}/apploader.c -o ${ODIR}/apploader.o
+            COMMAND ${ORCA_PPC_LLD} -T ${PDIR}/apploader.ld ${ODIR}/apploader.o -o ${ODIR}/apploader.elf
+            COMMAND ${ORCA_OBJCOPY} -O binary ${ODIR}/apploader.elf ${ODIR}/apploader.bin
+            DEPENDS ${PDIR}/apploader.c ${PDIR}/apploader.ld
+            COMMENT "Building PowerPC test apploader")
+        list(APPEND PPC_OUTPUTS ${ODIR}/apploader.bin)
         add_custom_target(orca_ppc_programs ALL DEPENDS ${PPC_OUTPUTS})
         add_dependencies(orca_test_programs orca_ppc_programs)
         target_compile_definitions(orca_test_programs PRIVATE ORCA_PROGRAMS_DIR="${ODIR}")
+        add_dependencies(orca_test_disc orca_ppc_programs)
+        target_compile_definitions(orca_test_disc PRIVATE ORCA_PROGRAMS_DIR="${ODIR}")
     else()
         message(STATUS "PowerPC cross toolchain not found: whole-program tests will be skipped")
     endif()
 
     # A hang (e.g. an emulated deadlock) must fail, not block the test run.
-    set_tests_properties(memory cpu_integer cpu_system mmu reference fpu_engine cpu_fpu system programs PROPERTIES TIMEOUT 300)
+    set_tests_properties(memory cpu_integer cpu_system mmu reference fpu_engine cpu_fpu system programs disc PROPERTIES TIMEOUT 300)
 
     find_program(ORCA_LLVM_MC NAMES llvm-mc llvm-mc-18 llvm-mc-17 llvm-mc-16)
     add_executable(orca_encoding_check tests/encoding_check.cpp)

@@ -9,12 +9,17 @@
 // This keeps time monotonic and deterministic; it is not cycle accurate.
 #pragma once
 #include "orca/core/scheduler.hpp"
+#include "orca/disc/disc_image.hpp"
+#include "orca/hw/disc_interface.hpp"
+#include "orca/hw/mmio_splitter.hpp"
 #include "orca/hw/processor_interface.hpp"
 #include "orca/loader/executable.hpp"
 #include "orca/memory/bus.hpp"
 #include "orca/ppc/cpu.hpp"
 
+#include <initializer_list>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 
@@ -41,6 +46,7 @@ struct RunResult {
     ppc::StepResult stop{ppc::StepResult::Executed};
     u64 cycles{0};
     u64 instructions{0};
+    bool reached_stop_pc{false}; // run_until / call_guest only
 };
 
 class System {
@@ -55,6 +61,8 @@ public:
     core::Scheduler& scheduler() noexcept { return scheduler_; }
     hw::ProcessorInterface& pi() noexcept { return *pi_; }
     hw::GatherPipe& gather_pipe() noexcept { return *gather_pipe_; }
+    hw::DiscInterface& di() noexcept { return *di_; }
+    void insert_disc(std::unique_ptr<disc::DiscReader> d) { di_->insert(std::move(d)); }
     const SystemConfig& config() const noexcept { return config_; }
     const Clocks& clocks() const noexcept { return clocks_; }
 
@@ -74,6 +82,32 @@ public:
     // (UnsupportedInstruction, InvalidForm, MemoryFault, Halted, ...) or when the
     // CPU is idle (MSR[POW]) and no event can ever wake it.
     RunResult run(u64 max_cycles);
+    // Like run(), but also stops (reached_stop_pc = true) when PC == stop_pc
+    // before executing the instruction there.
+    RunResult run_until(u32 stop_pc, u64 max_cycles);
+
+    // Calls a guest function: r3.. = args, LR = a return address that is never
+    // executed, runs until the function returns. Returns r3, or nullopt (with
+    // `error`) if it stopped for any other reason or ran out of cycles.
+    std::optional<u32> call_guest(u32 function, std::initializer_list<u32> args, u64 max_cycles, std::string& error);
+
+    // Boots the inserted GameCube disc the way the IPL does, at a high level:
+    //   * low-memory globals: disc header copy (0x80000000, 0x20 bytes),
+    //     0x80000020 = 0x0D15EA5E, 0x80000028 = MEM1 size,
+    //     0x800000F8 = bus clock, 0x800000FC = CPU clock,
+    //     0x800000F4 = pointer to a copy of bi2.bin (disc 0x440, 0x2000 bytes);
+    //   * the apploader (disc 0x2460) is loaded at 0x81200000 and driven through
+    //     its entry/init/main/close protocol; every read it requests is
+    //     performed from the disc; close() returns the game entry point;
+    //   * the CPU is left at the entry point with the HLE boot BATs/MSR.
+    // Other IPL work (fonts, SRAM, video setup, OS globals beyond the list
+    // above) is not done. See docs/ESTADO.md.
+    bool boot_disc(std::string& error);
+
+    static constexpr u32 kGuestReturn = 0x81300000U;   // never executed
+    static constexpr u32 kReportStub = 0x81300004U;    // blr (apploader OSReport)
+    static constexpr u32 kApploaderStack = 0x816FFFF0U;
+    static constexpr u32 kBi2Address = 0x817FE000U;
 
 private:
     void advance(u64 cycles);
@@ -85,6 +119,9 @@ private:
     std::unique_ptr<ppc::Cpu> cpu_;
     std::unique_ptr<hw::ProcessorInterface> pi_;
     std::unique_ptr<hw::GatherPipe> gather_pipe_;
+    std::unique_ptr<hw::MmioSplitter> page_0c006_;
+    std::unique_ptr<hw::DiscInterface> di_;
+    std::optional<u32> stop_pc_;
     u64 timebase_remainder_{0};
 };
 

@@ -1,4 +1,4 @@
-# Registro de pruebas — Milestone 005
+# Registro de pruebas — Milestone 006
 
 Todos los resultados son de ejecuciones reales del 2026-11-14 en este entorno, sobre una copia limpia de los fuentes entregados.
 
@@ -8,9 +8,9 @@ Todos los resultados son de ejecuciones reales del 2026-11-14 en este entorno, s
 
 | Configuración | Compilación | Advertencias (`-Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion -Wshadow -Werror`) | CTest |
 |---|---|---|---|
-| GCC Release | OK | 0 | 10/10 pasan (1,6 s) |
-| Clang Release | OK | 0 | 10/10 pasan (1,6 s) |
-| GCC Debug + ASan + UBSan (`-fno-sanitize-recover=all`) | OK | 0 | 10/10 pasan (33,3 s) |
+| GCC Release | OK | 0 | 11/11 pasan (1,7 s) |
+| Clang Release | OK | 0 | 11/11 pasan (1,4 s) |
+| GCC Debug + ASan + UBSan (`-fno-sanitize-recover=all`) | OK | 0 | 11/11 pasan (34,5 s) |
 | Clang + ASan/UBSan | **NO EJECUTADO**: falta `compiler-rt` en el entorno | — | — |
 | Android NDK arm64-v8a | **NO EJECUTADO**: no hay NDK ni sysroot AArch64 | — | — |
 
@@ -27,7 +27,18 @@ Todos los resultados son de ejecuciones reales del 2026-11-14 en este entorno, s
 | **cpu_fpu** (M004) | 28 | 30.751 | 0 |
 | **system** (M005) | 13 | 108 | 0 |
 | **programs** (M005) | 3 | 34 | 0 |
+| **disc** (M006) | 12 | 145 | 0 |
 | encodings (vs `llvm-mc`) | 189 instrucciones | 181 ensambladas + 8 desensambladas | 0 diferencias |
+
+### Arranque desde disco con un apploader real (M006)
+
+Las pruebas construyen discos GameCube sintéticos de 2 MiB, con cabecera, magic, apploader en 0x2440, DOL principal en 0x20000 y un patrón de datos en 0x100000. El apploader (`tests/programs/apploader.c`) está escrito a partir del protocolo documentado del IPL, se compila con clang y se convierte en un binario plano con llvm-objcopy. `System::boot_disc` lo ejecuta tal como lo haría el IPL: entry, init(report), main en bucle con cada lectura pedida, y close.
+
+| Prueba | Resultado |
+|---|---|
+| `integer_suite.dol` arrancado desde el disco vía apploader | 20 valores **idénticos** al anfitrión; punto de entrada 0x80003100 devuelto por close() |
+| `dvd_suite.dol` arrancado desde el disco: lee el disco por los registros de la DI, con sondeo y con interrupción (manejador en 0x500 que reconoce TCINT), y fuera de rango | 12 valores iguales a lo esperado: ID del juego copiado por el IPL, reloj de CPU, datos del DMA, DIMAR/DILENGTH, una interrupción DI atendida, DEINT al leer fuera del disco |
+| Fallos del arranque (sin disco; apploader que no vuelve) | Mensaje de error explícito, sin bloquearse |
 
 ### Programas reales compilados con clang (M005)
 
@@ -80,7 +91,14 @@ P13 (palabra alta de `fctiw`) sobrevivió como se esperaba, porque son bits inde
 
 **Sistema (M005), 9 mutaciones reales, 9 detectadas:** S1 eventos simultáneos en orden inverso · S2 se pierde el resto del time base · S3 mapas de RAM GC/Wii intercambiados · S4 el PI ignora la máscara · S5 vuelta del FIFO con error de uno · S6 bit de ejecución del ELF · S7 inicio del BSS del DOL desplazado · S8 DBAT1 del arranque HLE en una dirección incorrecta (la primera versión de esta mutación era equivalente y no rompía nada; se reemplazó) · S9 bloqueo en `Idle` no informado: la prueba se cuelga, así que se añadió un TIMEOUT de 300 s a cada prueba de CTest para que un cuelgue cuente como falla.
 
-**Total: 43 mutaciones detectadas.**
+**Disco y DI (M006), 11 de 11 detectadas:** D1 DIMAR no avanza · **D2 escribir DISR borra todas las interrupciones: no se detectaba al principio** → se añadió `di_writing_masks_keeps_pending_interrupts` · D3 TCINT ignora la máscara · D4 offset del disco sin multiplicar por 4 · D5 una lectura fuera de rango informa éxito · D6 finalización síncrona · D7 bucle del apploader cortado · D8 la cabecera del disco no se copia a memoria baja · D9 el divisor pasa offsets absolutos · D10 los discos Wii no se rechazan · D11 falta el global del reloj de CPU.
+
+**Total: 54 mutaciones detectadas.**
+
+## Errores encontrados durante M006
+
+- **Ninguno en el emulador.** `dvd_suite` se detuvo al principio en el vector 0x900. La traza mostró que, al activar EE, se tomaba la excepción del decrementador que estaba pendiente desde el arranque, el mismo comportamiento del PEM documentado en M005. El programa no había instalado ese vector; ahora instala todos los vectores antes de activar EE, como hace un sistema operativo real.
+- Mejora de diagnóstico: antes, una escritura rechazada por un dispositivo se informaba como "unmapped". Ahora la parada nombra el dispositivo y su motivo.
 
 ## Errores encontrados durante M005
 

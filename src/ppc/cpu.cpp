@@ -138,9 +138,19 @@ StepResult Cpu::step() {
         deliver(o.exc, o.srr0_next ? cur_pc_ + 4U : cur_pc_, o.srr1_bits);
         if (o.srr0_next) ++retired_; // sc completes before the exception
         return StepResult::ExceptionTaken;
-    case Outcome::Kind::Host:
+    case Outcome::Kind::Host: {
         state_.pc = cur_pc_;
-        return host_stop(o.host, o.reason, ins, o.address);
+        const StepResult r = host_stop(o.host, o.reason, ins, o.address);
+        if (o.host == StepResult::MemoryFault) {
+            if (mem::MmioDevice* dev = bus_.mmio_device_at(o.address)) {
+                last_stop_.reason += std::string(" [MMIO device ") + dev->mmio_name() + " rejected the access";
+                const std::string why = dev->mmio_error();
+                if (!why.empty()) last_stop_.reason += ": " + why;
+                last_stop_.reason += "]";
+            }
+        }
+        return r;
+    }
     }
     return StepResult::UnsupportedInstruction;
 }
