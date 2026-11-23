@@ -38,7 +38,14 @@ Todos los resultados son de ejecuciones reales del 2026-11-22 en este entorno, s
 | **gles** (M016 + M018, Mesa llvmpipe 25.2.8, GLES 3.2) | 14 | 2.820 | 0 |
 | encodings (vs `llvm-mc`) | 189 instrucciones | 181 ensambladas + 8 desensambladas | 0 diferencias |
 
-### GPU: bounding box y contadores del PE (M018)
+### CI en ARM64 real y Android NDK (M018)
+
+- Flujo `.github/workflows/orca-core-0.1.yml` (sin APK): pruebas en ARM64 nativo (`ubuntu-24.04-arm`) con GCC, Clang y ASan+UBSan, y compilación del núcleo con el NDK de Android para arm64-v8a, API 26.
+- **Infraestructura:** mientras el repositorio era privado, GitHub no arrancó ningún trabajo ("recent account payments have failed or your spending limit needs to be increased"); no es un fallo del código. Desde que es público, los trabajos corren.
+- **Primera ejecución real (7bbaf93):** compilación con el NDK correcta; en ARM64 dos errores que en x86 no se veían:
+  1. **Contracción FMA:** los compiladores de AArch64 fusionan `a*b+c` por defecto (GCC `-ffp-contract=fast`, Clang `on`), lo que cambió la profundidad (0x3FFFFF en vez de 0x400000) en `gpu_sw` y en la referencia de `gles`. Se reprodujo en x86 con `-mfma -ffp-contract=fast` y se corrigió con `-ffp-contract=off` en todo el proyecto (las operaciones fusionadas del hardware emulado ya usan `std::fma` de forma explícita). Con ese build forzado, 19/19.
+  2. **Referencia nativa de `float_suite` con Clang en ARM64:** el valor 45 (hash de comparaciones) difería solo en el bit de signo. Clang 18 desenrolló el bucle sobre la tabla constante y convirtió `a > b ? a : b` en `fmaxnm`, que da +0.0 para (0.0, −0.0) cuando C exige −0.0. Orca daba el valor correcto (igual que x86 y GCC en ARM64). Se comprobó en el ensamblador de AArch64 generado aquí con las mismas opciones (8 `fmaxnm` en el bucle) y se puso esa selección en una función `noinline` (ahora `fcmp` + `fcsel gt`). Primero lo descarté por un error mío: miré el ensamblador con `-ffreestanding`, que no expande `memcpy` y no desenrolla el bucle.
+
 
 - **Software (valores a mano):** caja inicial 1023/0 por BP 0x55/0x56; el triángulo x + y <= 6 da 0..7 x 0..7; un píxel en (13, 20) la amplía a 13 y 21; BP 0x55 solo cambia izquierda/derecha. Contadores: con Z apagada, 0 en Z y 10 quads en la mezcla (bloques con bx + by <= 6); Z tardía ALWAYS: 10/10/10; Z temprana NEVER: 10 entran, 0 pasan, 0 en mezcla y la caja no crece; Z temprana LESS con profundidad mayor: 10/10/10.
 - **Registros PE:** lectura de caja y contadores (mitades baja/alta, también 32 bits), escritura rechazada, ciclos de copia detenidos, y parada cuando el backend no los sigue.

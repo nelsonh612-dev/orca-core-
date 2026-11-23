@@ -3,6 +3,12 @@ project(orca_core VERSION 0.18.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# Deterministic floating point on every host. AArch64 compilers fuse a*b+c into one
+# FMA by default (GCC -ffp-contract=fast, Clang "on"), which rounds differently and
+# changed depth values on ARM64 (found by the ARM64 CI). Fused operations are written
+# explicitly (std::fma) where the emulated hardware fuses.
+add_compile_options(-ffp-contract=off)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(ORCA_SANITIZE "Build with AddressSanitizer + UndefinedBehaviorSanitizer" OFF)

@@ -16,6 +16,11 @@ static double newton_sqrt(double x) {
 }
 
 static float lerp(float a, float b, float t) { return a + (b - a) * t; }
+/* Not inlined on purpose: Clang 18 for AArch64 unrolled the comparison loop below over
+   the constant table and turned "a > b ? a : b" into fmaxnm, which gives +0.0 for
+   (0.0, -0.0) where C gives -0.0. The native reference then differed from Orca (and from
+   x86 and GCC on ARM64) in one sign bit; found by the ARM64 CI. */
+__attribute__((noinline)) static double select_greater(double a, double b) { return a > b ? a : b; }
 
 int PROGRAM(void) {
     /* 1. series in double: harmonic, alternating, Leibniz pi */
@@ -75,7 +80,7 @@ int PROGRAM(void) {
     for (unsigned i = 0; i < 8; ++i)
         for (unsigned j = 0; j < 8; ++j) {
             cmp = cmp * 5u + (vals[i] < vals[j]) + 2u * (vals[i] == vals[j]);
-            const double m = vals[i] > vals[j] ? vals[i] : vals[j];
+            const double m = select_greater(vals[i], vals[j]);
             const double ab = __builtin_fabs(vals[i] - vals[j]);
             uint64_t mb, abb; memcpy(&mb, &m, 8); memcpy(&abb, &ab, 8);
             cmp ^= (uint32_t)(mb >> 32) + (uint32_t)abb;
