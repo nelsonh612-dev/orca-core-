@@ -468,7 +468,8 @@ FastSlot fast_slot(F::Op op, u64 A, u64 B, u64 C, bool single) {
 // results, single-precision midpoints, extremes, specials.
 u64 fp_operand(Rng& g, u64 ref) {
     const u64 m = static_cast<u64>(g.next()) << 32 | g.next();
-    switch (g.u(9)) {
+    switch (g.u(10)) {
+    case 9: return (m & 0x800FFFFFFFFFFFFFULL) | (static_cast<u64>(g.u(300)) << 52); // tiny and subnormal
     case 0: return (m & 0x800FFFFFFFFFFFFFULL) | (static_cast<u64>(1023U - 40U + g.u(80)) << 52);
     case 1: return (m & 0x800FFFFFE0000000ULL) | (static_cast<u64>(1023U - 20U + g.u(40)) << 52); // single values
     case 2: return (m & 0x800FF00000000000ULL) | (static_cast<u64>(1023U - 8U + g.u(16)) << 52);  // few bits
@@ -676,4 +677,152 @@ TEST_CASE(jit_links_follow_the_translation_context) {
     CHECK(a.s().gpr[3] > 1000U); // both programs really ran
     std::printf("[jit] linking across 60 context switches: %llu links, identical to the interpreter\n",
                 static_cast<unsigned long long>(j.stats().links));
+}
+
+// ---------------------------------------------------------------------------
+// Directed cases (added after the ARM64 mutation run showed what the random
+// programs did not reach).
+// ---------------------------------------------------------------------------
+namespace {
+// Runs `n` steps from `pc` with the interpreter and with the JIT on two machines
+// set up by `init`; true when state, retired count, RAM (first 1 MiB) and write
+// stamps are identical. `between` runs on both machines after each run of `slice` steps.
+template <class Init, class Between>
+bool lockstep_same(Init init, u64 n, u64 slice, Between between, Jit::Stats* stats = nullptr) {
+    Machine a(kCode), b(kCode);
+    init(a);
+    init(b);
+    Jit j(*b.cpu, b.bus);
+    for (u64 done = 0; done < n; done += slice) {
+        (void)run_interp(a, slice);
+        (void)run_jit(j, slice);
+        between(a);
+        between(b);
+    }
+    if (stats != nullptr) *stats = j.stats();
+    bool same = a.s() == b.s() && a.cpu->instructions_retired() == b.cpu->instructions_retired() &&
+                a.bus.write_epoch() == b.bus.write_epoch();
+    const u8* pa = a.bus.ram_pointer(0, 0x100000U);
+    const u8* pb = b.bus.ram_pointer(0, 0x100000U);
+    same = same && std::memcmp(pa, pb, 0x100000U) == 0;
+    if (!same) std::printf("    state differs: pc %08X/%08X fpscr %08X/%08X r3 %08X/%08X\n", a.s().pc, b.s().pc, a.s().fpscr,
+                           b.s().fpscr, a.s().gpr[3], b.s().gpr[3]);
+    return same;
+}
+void nothing(Machine&) {}
+} // namespace
+
+TEST_CASE(jit_directed_fp_flags_of_the_second_slot) {
+    if (!jit::host_can_execute()) return;
+    // ps_add with an exact slot 0 and an inexact slot 1, FPSCR clear: XX and FX come from slot 1
+    const double pairs[][4] = {{1.0, 1.0, 1.0, 0.1}, {2.0, 0.5, 3.0, 1e-30}, {-1.0, 1.0, 1.0 / 3.0, 1.0 / 7.0}};
+    for (const auto& p : pairs) {
+        auto init = [&](Machine& m) {
+            m.code(kCode, {4U << 26 | 3U << 21 | 1U << 16 | 2U << 11 | 21U << 1,   // ps_add f3, f1, f2
+                           4U << 26 | 4U << 21 | 1U << 16 | 2U << 11 | 25U << 1,   // ps_mul f4, f1, f2
+                           B(-8)});
+            m.s().pc = kCode;
+            m.s().msr = MSR_FP;
+            m.s().hid2 = HID2_PSE;
+            m.s().fpscr = 0;
+            std::memcpy(&m.s().fpr[1].ps0, &p[0], 8); std::memcpy(&m.s().fpr[2].ps0, &p[1], 8);
+            std::memcpy(&m.s().fpr[1].ps1, &p[2], 8); std::memcpy(&m.s().fpr[2].ps1, &p[3], 8);
+        };
+        CHECK(lockstep_same(init, 3, 3, nothing));
+    }
+}
+
+TEST_CASE(jit_directed_division_of_tiny_numbers) {
+    if (!jit::host_can_execute()) return;
+    // fdiv / fdivs where a and b are tiny (some subnormal) but the quotient is normal
+    Rng r{4242};
+    for (int k = 0; k < 400; ++k) {
+        const u64 a = (static_cast<u64>(r.next()) << 32 | r.next()) & 0x800FFFFFFFFFFFFFULL | static_cast<u64>(r.u(200)) << 52;
+        const u64 b = (static_cast<u64>(r.next()) << 32 | r.next()) & 0x800FFFFFFFFFFFFFULL | static_cast<u64>(r.u(200)) << 52;
+        auto init = [&](Machine& m) {
+            m.code(kCode, {63U << 26 | 3U << 21 | 1U << 16 | 2U << 11 | 18U << 1,   // fdiv f3, f1, f2
+                           59U << 26 | 4U << 21 | 1U << 16 | 2U << 11 | 18U << 1,   // fdivs f4, f1, f2
+                           B(-8)});
+            m.s().pc = kCode;
+            m.s().msr = MSR_FP;
+            m.s().fpscr = 0;
+            m.s().fpr[1].ps0 = a;
+            m.s().fpr[2].ps0 = b;
+        };
+        CHECK(lockstep_same(init, 3, 3, nothing));
+    }
+}
+
+TEST_CASE(jit_directed_store_into_a_linked_block) {
+    if (!jit::host_can_execute()) return;
+    // A -> B -> D -> A. B computes the store address of D: a data word, except on
+    // the 5th pass, when it is D's own third instruction. By then D is entered
+    // through a link, and its store must stop it before the rewritten instruction.
+    constexpr u32 A = kCode, Bb = kCode + 0x100, Dd = kCode + 0x200, data = kData;
+    auto init = [](Machine& m) {
+        m.code(A, {D(14, 4, 4, 1), B(static_cast<s32>(Bb - A - 4))});
+        m.code(Bb, {D(14, 5, 5, 1),                                  // r5++
+                    D(26, 5, 9, 5),                                  // xori r9, r5, 5
+                    X31(26, 9, 9, 0),                                // cntlzw r9, r9 (32 only when r5 == 5)
+                    M(21, 9, 9, 27, 31, 31, false),                  // srwi r9, r9, 5
+                    XO(235, 9, 9, 10, false, false),                 // mullw r9, r9, r10
+                    XO(266, 8, 11, 9, false, false),                 // add r8, r11, r9
+                    B(static_cast<s32>(Dd - (Bb + 0x18)))});
+        m.code(Dd, {D(36, 6, 8, 0),                                  // stw r6, 0(r8)
+                    D(14, 0, 0, 0),
+                    D(14, 3, 3, 1),                                  // rewritten on the 5th pass
+                    B(static_cast<s32>(A - (Dd + 0xC)))});
+        m.s().pc = A;
+        m.s().gpr[6] = 0x38630064U;                                  // addi r3, r3, 100
+        m.s().gpr[10] = (Dd + 8U) - data;
+        m.s().gpr[11] = data;
+    };
+    Jit::Stats st{};
+    CHECK(lockstep_same(init, 13 * 20, 13 * 20, nothing, &st));
+    CHECK(st.links > 0U);
+}
+
+TEST_CASE(jit_directed_data_page_that_becomes_code) {
+    if (!jit::host_can_execute()) return;
+    // Phase 1 stores to page P (the translation cache gets a write entry for it);
+    // phase 2 runs code in P that rewrites P+0x10 with a different instruction on
+    // every pass, so the block there must be retranslated each time.
+    constexpr u32 P = 0x00006000U;
+    auto init = [](Machine& m) {
+        m.code(kCode, {D(36, 3, 0, P + 0x10),                     // stw r3, P+0x10
+                       D(14, 7, 7, 1),                            // r7++
+                       D(11, 0, 7, 50),                           // cmpwi r7, 50
+                       BC(12, 0, 8),                              // blt -> loop
+                       B(static_cast<s32>(P - (kCode + 0x10))),   // after 50 passes: go to P
+                       B(-0x14)});
+        m.code(P, {D(14, 5, 5, 1),                                // r5++
+                   D(14, 3, 3, 1),                                // r3++: the next instruction to write
+                   D(36, 3, 0, P + 0x10),                         // stw r3, P+0x10
+                   B(4),                                          // b P+0x10
+                   D(14, 0, 0, 0),                                // P+0x10: rewritten
+                   B(-0x14)});                                    // back to P
+        m.s().pc = kCode;
+        m.s().gpr[3] = 0x38A50002U;                               // "addi r5, r5, 2", then 3, 4, ...
+    };
+    CHECK(lockstep_same(init, 2000, 2000, nothing));
+}
+
+TEST_CASE(jit_directed_links_across_contexts_with_a_shared_page) {
+    if (!jit::host_can_execute()) return;
+    // Block A at 0x80000 is mapped identically with and without instruction
+    // translation (IBAT1 is an identity map there); it jumps to kCode, which holds
+    // different code in each context (IBAT0 maps it to 0x44000). A link made from A
+    // in one context must not be followed in the other.
+    auto init = [](Machine& m) {
+        m.code(0x80000, {D(14, 4, 4, 1), B(static_cast<s32>(kCode) - 0x80004)});
+        m.code(kCode, {D(14, 3, 3, 1), B(0x80000 - static_cast<s32>(kCode) - 4)});
+        m.code(0x40000 + kCode, {D(14, 3, 3, 1000), B(0x80000 - static_cast<s32>(kCode) - 4)});
+        m.s().pc = 0x80000;
+        m.s().ibat[0] = BatPair{0x00000003U, 0x00040002U};
+        m.s().ibat[1] = BatPair{0x00080003U, 0x00080002U};
+    };
+    auto flip = [](Machine& m) { m.s().msr ^= MSR_IR; };
+    Jit::Stats st{};
+    CHECK(lockstep_same(init, 30 * 37, 37, flip, &st));
+    CHECK(st.links > 0U);
 }

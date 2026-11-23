@@ -10,7 +10,9 @@ import os, subprocess, sys, pathlib
 
 SRC = pathlib.Path("src/ppc/jit.cpp")
 MUTATIONS = [
-    ("FP: single FR compares >= instead of >", "e.cset(false, T4, Cond::HI);        // ... away from zero", "e.cset(false, T4, Cond::HS);        // ... away from zero"),
+    # Equivalent (cannot change behaviour): when the second rounding changed the value, |t| != |s|
+    # (same sign), so HS and HI agree.
+    ("EQUIVALENT FP: single FR compares >= instead of >", "e.cset(false, T4, Cond::HI);        // ... away from zero", "e.cset(false, T4, Cond::HS);        // ... away from zero"),
     ("FP: no single-midpoint slow path", "to_slow.push_back(e.cbnz(false, T1));", "(void)0;"),
     ("FP: div remainder range not checked", "exp_range(S, 256, 2046, false); // |a| >= 2^-767", "exp_range(S, 0, 2047, false); // |a| >= 2^-767"),
     ("FP: FX not raised", "e.orr(false, T0, T0, T4, Shift::LSL, 31);", "(void)0;"),
@@ -24,7 +26,9 @@ MUTATIONS = [
     ("TLB: DBAT changes ignored", "    now.dbat = s.dbat;\n", ""),
     ("TLB: write entries kept on code pages", "        if (en.write_tag != 0U && en.phys_page == phys_page) en.write_tag = 0;", "        (void)en; (void)phys_page;"),
     ("TLB: write stamps not advanced", "        e.add_imm(true, 14, 14, 1);\n", ""),
-    ("TLB: write entries from a read translation", "write ? AccessType::Write : AccessType::Read, cpu_.config_.extended_bats, t)", "AccessType::Read, cpu_.config_.extended_bats, t)"),
+    # Equivalent: a write entry is only created after a store succeeded through the full
+    # write translation, and BAT changes flush the cache, so the access type cannot differ.
+    ("EQUIVALENT TLB: write entries from a read translation", "write ? AccessType::Write : AccessType::Read, cpu_.config_.extended_bats, t)", "AccessType::Read, cpu_.config_.extended_bats, t)"),
     ("TLB: write entries on code pages", "if (write && (bus_.is_code_page(pp) || bus_.observes_cpu_writes())) return;", "if (write && bus_.observes_cpu_writes()) return;"),
     ("Links: budget never refuses", "        refuse = e.b_cond(Cond::HI);", "        refuse = e.b_cond(Cond::VS);"),
     ("Links: not unpatched on invalidation", "    for (const u32* site : b->incoming) {", "    for (const u32* site : std::vector<const u32*>{}) {"),
