@@ -2,6 +2,7 @@
 // Orca (loaded as ELF and as DOL converted by orca_elf2dol). The integer and
 // float programs are also compiled natively; both runs must emit identical
 // value sequences. The compiler, not our test encoder, generated this code.
+#include "orca/jit/code_buffer.hpp"
 #include "orca/system/system.hpp"
 #include "test_framework.hpp"
 #include "test_port.hpp"
@@ -121,6 +122,66 @@ TEST_CASE(hardware_suite_exceptions_timers_and_fifo) {
         if (r.log != expected) for (u32 v : r.log) std::fprintf(stderr, "    got %08X\n", v);
         std::printf("[programs] %-28s %3zu values, %9llu instructions on Orca, %s\n", f + std::string(f).rfind('/') + 1,
                     r.log.size(), static_cast<unsigned long long>(r.instructions), r.log == expected ? "as expected" : "MISMATCH");
+    }
+}
+
+// The same programs with the JIT (on AArch64 hosts): identical output, retired
+// instructions, cycles, CPU state and RAM. hardware_suite checks interrupts and the
+// decrementer, so the block budget of System::run is exercised too.
+namespace {
+struct FullRun {
+    ppc::StepResult stop{};
+    u64 instructions = 0, cycles = 0, ram_hash = 0;
+    std::vector<u32> log;
+    ppc::CpuState state;
+    u64 block_steps = 0, blocks = 0;
+};
+FullRun run_full(const char* path, bool jit) {
+    FullRun r;
+    std::ifstream in(path, std::ios::binary);
+    const std::vector<u8> file((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    system::SystemConfig cfg{};
+    cfg.use_jit = jit;
+    system::System sys(cfg);
+    TestPort port;
+    port.cpu = &sys.cpu();
+    sys.bus().map_mmio("test-port", 0x0E000000U, 0x1000, port);
+    std::string err;
+    if (!sys.load_executable(file, err)) return r;
+    const auto res = sys.run(4000000000ULL);
+    r.stop = res.stop;
+    r.instructions = res.instructions;
+    r.cycles = res.cycles;
+    r.log = port.log;
+    r.state = sys.cpu().state();
+    const u8* ram = sys.bus().ram_pointer(0, 24U << 20);
+    u64 h = 0xCBF29CE484222325ULL;
+    for (std::size_t i = 0; ram != nullptr && i < (24U << 20); ++i) { h ^= ram[i]; h *= 0x100000001B3ULL; }
+    r.ram_hash = h;
+    if (sys.jit() != nullptr) { r.block_steps = sys.jit()->stats().block_steps; r.blocks = sys.jit()->stats().blocks_compiled; }
+    return r;
+}
+} // namespace
+
+TEST_CASE(programs_identical_with_the_jit) {
+    if (!jit::host_can_execute()) {
+        std::printf("[programs] host is not AArch64: JIT runs are compared on the ARM64 CI\n");
+        return;
+    }
+    for (const char* f : {ORCA_PROGRAMS_DIR "/integer_suite.elf", ORCA_PROGRAMS_DIR "/float_suite.elf",
+                          ORCA_PROGRAMS_DIR "/hardware_suite.elf", ORCA_PROGRAMS_DIR "/integer_suite.dol"}) {
+        const FullRun a = run_full(f, false), b = run_full(f, true);
+        CHECK(a.stop == b.stop);
+        CHECK_EQ(a.instructions, b.instructions);
+        CHECK_EQ(a.cycles, b.cycles);
+        CHECK(a.log == b.log);
+        CHECK(a.state == b.state);
+        CHECK_EQ(a.ram_hash, b.ram_hash);
+        CHECK(b.block_steps > 0U);
+        std::printf("[programs] %-24s JIT: %9llu of %9llu instructions in %llu translated blocks, %s\n",
+                    f + std::string(f).rfind('/') + 1, static_cast<unsigned long long>(b.block_steps),
+                    static_cast<unsigned long long>(b.instructions), static_cast<unsigned long long>(b.blocks),
+                    a.state == b.state && a.ram_hash == b.ram_hash && a.cycles == b.cycles ? "identical to the interpreter" : "DIFFERENT");
     }
 }
 

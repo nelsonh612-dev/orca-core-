@@ -10,6 +10,7 @@
 #pragma once
 #include "orca/core/scheduler.hpp"
 #include "orca/gpu/efb_access.hpp"
+#include "orca/ppc/jit.hpp"
 #include "orca/disc/disc_image.hpp"
 #include "orca/hw/audio_interface.hpp"
 #include "orca/hw/disc_interface.hpp"
@@ -54,6 +55,10 @@ struct SystemConfig {
     Console console{Console::GameCube};
     u32 pvr{0};                      // supplied by the caller; not hard-coded here
     u32 cycles_per_instruction{1};   // approximate cost model (see above)
+    // Run translated AArch64 code (ppc::Jit) where the host can execute it. The
+    // interpreter remains the reference: results, timing and interrupts are the same
+    // (see System::run and ppc/jit.hpp). Ignored on other hosts.
+    bool use_jit{false};
 };
 
 struct RunResult {
@@ -97,6 +102,8 @@ public:
     void insert_disc(std::unique_ptr<disc::DiscReader> d) { di_->insert(std::move(d)); }
     const SystemConfig& config() const noexcept { return config_; }
     const Clocks& clocks() const noexcept { return clocks_; }
+    // The JIT, when SystemConfig::use_jit was set and the host can run it.
+    const ppc::Jit* jit() const noexcept { return jit_.get(); }
 
     // Parses and loads a DOL or ELF; with `boot` the CPU is put in the HLE boot state.
     bool load_executable(std::span<const u8> file, std::string& error, bool boot = true);
@@ -149,6 +156,10 @@ private:
     mem::Bus bus_;
     core::Scheduler scheduler_;
     std::unique_ptr<ppc::Cpu> cpu_;
+    std::unique_ptr<ppc::Jit> jit_;
+    // Guest instructions that can run before anything outside the CPU could change
+    // what the next instruction sees (scheduler event, decrementer underflow, end).
+    u64 steps_until_next_event(u64 end) const;
     std::unique_ptr<hw::ProcessorInterface> pi_;
     std::unique_ptr<hw::GatherPipe> gather_pipe_;
     std::unique_ptr<hw::PixelEngine> pe_;

@@ -24,6 +24,10 @@ System::System(SystemConfig config) : config_(config), clocks_(clocks_for(config
     bus_.map_mmio("CP", hw::cp::kBase, 0x1000, *cp_);
     bus_.map_mmio("PE", hw::pe::kBase, 0x1000, *pe_);
     efb_access_ = std::make_unique<gpu::EfbAccess>(*gpu_, *pe_);
+    if (config_.use_jit && jit::host_can_execute()) {
+        jit_ = std::make_unique<ppc::Jit>(*cpu_, bus_);
+        if (!jit_->can_execute()) jit_.reset();
+    }
     bus_.map_mmio("EFB", gpu::kEfbPhysicalBase, gpu::kEfbPhysicalSize, *efb_access_);
     pi_->set_burst_listener([this](u32) { cp_->on_gather_burst(); });
     di_ = std::make_unique<hw::DiscInterface>(bus_, scheduler_, *pi_);
@@ -170,6 +174,24 @@ bool System::boot_disc(std::string& error) {
     return true;
 }
 
+u64 System::steps_until_next_event(u64 end) const {
+    const u64 now = scheduler_.now();
+    const u64 cpi = config_.cycles_per_instruction;
+    auto steps_for = [&](u64 cycles) -> u64 { return cycles == 0U ? 1U : (cycles + cpi - 1U) / cpi; };
+    // The interpreter loop runs one more step while now < end.
+    u64 k = steps_for(end > now ? end - now : 0U);
+    // A scheduler event at time t fires while the step that reaches t advances time;
+    // the step after it must see its effect, so the block may end with that step.
+    if (const auto next = scheduler_.next_event_time()) k = std::min(k, steps_for(*next > now ? *next - now : 0U));
+    // Decrementer underflow (as in Cpu::advance_timebase): ticks until DEC goes 0 -> -1.
+    const auto dec = static_cast<s32>(cpu_->state().dec);
+    const u64 ticks = dec >= 0 ? static_cast<u64>(dec) + 1U : static_cast<u64>(static_cast<s64>(dec) + (1LL << 32)) + 1U;
+    const u64 per_tick = clocks_.cpu_cycles_per_timebase_tick;
+    const u64 cycles = ticks * per_tick > timebase_remainder_ ? ticks * per_tick - timebase_remainder_ : 0U;
+    k = std::min(k, steps_for(cycles));
+    return k;
+}
+
 RunResult System::run(u64 max_cycles) {
     RunResult r;
     const u64 start = scheduler_.now();
@@ -180,9 +202,17 @@ RunResult System::run(u64 max_cycles) {
         if (dsp_->dsp_failed()) { r.device_stop = true; r.device_error = dsp_->dsp_error(); break; }
         if (cp_->stopped()) { r.device_stop = true; r.device_error = cp_->stop_reason(); break; }
         if (stop_pc_ && cpu_->state().pc == *stop_pc_) { r.reached_stop_pc = true; break; }
-        const ppc::StepResult s = cpu_->step();
+        ppc::StepResult s;
+        u64 steps = 1;
+        if (jit_ && !stop_pc_) {
+            const ppc::Jit::Result jr = jit_->run(steps_until_next_event(end));
+            s = jr.result;
+            steps = jr.steps;
+        } else {
+            s = cpu_->step();
+        }
         if (s == ppc::StepResult::Executed || s == ppc::StepResult::ExceptionTaken) {
-            advance(cpi);
+            advance(cpi * steps);
             continue;
         }
         if (s == ppc::StepResult::Idle) {

@@ -37,6 +37,10 @@ jobs:
         env:
           EGL_PLATFORM: surfaceless
         run: ctest --test-dir build --output-on-failure
+      - name: JIT report (native AArch64 execution)
+        run: |
+          ./build/orca_test_jit | grep -E "^\[jit\]"
+          ./build/orca_test_programs | grep -E "JIT|identical|MISMATCH"
 
   arm64-sanitizers:
     name: Core tests on native ARM64 with ASan+UBSan
