@@ -1,8 +1,8 @@
-# Orca Core — Milestone 008
+# Orca Core — Milestone 009
 
 Orca Core es un emulador independiente de GameCube/Wii escrito en C++20, con Android ARM64 como plataforma objetivo. **No contiene código de Dolphin** y no deriva de él.
 
-> **Estado:** la CPU Gekko/Broadway está completa como intérprete de referencia: enteros, sistema, MMU, FPU, paired-singles, cuantización GQR y caché bloqueada. Además, el sistema arranca programas DOL/ELF y **discos GameCube (GCM/ISO) a través de su apploader**, con planificador de tiempo, interrupciones, gather pipe y Disc Interface. Desde M007 también tiene **Video Interface** (temporización NTSC/PAL e interrupciones de display), **Serial Interface con mando estándar** y **Audio Interface** (contador de muestras e interrupción). M008 añade el **External Interface (EXI)** con sus 3 canales y el chip **RTC/SRAM/ROM del IPL**. **Todavía no es un emulador jugable.** Faltan la tarjeta de memoria, el DSP y la salida de audio, la GPU (CP/PE/XF/BP/TEV), el JIT y los componentes de Wii.
+> **Estado:** la CPU Gekko/Broadway está completa como intérprete de referencia: enteros, sistema, MMU, FPU, paired-singles, cuantización GQR y caché bloqueada. Además, el sistema arranca programas DOL/ELF y **discos GameCube (GCM/ISO) a través de su apploader**, con planificador de tiempo, interrupciones, gather pipe y Disc Interface. Desde M007 también tiene **Video Interface** (temporización NTSC/PAL e interrupciones de display), **Serial Interface con mando estándar** y **Audio Interface** (contador de muestras e interrupción). M008 añade el **External Interface (EXI)** con sus 3 canales y el chip **RTC/SRAM/ROM del IPL**. M009 añade el **Memory Interface**, el bloque de **interfaz del DSP** (buzones, CSR, **ARAM de 16 MiB con su DMA** y registros de DMA de audio) y el lector del **FST** del disco. **Todavía no es un emulador jugable.** Faltan la tarjeta de memoria, el núcleo del DSP y la salida de audio, la GPU (CP/PE/XF/BP/TEV), el JIT y los componentes de Wii.
 
 ## Qué incluye este milestone
 
@@ -32,7 +32,10 @@ Orca Core es un emulador independiente de GameCube/Wii escrito en C++20, con And
 | **Audio Interface (M007)** | AICR/AIVR/AISCNT/AIIT; contador exacto a 48/32 kHz; interrupción AIIT → PI. Sin salida de sonido todavía |
 | **EXI (M008)** | 3 canales con CSR/MAR/LENGTH/CR/DATA, transferencias inmediatas y por DMA asíncronas (duración = bits / reloj EXI), TCINT/EXIINT/EXTINT → PI, ROMDIS permanente; cualquier caso sin comportamiento documentado da una parada clara |
 | **RTC/SRAM/ROM del IPL (M008)** | Dispositivo en EXI0/CS1: palabra de comando de 32 bits (bit 31 = escritura, dirección << 6); contador RTC que avanza con el tiempo emulado; 64 bytes de SRAM; ROM opcional que aporta el usuario (`orca_run --ipl-rom=`). No se incluye ninguna ROM |
-| Pruebas | 13 suites; 268.917 casos diferenciales (enteros y FP contra referencias independientes, la de FP con aritmética racional exacta); 189 codificaciones verificadas con `llvm-mc`; 89 mutaciones detectadas; 6 programas C y un apploader compilados con clang, arrancados también desde discos sintéticos |
+| **Memory Interface (M009)** | Regiones protegidas, tipo de protección, máscara/causa de interrupción → PI, estado y dirección del fallo. La protección **no se aplica**: cada configuración que la activaría queda registrada como aviso (`orca_run` los muestra) |
+| **Interfaz del DSP y ARAM (M009)** | Buzones CPU↔DSP, CSR (máscaras, bits que se limpian escribiendo 1, HALT, RES, ocupado), **ARAM de 16 MiB** con DMA asíncrono en ambos sentidos (se inicia al escribir AR_DMA_CNT_L; al terminar las direcciones avanzan, la cuenta queda en 0 y se activa ARINT). Sin núcleo de DSP: enviar un mensaje a un DSP en marcha, PIINT o iniciar la reproducción por DMA de audio da una parada clara |
+| **FST (M009)** | Lectura y validación completa de la tabla de archivos del disco; `orca_run --list-files juego.iso` |
+| Pruebas | 14 suites; 268.917 casos diferenciales (enteros y FP contra referencias independientes, la de FP con aritmética racional exacta); 189 codificaciones verificadas con `llvm-mc`; 110 mutaciones detectadas; 7 programas C y un apploader compilados con clang, arrancados también desde discos sintéticos |
 
 ## Compilar y probar
 
@@ -121,6 +124,8 @@ docs/AUDITORIA_M002.md  docs/REGISTRO_PRUEBAS.md  docs/ESTADO.md
 - libjoybus (loopj): longitudes de los comandos 0x00/0x40/0x41/0x42 y formato del estado del mando.
 - WiiBrew, "Hardware/External Interface" y "MX23L4005": registros EXI, mapa de dispositivos y direcciones del RTC/SRAM.
 - NetBSD `sys/arch/evbppc/wii/dev/rtcsram.c` (licencia BSD) y Linux `drivers/rtc/rtc-gamecube.c`: protocolo del RTC/SRAM (comando 0x20000000 / 0x20000100, bit de escritura 0x80000000, registro del bias = byte 0x0C de la SRAM).
+- WiiBrew "Hardware/DSP" y el driver `gcn-aram.c` de gc-linux: inicio, unidades de 32 bytes, avance de registros y fin (ARINT) del DMA de ARAM; bits del CSR del DSP.
+- wiki.re.virtualworld.fr "GCM (File format)" y `nod` (`src/disc/fst.rs`): formato del FST.
 - "GameCube Hacking" (21C3, 2004): formato de la dirección de lectura de la ROM (`00000AAA ... AAxxxxxx`).
 - Patentes de Nintendo US6609977 / US7976392: descripción de los registros de display de la VI.
 

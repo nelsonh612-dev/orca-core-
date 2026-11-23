@@ -35,6 +35,10 @@ System::System(SystemConfig config) : config_(config), clocks_(clocks_for(config
     page_0c006_->attach(hw::ai::kOffsetInPage, 0x20, *ai_);
     bus_.map_mmio("DI/SI/EXI/AI", hw::di::kBase, 0x1000, *page_0c006_);
     bus_.map_mmio("VI", hw::vi::kBase, 0x1000, *vi_);
+    mi_ = std::make_unique<hw::MemoryInterface>(*pi_);
+    bus_.map_mmio("MI", hw::mi::kBase, 0x1000, *mi_);
+    dsp_ = std::make_unique<hw::DspInterface>(bus_, scheduler_, *pi_, config_.console == Console::GameCube);
+    bus_.map_mmio("DSP", hw::dsp::kBase, 0x1000, *dsp_);
 }
 
 System::~System() = default;

@@ -17,6 +17,8 @@
 #include "orca/hw/mmio_splitter.hpp"
 #include "orca/hw/external_interface.hpp"
 #include "orca/hw/exi_ipl.hpp"
+#include "orca/hw/dsp_interface.hpp"
+#include "orca/hw/memory_interface.hpp"
 #include "orca/hw/processor_interface.hpp"
 #include "orca/loader/executable.hpp"
 #include "orca/memory/bus.hpp"
@@ -71,6 +73,8 @@ public:
     hw::SerialInterface& si() noexcept { return *si_; }
     hw::AudioInterface& ai() noexcept { return *ai_; }
     hw::ExternalInterface& exi() noexcept { return *exi_; }
+    hw::MemoryInterface& mi() noexcept { return *mi_; }
+    hw::DspInterface& dsp() noexcept { return *dsp_; }
     // RTC/SRAM/IPL-ROM chip on EXI channel 0, CS1 (ROM image supplied by the user).
     hw::IplRtcSram& ipl() noexcept { return *ipl_; }
     // Called at every VI field start (top = false / bottom = true), after the SI hook.
@@ -139,6 +143,8 @@ private:
     std::unique_ptr<hw::AudioInterface> ai_;
     std::unique_ptr<hw::ExternalInterface> exi_;
     std::unique_ptr<hw::IplRtcSram> ipl_;
+    std::unique_ptr<hw::MemoryInterface> mi_;
+    std::unique_ptr<hw::DspInterface> dsp_;
     std::function<void(bool)> field_listener_;
     std::optional<u32> stop_pc_;
     u64 timebase_remainder_{0};

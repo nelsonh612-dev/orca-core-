@@ -1,9 +1,11 @@
 // orca_run: headless runner. Loads a DOL/ELF, boots it (HLE) and runs for a
 // number of cycles, then prints why it stopped and the CPU state.
-// Usage: orca_run [--ipl-rom=FILE] [--rtc=SECONDS] file.(dol|elf|iso|gcm) [cycles] [gc|wii]
+// Usage: orca_run [--ipl-rom=FILE] [--rtc=SECONDS] [--list-files] file.(dol|elf|iso|gcm) [cycles] [gc|wii]
 //   --ipl-rom: IPL ROM image (descrambled, as the CPU reads it) for EXI0/CS1
 //   --rtc:     initial RTC counter value (seconds); default 0
+//   --list-files: print the disc FST (.iso/.gcm) and exit
 // .iso/.gcm images are booted through the HLE IPL + apploader path.
+#include "orca/disc/fst.hpp"
 #include "orca/system/system.hpp"
 
 #include <cstdio>
@@ -17,9 +19,11 @@ int main(int argc_in, char** argv_in) {
     std::vector<char*> args;
     std::string ipl_path;
     unsigned long rtc = 0;
+    bool list_files = false;
     for (int i = 0; i < argc_in; ++i) {
         if (std::strncmp(argv_in[i], "--ipl-rom=", 10) == 0) ipl_path = argv_in[i] + 10;
         else if (std::strncmp(argv_in[i], "--rtc=", 6) == 0) rtc = std::strtoul(argv_in[i] + 6, nullptr, 0);
+        else if (std::strcmp(argv_in[i], "--list-files") == 0) list_files = true;
         else args.push_back(argv_in[i]);
     }
     const int argc = static_cast<int>(args.size());
@@ -44,6 +48,16 @@ int main(int argc_in, char** argv_in) {
         std::string herr;
         const auto header = orca::disc::parse_header(*disc, herr);
         if (header) std::printf("disc: %s \"%s\"\n", header->game_id.c_str(), header->name.c_str());
+        if (list_files) {
+            if (!header) { std::fprintf(stderr, "%s\n", herr.c_str()); return 1; }
+            std::string ferr;
+            const auto fst = orca::disc::parse_fst(*disc, *header, ferr);
+            if (!fst) { std::fprintf(stderr, "%s\n", ferr.c_str()); return 1; }
+            for (const auto& e : *fst)
+                if (e.directory) std::printf("%-48s <dir>\n", e.path.c_str());
+                else std::printf("%-48s %10u bytes @ 0x%08X\n", e.path.c_str(), e.size, e.offset);
+            return 0;
+        }
         sys.insert_disc(std::move(disc));
         if (!sys.boot_disc(error)) { std::fprintf(stderr, "disc boot failed: %s\n", error.c_str()); return 1; }
         std::printf("apploader finished: game entry point %08X\n", sys.cpu().state().pc);
@@ -60,6 +74,7 @@ int main(int argc_in, char** argv_in) {
     if (r.stop != orca::ppc::StepResult::Executed && r.stop != orca::ppc::StepResult::Halted)
         std::printf("reason: %s (pc=%08X ins=%08X addr=%08X)\n", sys.cpu().last_stop().reason.c_str(),
                     sys.cpu().last_stop().pc, sys.cpu().last_stop().instruction, sys.cpu().last_stop().address);
+    for (const auto& w : sys.mi().warnings()) std::printf("warning: %s\n", w.c_str());
     std::printf("pc=%08X lr=%08X msr=%08X cr=%08X\n", s.pc, s.lr, s.msr, s.cr);
     for (unsigned i = 0; i < 32; i += 4)
         std::printf("r%-2u %08X  r%-2u %08X  r%-2u %08X  r%-2u %08X\n", i, s.gpr[i], i + 1, s.gpr[i + 1], i + 2, s.gpr[i + 2], i + 3, s.gpr[i + 3]);

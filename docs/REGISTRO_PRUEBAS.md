@@ -1,4 +1,4 @@
-# Registro de pruebas — Milestone 008
+# Registro de pruebas — Milestone 009
 
 Todos los resultados son de ejecuciones reales del 2026-11-14 en este entorno, sobre una copia limpia de los fuentes entregados.
 
@@ -8,9 +8,9 @@ Todos los resultados son de ejecuciones reales del 2026-11-14 en este entorno, s
 
 | Configuración | Compilación | Advertencias (`-Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion -Wshadow -Werror`) | CTest |
 |---|---|---|---|
-| GCC Release | OK | 0 | 13/13 pasan (3,9 s) |
-| Clang Release | OK | 0 | 13/13 pasan (3,0 s) |
-| GCC Debug + ASan + UBSan (`-fno-sanitize-recover=all`) | OK | 0 | 13/13 pasan (71,8 s) |
+| GCC Release | OK | 0 | 14/14 pasan (4,0 s) |
+| Clang Release | OK | 0 | 14/14 pasan (3,4 s) |
+| GCC Debug + ASan + UBSan (`-fno-sanitize-recover=all`) | OK | 0 | 14/14 pasan (78,4 s) |
 | Clang + ASan/UBSan | **NO EJECUTADO**: falta `compiler-rt` en el entorno | — | — |
 | Android NDK arm64-v8a | **NO EJECUTADO**: no hay NDK ni sysroot AArch64 | — | — |
 
@@ -30,7 +30,27 @@ Todos los resultados son de ejecuciones reales del 2026-11-14 en este entorno, s
 | **disc** (M006) | 12 | 145 | 0 |
 | **av** (M007) | 12 | 292 | 0 |
 | **exi** (M008) | 16 | 481 | 0 |
+| **dsp_mi** (M009) | 14 | 398 | 0 |
 | encodings (vs `llvm-mc`) | 189 instrucciones | 181 ensambladas + 8 desensambladas | 0 diferencias |
+
+### MI, interfaz del DSP, ARAM y FST (M009)
+
+Unitarias:
+- MI: valores de los registros, máscara de 5 bits, causa que se limpia escribiendo 1, dirección de fallo de solo lectura, temporizadores (escritura permitida, lectura con parada), avisos de protección no aplicada (con el canal, el tipo y las páginas; como mucho 64).
+- CSR del DSP: máscaras, bits que se limpian escribiendo 1 sin tocar los demás, bit 9 de solo lectura, PIINT con parada.
+- Buzones: mensaje pendiente con el DSP detenido, parada con el DSP en marcha, mensaje del DSP consumido al leer la mitad baja, RES.
+- DMA de ARAM en ambos sentidos con escrituras de 32 bits (como el driver de Linux): bit de ocupado, registros bloqueados, ARINT → PI, direcciones avanzadas y cuenta a 0 (como describe WiiBrew), bits bajos a 0, errores (longitud 0, fuera de la ARAM, fuera de la RAM, Wii sin ARAM) y el modelo de tiempo (4 unidades × 100 = 400 ciclos).
+- FST: directorios anidados, búsqueda por ruta, rechazo de 9 tipos de tabla mal formada, offsets de nombre de 24 bits, lectura desde una imagen de disco.
+
+Programa `aram_suite` (clang, 750): copia 1 KiB de la RAM a la ARAM y de vuelta a otro buffer esperando el bit 9 del CSR, y reconoce ARINT escribiendo solo ese bit.
+
+| Valor | Esperado | Obtenido |
+|---|---|---|
+| Bit de ocupado justo después de iniciar / tras esperar | 1 / 0 | 1 / 0 |
+| ARINT | 0x20 | 0x20 |
+| Palabras distintas tras la ida y vuelta | 0 | 0 |
+| ARADDR bajo tras el segundo DMA / cuenta | 0x400 / 0 | 0x400 / 0 |
+| Causa DSP del PI tras el reconocimiento | 0 | 0 |
 
 ### EXI y RTC/SRAM/ROM (M008)
 
@@ -147,7 +167,15 @@ P13 (palabra alta de `fctiw`) sobrevivió como se esperaba, porque son bits inde
 **EXI y RTC/SRAM (M008), 21 de 22 detectadas:** E1 escribir CSR borra todas las interrupciones · E2 se acepta CLK 110 · E3 duración sin redondeo hacia arriba · E4 bytes de DATA en orden inverso · E5 una lectura corta borra los bytes bajos de DATA · E6 TCINT ignora la máscara · E7 ROMDIS en cualquier canal · E8 DATA no se actualiza al terminar · E9 no se activa TCINT · E10 CS1 y CS2 intercambiados · E11 MAR sin alinear · E12 se aceptan dos bits CS · E13 EXT activo con cualquier dispositivo · E14 se permite cambiar CS durante una transferencia · I1 dirección desplazada 8 bits en vez de 6 · I2 ROMDIS ignorado · I3 el RTC no avanza · I4 se permite un byte de más · I6 se puede escribir la ROM · I7 el RTC se actualiza con el primer byte · I8 se aceptan datos durante una lectura.
 I5 (liberar CS no reinicia la secuencia) sobrevivió y es **equivalente**: cada nueva selección llama a `select()`, que ya reinicia la secuencia, así que no hay forma de observar la diferencia.
 
-**Total: 89 mutaciones detectadas.**
+**MI, DSP/ARAM y FST (M009), 21 de 21 detectadas tras completar las pruebas:** M1 la causa no se limpia escribiendo 1 · M2 el tipo 2 no genera aviso · M3 máscara sin limitar a 5 bits · M4 la dirección de fallo se puede escribir · **D1 escribir el CSR borra todas las interrupciones y D2 ARINT ignora su máscara: no se detectaban al principio** → se añadió `dsp_acking_one_interrupt_keeps_the_others` · D3 leer el buzón no consume el mensaje · D4 se aceptan mensajes con el DSP en marcha · D5 dirección del DMA invertida · D6 MMADDR no avanza · D7 la cuenta no vuelve a 0 · D8 sin bit de ocupado · D9 ARADDR sin alinear · D10 tiempo por unidad de 16 bytes · D11 el bit de ocupado se puede escribir · D12 no se comprueba el final del DMA dentro de la ARAM · F1 cierre de directorios con error de uno · F2 un subdirectorio puede pasarse del final de su padre · **F3 solo se comprueba el inicio de los archivos y F4 offsets de nombre de 16 bits: no se detectaban al principio** → se añadieron un archivo que empieza dentro del disco y termina fuera, y `fst_name_offsets_use_24_bits` · F5 nombres sin terminar.
+
+**Total: 110 mutaciones detectadas.**
+
+## Errores encontrados durante M009
+
+- No apareció ningún error en el código del emulador.
+- **Error en mis pruebas:** esperé el valor 1 en el byte 3 de la ARAM, pero `src[1] = 1` ocupa los bytes 4-7 en big-endian, así que el 1 está en el byte 7. Se corrigió la expectativa.
+- Cuatro mutaciones sobrevivieron al principio (D1, D2, F3, F4). Se añadieron las pruebas que faltaban y ahora las cuatro se detectan.
 
 ## Errores encontrados durante M008
 

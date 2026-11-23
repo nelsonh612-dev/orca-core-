@@ -1,4 +1,4 @@
-# Estado del proyecto — Milestone 008
+# Estado del proyecto — Milestone 009
 
 ## Funciones implementadas (todas con pruebas)
 
@@ -56,10 +56,15 @@
 - `hw::IplRtcSram` en EXI0/CS1: palabra de comando (bit 31 = escritura; dirección = (comando & 0x7FFFFFFF) >> 6) y después un flujo de datos con autoincremento hasta liberar CS. ROM 0x000000-0x1FFFFF (imagen opcional del usuario, tal como la lee la CPU con el descifrador activo), RTC en 0x800000 (comando 0x20000000) y SRAM de 64 bytes en 0x800004 (comando 0x20000100). El RTC cuenta segundos de tiempo emulado desde el valor que fije el anfitrión o el invitado.
 - `System::exi()` / `System::ipl()`; `orca_run --ipl-rom=ARCHIVO --rtc=SEGUNDOS`.
 
+**Memory Interface, interfaz del DSP, ARAM y FST (M009)**
+- `hw::MemoryInterface` (0x0C004000): registros de 16 bits con accesos de 16 y 32 bits. Regiones 0-3, tipo de protección (2 bits por canal), máscara (bits 0-4) y causa (se limpia escribiendo 1) → causa MEM del PI, estado, dirección del fallo (solo lectura), temporizadores (escribirlos los reinicia; leerlos da una parada porque no está documentado qué cuentan). La protección no se aplica: cada escritura que deja un canal con tipo distinto de 3 añade un aviso (como mucho 64) a `warnings()`.
+- `hw::DspInterface` (0x0C005000): buzón hacia el DSP (bit 15 = pendiente), buzón hacia la CPU (leer la mitad baja lo consume), CSR (RES, HALT, AIDINT/ARINT/DSPINT con sus máscaras → causa DSP del PI, bit 9 = DMA de ARAM en curso, bit 11 guardado), AR_SIZE/AR_MODE/AR_REFRESH guardados. **ARAM de 16 MiB** (solo GameCube) con DMA en 32 bytes por unidad: se inicia al escribir AR_DMA_CNT_L, los registros quedan bloqueados mientras dura y al terminar MMADDR y ARADDR avanzan, la cuenta queda en 0 y se activa ARINT. Registros de DMA de audio guardados.
+- `disc::parse_fst` / `parse_fst_bytes` / `find_file`: FST con directorios anidados, validación de tipos, nombres (offsets de 24 bits, terminados en 0), índices de padre y siguiente, y archivos dentro del disco. `orca_run --list-files`.
+
 ## Funciones pendientes (en orden)
 
-1. **Resto de M008 (pasa a M009):** tarjeta de memoria en EXI0/CS0 y EXI1/CS0. No se implementó porque las fuentes accesibles no fijan dos datos: el número de bytes de espera de la lectura 0x52 (depende del reloj EXI) y el formato de la respuesta de identificación (tamaño de la tarjeta). Una fuente (gc-memcard-adapter, licencia MIT, capturas de un bus real), todavía sin contrastar con otra, da los códigos 0x52 lectura, 0xF2 escritura, 0xF1 borrado de sector, 0x83 estado, 0x89 borrar estado, 0x81 interrupciones y 0x87 despertar, con la dirección empaquetada en 4 bytes (>> 17, >> 9, (>> 7) & 3, & 0x7F). También quedan el puerto serie 1 (EXI0/CS2), el AD16 (EXI2/CS0), el mapeo de la ROM en el vector de reset 0xFFF00000, el MI, los comandos restantes de la DI y el FST.
-2. **M010 — JIT ARM64:** emisor ARM64 verificado con el desensamblador de LLVM, bloques básicos, asignación de registros, caché de bloques conectada a la invalidación del bus, y pruebas diferenciales intérprete vs JIT, que tienen que correr en un dispositivo ARM64.
+1. **M010 — tarjeta de memoria y núcleo del DSP:** tarjeta de memoria en EXI0/CS0 y EXI1/CS0. No se implementó porque las fuentes accesibles no fijan dos datos: el número de bytes de espera de la lectura 0x52 (depende del reloj EXI) y el formato de la respuesta de identificación (tamaño de la tarjeta). Una fuente (gc-memcard-adapter, licencia MIT, capturas de un bus real), todavía sin contrastar con otra, da los códigos 0x52 lectura, 0xF2 escritura, 0xF1 borrado de sector, 0x83 estado, 0x89 borrar estado, 0x81 interrupciones y 0x87 despertar, con la dirección empaquetada en 4 bytes (>> 17, >> 9, (>> 7) & 3, & 0x7F). Además, los juegos oficiales desbloquean la tarjeta con un intercambio que usa el DSP, así que va ligada al núcleo del DSP (intérprete del DSP de 16 bits, IRAM/DRAM, DMA interno, aceleradores y la reproducción por DMA de audio, cuyo ritmo todavía falta confirmar). También quedan el puerto serie 1 (EXI0/CS2), el AD16 (EXI2/CS0), el mapeo de la ROM en el vector de reset 0xFFF00000, la aplicación de la protección del MI y los comandos restantes de la DI.
+2. **M011 — JIT ARM64:** emisor ARM64 verificado con el desensamblador de LLVM, bloques básicos, asignación de registros, caché de bloques conectada a la invalidación del bus, y pruebas diferenciales intérprete vs JIT, que tienen que correr en un dispositivo ARM64.
 3. **Después:** GPU (CP/FIFO, XF, BP, TEV, EFB/XFB → Vulkan para Mali), DSP y audio, DI y discos, SI y controles, EXI, AI y los componentes de Wii (Hollywood, IOS, Bluetooth).
 
 ## Pendiente de verificación en hardware real
@@ -103,6 +108,13 @@ Son comportamientos que el PEM deja indefinidos o que el manual del 750CL no det
 | RTC/SRAM: pasar del final del RTC o de la SRAM en un mismo flujo | Parada clara |
 | RTC: valor inicial | 0 o el que fije el anfitrión; la SRAM empieza a ceros. El IPL real la valida con sus checksums |
 | ROM del IPL con ROMDIS = 1 (datos sin descifrar) | Parada clara: no se modelan los datos cifrados |
+| MI: valor del registro de tipo tras el reset | 0xFF (todos los canales lectura/escritura) |
+| DSP: RES | El reset termina al instante: se vacían los buzones y RES se lee como 0 |
+| DSP: leer la mitad baja del buzón hacia la CPU | Consume el mensaje (borra el bit 15) |
+| DSP: AR_SIZE, AR_MODE, AR_REFRESH | Se guardan y se leen tal cual, sin efecto |
+| ARAM: tiempo del DMA | `aram_cycles_per_unit` por unidad de 32 bytes (por defecto 0: termina en el siguiente paso del planificador) |
+| ARAM: bit de dirección tras el DMA | Se conserva; la cuenta queda en 0 |
+| DMA de audio: bytes restantes | 0 (la reproducción nunca se inicia) |
 
 ## Problemas conocidos
 
@@ -119,7 +131,7 @@ Son comportamientos que el PEM deja indefinidos o que el manual del 750CL no det
 | 9 | `lmw/stmw`, instrucciones de cadena y `lwarx/stwcx.` no pasan por la caché bloqueada | Bajo |
 | 10 | El DMA de la caché bloqueada y las ráfagas del gather pipe terminan al instante | Falta conectarlos al planificador con tiempos reales |
 | 11 | Coste fijo de 1 ciclo por instrucción: no hay modelo de pipeline ni de caché | El tiempo es determinista, no exacto al ciclo |
-| 12 | Existen PI, gather pipe, DI, VI, SI, AI y EXI (con RTC/SRAM/ROM); DSP, MI y CP/PE dan `MemoryFault` al tocarse | Un juego comercial se detiene al acceder a la tarjeta de memoria (CS sin dispositivo, parada clara), al DSP o a la GPU |
+| 12 | Existen PI, gather pipe, DI, VI, SI, AI, EXI (con RTC/SRAM/ROM), MI y la interfaz del DSP con ARAM; CP/PE (GPU) dan `MemoryFault` al tocarse y el núcleo del DSP no existe | Un juego comercial se detiene al acceder a la tarjeta de memoria, al enviar el primer mensaje al DSP, al iniciar el audio por DMA o al usar la GPU, siempre con una parada que explica el motivo |
 | No hay salida de video (no se convierte el XFB a imagen) ni de audio | Sin frontend todavía |
 | DI: solo existe la lectura 0xA8 por DMA; los discos Wii, el audio streaming y los formatos comprimidos no están implementados | Parada clara con el comando |
 | 13 | Rendimiento en el anfitrión x86: unos 20 M instr/s en enteros y unos 4 M instr/s en FP. El motor FP cambia el modo de redondeo del anfitrión en cada operación | Esperado: el intérprete es la referencia de precisión; la velocidad vendrá del JIT |
