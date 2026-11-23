@@ -23,13 +23,37 @@ void main() {
 }
 )GLSL";
 
-const char* kFragmentShader = R"GLSL(#version 320 es
+// The backend prepends "#version 320 es" and "#define ORCA_STATS 0|1".
+const char* kFragmentShader = R"GLSL(
 #extension GL_EXT_shader_framebuffer_fetch : require
 precision highp float;
 precision highp int;
 precision highp usampler2D;
 layout(location = 0) inout highp uvec4 o_color;   // .x = 24-bit EFB colour
 layout(location = 1) inout highp uvec4 o_depth;   // .x = 24-bit depth
+#if ORCA_STATS
+// Pixel Engine statistics (see gpu/pixel_stats.hpp): bounding box and quad counters.
+// u_quad_ids layer c holds, per 2x2 quad, the id of the last triangle that counted it
+// for counter c; imageAtomicExchange returns the previous id, so exactly one pixel of
+// each (quad, triangle) pair adds 1.
+layout(std430, binding = 0) buffer Stats { uint s_bbox[4]; uint s_quads[5]; };
+layout(r32ui, binding = 0) uniform highp uimage2DArray u_quad_ids;
+uniform uvec2 u_stats_on;        // x: bounding box armed, y: counters armed
+uniform uint u_tri_base;         // id of the first triangle of this draw
+void reach(uint c, int x, int y) {
+    if (u_stats_on.y == 0u) return;
+    uint id = u_tri_base + uint(gl_PrimitiveID);
+    if (imageAtomicExchange(u_quad_ids, ivec3(x >> 1, y >> 1, int(c)), id) != id) atomicAdd(s_quads[c], 1u);
+}
+void widen_bbox(int x, int y) {
+    if (u_stats_on.x == 0u) return;
+    atomicMin(s_bbox[0], uint(x & ~1)); atomicMax(s_bbox[1], uint(x | 1));
+    atomicMin(s_bbox[2], uint(y & ~1)); atomicMax(s_bbox[3], uint(y | 1));
+}
+#else
+void reach(uint c, int x, int y) {}
+void widen_bbox(int x, int y) {}
+#endif
 // Per-triangle attribute slopes (gl_PrimitiveID * 35 texels): 0 = xoff, yoff, x0, y0;
 // then (dfdx, dfdy, f0) of z, 1/w, colour 0 RGBA, colour 1 RGBA, and tex * (1/w) for 8 x STQ
 uniform highp samplerBuffer u_tri;
@@ -179,12 +203,14 @@ void main() {
 
     // early z
     if (early) {
+        reach(0u, x, y);
         uint zv = uint(z), d = dz;
         uint f = B(zmode, 1, 3);
         zpass = f == 1u ? zv < d : f == 2u ? zv == d : f == 3u ? zv <= d : f == 4u ? zv > d :
                 f == 5u ? zv != d : f == 6u ? zv >= d : f == 7u;
         if (zpass && zupd) o_depth.x = zv & 0xFFFFFFu;
         if (!zpass) { o_color = old_color; return; }
+        reach(1u, x, y);
     }
 
     // ---- TEV ----
@@ -437,13 +463,17 @@ void main() {
     }
     // late z
     if (late) {
+        reach(2u, x, y);
         uint zv = uint(z), d = dz;
         uint f = B(zmode, 1, 3);
         bool pass = f == 1u ? zv < d : f == 2u ? zv == d : f == 3u ? zv <= d : f == 4u ? zv > d :
                     f == 5u ? zv != d : f == 6u ? zv >= d : f == 7u;
         if (pass && zupd) o_depth.x = zv & 0xFFFFFFu;
         if (!pass) { o_color = old_color; return; }
+        reach(3u, x, y);
     }
+    reach(4u, x, y);
+    widen_bbox(x, y);
     // ---- blending into the EFB ----
     uint bm = R(0x41u);
     uint cur = old_color.x;

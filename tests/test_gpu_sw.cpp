@@ -453,6 +453,66 @@ TEST_CASE(sw_raster_flat_triangle_coverage) {
     CHECK_EQ(s.c24(0, 10), 0x00FF00U); CHECK_EQ(s.c24(3, 13), 0x00FF00U); CHECK_EQ(s.c24(4, 13), 0U); CHECK_EQ(s.c24(3, 14), 0U);
 }
 
+// Bounding box (BP 0x55/0x56, PE 0x10-0x16) and quad counters (BP 0x57, PE 0x18-0x2A).
+TEST_CASE(sw_bounding_box_and_quad_counters) {
+    Scene s;
+    auto pe16 = [&](u32 off) { u64 v = 0; CHECK(s.pe.mmio_read(off, 2, v)); return static_cast<u32>(v); };
+    auto quads = [&](unsigned c) { return pe16(0x18U + 4U * c) | (pe16(0x1AU + 4U * c) << 16); };
+    s.bpw(bp::CLEAR_BBOX1, 0x3FFU);          // left = 1023, right = 0
+    s.bpw(bp::CLEAR_BBOX2, 0x3FFU);          // top = 1023, bottom = 0
+    CHECK(s.flush());
+    CHECK_EQ(pe16(0x10), 0x3FFU); CHECK_EQ(pe16(0x12), 0U); CHECK_EQ(pe16(0x14), 0x3FFU); CHECK_EQ(pe16(0x16), 0U);
+    // Triangle covering x + y <= 6 (28 pixels, x/y 0..6): box rounded to 2x2 quads -> 0..7
+    s.prim(0x90, {{0, 0, -0.5f, 0x204080FFU}, {8, 0, -0.5f, 0x204080FFU}, {0, 8, -0.5f, 0x204080FFU}});
+    CHECK(s.flush());
+    CHECK_EQ(pe16(0x10), 0U); CHECK_EQ(pe16(0x12), 7U); CHECK_EQ(pe16(0x14), 0U); CHECK_EQ(pe16(0x16), 7U);
+    // Z test off: the Z counters stay at 0; blend input counts the 10 quads the triangle
+    // touches (blocks with bx + by <= 6)
+    for (unsigned c = 0; c < 4; ++c) CHECK_EQ(quads(c), 0U);
+    CHECK_EQ(quads(gpu::PixelStats::BlendInput), 10U);
+    // A pixel at (13, 20) widens it to the quad 12..13 x 20..21
+    s.prim(0x80, {{13, 20, -0.5f, 0xFFFFFFFFU}, {14, 20, -0.5f, 0xFFFFFFFFU}, {14, 21, -0.5f, 0xFFFFFFFFU}, {13, 21, -0.5f, 0xFFFFFFFFU}});
+    CHECK(s.flush());
+    CHECK_EQ(pe16(0x10), 0U); CHECK_EQ(pe16(0x12), 13U); CHECK_EQ(pe16(0x14), 0U); CHECK_EQ(pe16(0x16), 21U);
+    // BP 0x55 alone resets left/right
+    s.bpw(bp::CLEAR_BBOX1, 100U | (50U << 10));
+    CHECK(s.flush());
+    CHECK_EQ(pe16(0x10), 100U); CHECK_EQ(pe16(0x12), 50U); CHECK_EQ(pe16(0x16), 21U);
+
+    // Late Z, ALWAYS: the triangle touches 10 quads (blocks with bx + by <= 6)
+    s.bpw(bp::ZMODE, 1U | (7U << 1));
+    s.bpw(bp::ZCOMPARE, 0);
+    s.bpw(bp::CLEAR_PIXEL_PERF, 0);
+    s.prim(0x90, {{0, 0, -0.5f, 0x204080FFU}, {8, 0, -0.5f, 0x204080FFU}, {0, 8, -0.5f, 0x204080FFU}});
+    CHECK(s.flush());
+    CHECK_EQ(quads(gpu::PixelStats::ZcompLocInput), 0U);
+    CHECK_EQ(quads(gpu::PixelStats::ZcompInput), 10U);
+    CHECK_EQ(quads(gpu::PixelStats::ZcompOutput), 10U);
+    CHECK_EQ(quads(gpu::PixelStats::BlendInput), 10U);
+    // Early Z, NEVER: 10 quads enter the early test, none pass or blend; the box does not grow
+    s.bpw(bp::CLEAR_BBOX1, 0x3FFU); s.bpw(bp::CLEAR_BBOX2, 0x3FFU);
+    s.bpw(bp::ZMODE, 1U);
+    s.bpw(bp::ZCOMPARE, 0x40);
+    s.bpw(bp::CLEAR_PIXEL_PERF, 0);
+    s.prim(0x90, {{0, 0, -0.5f, 0x204080FFU}, {8, 0, -0.5f, 0x204080FFU}, {0, 8, -0.5f, 0x204080FFU}});
+    CHECK(s.flush());
+    CHECK_EQ(quads(gpu::PixelStats::ZcompLocInput), 10U);
+    CHECK_EQ(quads(gpu::PixelStats::ZcompLocOutput), 0U);
+    CHECK_EQ(quads(gpu::PixelStats::ZcompInput), 0U);
+    CHECK_EQ(quads(gpu::PixelStats::BlendInput), 0U);
+    CHECK_EQ(pe16(0x10), 0x3FFU); CHECK_EQ(pe16(0x12), 0U);
+    // Early Z, LEQUAL with the far depth: some pass
+    s.bpw(bp::ZMODE, 1U | (7U << 1) | (1U << 4)); // write depth 0x7FFFFF everywhere first (ALWAYS)
+    s.prim(0x90, {{0, 0, -0.5f, 0x204080FFU}, {8, 0, -0.5f, 0x204080FFU}, {0, 8, -0.5f, 0x204080FFU}});
+    s.bpw(bp::CLEAR_PIXEL_PERF, 0);
+    s.bpw(bp::ZMODE, 1U | (1U << 1));               // LESS: z -0.75 is nearer
+    s.prim(0x90, {{0, 0, -0.75f, 0x204080FFU}, {8, 0, -0.75f, 0x204080FFU}, {0, 8, -0.75f, 0x204080FFU}});
+    CHECK(s.flush());
+    CHECK_EQ(quads(gpu::PixelStats::ZcompLocInput), 10U);
+    CHECK_EQ(quads(gpu::PixelStats::ZcompLocOutput), 10U);
+    CHECK_EQ(quads(gpu::PixelStats::BlendInput), 10U);
+}
+
 TEST_CASE(sw_raster_fill_rule) {
     // a quad whose edges lie exactly on sample positions (x + 9/16, y + 9/16): with a
     // consistent fill rule each sample is drawn once -> exactly 8 x 4 = 32 pixels

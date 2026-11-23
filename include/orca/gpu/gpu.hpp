@@ -45,7 +45,9 @@ class Gpu final : public CommandSink {
 public:
     // `phys_mask`: 0x03FFFFFF on GameCube, 0x1FFFFFFF on Wii (applied to display
     // list and array addresses, as Dolphin's GetPhysicalAddressMask).
-    Gpu(mem::Bus& bus, hw::PixelEngine& pe, u32 phys_mask = 0x03FFFFFFU) : bus_(bus), pe_(pe), phys_mask_(phys_mask) {}
+    Gpu(mem::Bus& bus, hw::PixelEngine& pe, u32 phys_mask = 0x03FFFFFFU) : bus_(bus), pe_(pe), phys_mask_(phys_mask) {
+        renderer_.set_stats(&pe_.stats());
+    }
 
     // Feeds FIFO bytes; incomplete trailing commands are kept for the next call.
     // Returns false once the GPU has stopped (see error()).
@@ -67,6 +69,12 @@ public:
     void set_backend(sw::TriangleSink* sink, std::function<void(sw::Efb&)> download,
                      std::function<void(const sw::Efb&)> upload) {
         renderer_.set_sink(sink);
+        PixelStats& s = pe_.stats();
+        s.tracked = sink == nullptr || sink->attach_stats(&s);
+        if (sink != nullptr && s.tracked)
+            pe_.set_stats_sync([sink](bool bbox, std::string& e) { return sink->sync_stats(bbox, e); });
+        else
+            pe_.set_stats_sync(nullptr);
         download_ = std::move(download);
         upload_ = std::move(upload);
     }
@@ -86,6 +94,13 @@ public:
     void on_nop(u8 opcode) override { cycles_ += (opcode == 0x00U || opcode == 0x44U || opcode == 0x48U) ? 6U : 1U; }
 
 private:
+    // A BP write replaces half of the box (or all counters): the other half must be the
+    // backend's current value first.
+    bool sync_stats_before_cpu_write(bool bbox, std::string& error) {
+        PixelStats& s = pe_.stats();
+        if (renderer_.sink() == nullptr || !s.tracked || !(bbox ? s.bbox_armed : s.quads_armed)) return true;
+        return renderer_.sink()->sync_stats(bbox, error);
+    }
     mem::Bus& bus_;
     hw::PixelEngine& pe_;
     u32 phys_mask_;

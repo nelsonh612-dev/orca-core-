@@ -74,6 +74,9 @@ public:
     bool flush(const BpMemory& bp, const XfMemory& xf, const sw::TevState& tev, const sw::TexSource& tex,
                const sw::SlopeState& zslope, std::string& error) override;
 
+    bool attach_stats(PixelStats* stats) override;
+    bool sync_stats(bool bbox, std::string& error) override;
+
     // EFB transfer (24-bit colour and depth values, same layout as sw::Efb).
     void download(sw::Efb& efb);
     void upload(const sw::Efb& efb);

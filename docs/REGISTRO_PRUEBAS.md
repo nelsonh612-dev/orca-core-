@@ -1,4 +1,4 @@
-# Registro de pruebas — Milestone 017
+# Registro de pruebas — Milestone 018
 
 Todos los resultados son de ejecuciones reales del 2026-11-22 en este entorno, sobre una copia limpia de los fuentes de la rama `orca-core-0.1`.
 
@@ -32,11 +32,20 @@ Todos los resultados son de ejecuciones reales del 2026-11-22 en este entorno, s
 | **exi** (M008 + tarjeta de memoria M012) | 23 | 1.445 | 0 |
 | **dsp_mi** (M009, actualizada en M010 y M012) | 15 | 458 | 0 |
 | **dsp_core** (M010 + M011 + M012) | 29 | 534 | 0 |
-| **gpu** (M013 + precargas M014 + programa `gpu_draw` M015) | 27 | 1.050 | 0 |
-| **gpu_sw** (M014 + M015) | 29 | 644 | 0 |
+| **gpu** (M013 + precargas M014 + programa `gpu_draw` M015 + registros PE M018) | 27 | 1.066 | 0 |
+| **gpu_sw** (M014 + M015 + M018) | 30 | 734 | 0 |
 | **efb_copy** (M014 + M015) | 11 | 409 | 0 |
-| **gles** (M016, Mesa llvmpipe 25.2.8, GLES 3.2) | 10 | 76 | 0 |
+| **gles** (M016 + M018, Mesa llvmpipe 25.2.8, GLES 3.2) | 11 | 113 | 0 |
 | encodings (vs `llvm-mc`) | 189 instrucciones | 181 ensambladas + 8 desensambladas | 0 diferencias |
+
+### GPU: bounding box y contadores del PE (M018)
+
+- **Software (valores a mano):** caja inicial 1023/0 por BP 0x55/0x56; el triángulo x + y <= 6 da 0..7 x 0..7; un píxel en (13, 20) la amplía a 13 y 21; BP 0x55 solo cambia izquierda/derecha. Contadores: con Z apagada, 0 en Z y 10 quads en la mezcla (bloques con bx + by <= 6); Z tardía ALWAYS: 10/10/10; Z temprana NEVER: 10 entran, 0 pasan, 0 en mezcla y la caja no crece; Z temprana LESS con profundidad mayor: 10/10/10.
+- **Registros PE:** lectura de caja y contadores (mitades baja/alta, también 32 bits), escritura rechazada, ciclos de copia detenidos, y parada cuando el backend no los sigue.
+- **GLES frente a software:** las 14 palabras de PE 0x10-0x2A idénticas tras cuatro grupos de dibujos (Z apagada; Z tardía LEQUAL con planos que se cortan; Z temprana con alpha test que rechaza la mitad y BP 0x55 reescrito; borrado de contadores y otro offset de scissor) y tras BP 0x56 escrito justo después de un dibujo. Valores de control: Z temprana 9162 entran / 4581 pasan, Z tardía 7540 / 5026, mezcla 7339. EFB idéntico (0 diferencias). Leer antes de BP 0x55-0x57 en GLES se detiene.
+- **Pruebas modificadas:** `gpu_pe_registers` comprobaba que 0x10 y 0x2C se detenían "no implementado"; ahora 0x10 se lee y 0x2C sigue detenido con el motivo nuevo.
+- **Errores encontrados (todos en mis pruebas):** esperé 0 quads de mezcla con la Z apagada (la mezcla siempre cuenta, como en Dolphin); una escena de Z temprana no pasaba ningún píxel porque la profundidad era 0, así que no probaba nada (se detectó al imprimir los valores y se corrigió); un quad quedaba fuera de pantalla porque seguía activo el offset de scissor anterior.
+- **Mutaciones (M018):** 13 sobre el shader (cuentas, intercambio atómico, ampliación de la caja), el backend (base de ids, subida por época, sincronización), el software y el PE: **13 detectadas** (S11, la sincronización antes de que la CPU escriba media caja, sobrevivió al principio; se añadió BP 0x56 justo tras un dibujo). **Acumulado: 386.**
 
 ### CPU: cierre de los pendientes de la CPU (M017)
 

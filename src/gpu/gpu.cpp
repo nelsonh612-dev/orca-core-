@@ -57,6 +57,22 @@ bool Gpu::on_bp(u8 reg, u32 value, std::string& error) {
         }
         pe_.set_finish(into);
         return true;
+    case bp::CLEAR_BBOX1: case bp::CLEAR_BBOX2: {
+        if (!sync_stats_before_cpu_write(true, error)) return false;
+        PixelStats& s = pe_.stats();
+        s.set_bbox_bp(reg == bp::CLEAR_BBOX2, v);
+        s.bbox_armed = true;
+        ++s.epoch;
+        return true;
+    }
+    case bp::CLEAR_PIXEL_PERF: {
+        if (!sync_stats_before_cpu_write(false, error)) return false;
+        PixelStats& s = pe_.stats();
+        s.quads = {};
+        s.quads_armed = true;
+        ++s.epoch;
+        return true;
+    }
     case bp::PE_TOKEN: pe_.set_token(static_cast<u16>(v & 0xFFFFU), false, into); return true;
     case bp::PE_TOKEN_INT: pe_.set_token(static_cast<u16>(v & 0xFFFFU), true, into); return true;
     case bp::TRIGGER_EFB_COPY: {

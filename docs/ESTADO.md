@@ -1,4 +1,4 @@
-# Estado del proyecto — Milestone 017 (rama `orca-core-0.1`)
+# Estado del proyecto — Milestone 018 (rama `orca-core-0.1`)
 
 ## Funciones implementadas (todas con pruebas)
 
@@ -105,6 +105,11 @@
 - **Excepción FP habilitada precisa:** con MSR[FE0|FE1] ≠ 0, una instrucción de cálculo (aritmética, redondeo, conversión, comparación) que deja FPSCR[FEX] = 1 termina (destino escrito salvo VE/ZE) y después se toma la excepción de programa con SRR0 = esa instrucción y SRR1[11]. El 750 trata los modos imprecisos como precisos.
 - **Resultados con FPSCR[OE]/[UE] = 1** (tablas 3-14 y 3-16 del PEM): el resultado exacto redondeado con el exponente ajustado en −/+1536 (doble) o −/+192 (simple), con FR/FI de ese redondeo, OX o UX y XX si es inexacto. Se calcula reescalando los operandos con potencias de dos exactas para que el motor existente redondee en rango.
 
+**GPU: bounding box y contadores del Pixel Engine (M018)** — fuentes: Dolphin como información (`PixelEngine.h/.cpp`, `BPStructs.cpp`, `SWBoundingBox.cpp`, `Tev.cpp`, `Rasterizer.cpp`):
+- **Bounding box:** BP 0x55 (izquierda/derecha, 10 bits cada una) y BP 0x56 (arriba/abajo); cada píxel que llega a la mezcla (tras alpha test y Z) lo amplía hasta los bordes de su bloque 2x2. Registros PE 0x10-0x16 de solo lectura.
+- **Contadores de rendimiento:** quads que entran/pasan la Z temprana, entran/pasan la Z tardía (solo con la prueba Z activa) y entran a la mezcla (siempre), en PE 0x18-0x2A como mitades baja/alta; BP 0x57 los borra. Un quad 2x2 cuenta una vez por triángulo si al menos uno de sus píxeles llega a la etapa. Los ciclos de copia del EFB (0x2C/0x2E) siguen detenidos: no hay modelo de tiempo de las copias.
+- **Backend GLES:** los mismos valores con un *storage buffer* (atomicMin/Max/Add) y una imagen R32UI de 320x264x5 con el último triángulo que contó cada quad (imageAtomicExchange). Se activan con la primera escritura de BP 0x55/0x56 (caja) o 0x57 (contadores), como Dolphin; leer antes da una parada clara. Antes de que la CPU reescriba media caja se sincroniza con la GPU. Si el GL no ofrece buffers/imágenes en el fragment shader, el shader se compila sin esto y la lectura se detiene.
+
 **GPU, parte 1 (M013)** — fuentes: archivos de Dolphin como información (ver README) y YAGCD; el código es propio:
 - `hw::CommandProcessor` (0x0C000000): STATUS calculado (marcas de agua, lectura y comando inactivos, breakpoint), CTRL (6 bits), CLEAR, PERF_SELECT (3 bits), registro 0x0A (8 bits), los ocho punteros del FIFO como pares LO/HI con máscaras 0xFFE0 / 0x03FF (GC) o 0x1FFF (Wii), métricas que leen 0 y 0x64 que lee 4.
 - FIFO enlazado: cada ráfaga del gather pipe avanza el puntero de escritura del CP (a la base cuando es igual al final, si no +32), suma 32 a la distancia y copia los punteros al PI; la GPU lee bloques de 32 bytes mientras la lectura está activada, hay distancia y no está en un breakpoint activado. Interrupción CP (causa PI 0x800) por breakpoint, marca alta o marca baja con su habilitación, solo con la lectura activada.
@@ -153,7 +158,7 @@
 1. **Restos de M012 (sin hacer):** los demás comandos de la tarjeta que Dolphin nombra (ReadID, ReadErrorBuffer, WakeUp, Sleep, ArrayToBuffer, WriteBuffer, ExtraByteProgram, ChipErase; ahora con sus códigos de `EXI_DeviceMemoryCard.h`: 0x53, 0x82, 0x85, 0x86, 0x87, 0x88, 0xF3, 0xF4) y el ID del flash en la SRAM; la salida de audio (los bloques del DMA de audio ya se leen pero nadie los reproduce); la mezcla de streaming del AI. También quedan el puerto serie 1 (EXI0/CS2), el AD16 (EXI2/CS0), el mapeo de la ROM en el vector de reset 0xFFF00000, la aplicación de la protección del MI y los comandos restantes de la DI.
 2. **CPU, lo que queda detenido a propósito:** modo little-endian, modo traza (MSR[SE]/[BE]), breakpoints IABR/DABR activos, machine check, eciwx/ecowx con EAR[E] = 1, y los casos de FP que el PEM no fija (ver la tabla de verificación). Ningún juego conocido los usa; cada uno da una parada que explica el motivo. Sin TLB ni caché L1/L2 normal (solo la bloqueada).
 3. **M018 — rendimiento del backend GLES y app Android:** probar en el Redmi 15C (Mali-G52) que existen `GL_EXT_shader_framebuffer_fetch` y la lectura de adjuntos enteros, y medir; mover la transformación de vértices y las copias del EFB a la GPU; shaders especializados por estado (con el ubershader mientras compilan); caché de texturas sin hash por dibujo; ventana/superficie Android, entrada y audio. Después Vulkan (aquí solo compila: no hay controlador; hay que decidir glslang o un generador SPIR-V propio).
-4. **Lo que queda de la GPU por software:** texturas RGBA8 en TMEM con mipmaps, anti-aliasing de RGB565_Z16, formatos de píxel 4-7 (YUV), contadores de rendimiento y bounding box del PE.
+4. **Lo que queda de la GPU por software:** texturas RGBA8 en TMEM con mipmaps, anti-aliasing de RGB565_Z16, formatos de píxel 4-7 (YUV) y el contador de ciclos de copia del EFB (bounding box y contadores de quads hechos en M018).
 5. **M019 — JIT ARM64:** emisor ARM64 verificado con el desensamblador de LLVM, bloques básicos, asignación de registros, caché de bloques conectada a la invalidación del bus, y pruebas diferenciales intérprete vs JIT, que tienen que correr en un dispositivo ARM64.
 6. **Después:** audio real, DI y discos, SI y controles, EXI, AI y los componentes de Wii (Hollywood, IOS, Bluetooth).
 
@@ -258,6 +263,8 @@ Son comportamientos que el PEM deja indefinidos o que el manual del 750CL no det
 | Precarga de TMEM: máscara de la dirección de origen | Orca aplica la máscara física de la consola (Dolphin lo marca como TODO) |
 | Líneas a 45° (\|dx\| = \|dy\|) | Remates horizontales, como Dolphin (que lo marca como FIXME) |
 | Puntos | No se recortan (el software de Dolphin tampoco; lo marca como TODO) |
+| Contadores de quads del PE | Orden de los registros de Dolphin ("not verified"); un quad 2x2 por triángulo cuando al menos un píxel llega a la etapa (Dolphin por software cuenta cada tercer píxel). Las cuentas de Z solo con la prueba Z activa |
+| Bounding box | Bloques 2x2 tras alpha test y Z, como el software de Dolphin; sin verificar en consola |
 | Z freeze antes del primer triángulo | Pendiente constante 1,0 (suposición de Dolphin) |
 | RGB565_Z16 | Se guarda como RGB8 con Z de 24 bits, como el software de Dolphin; el anti-aliasing de 3 muestras no se emula |
 

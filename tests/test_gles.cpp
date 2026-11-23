@@ -487,6 +487,96 @@ TEST_CASE(gles_efb_copy_and_clear) {
     CHECK_EQ(d.depth, 0U);
 }
 
+// Bounding box and quad counters: the GLES backend (storage buffer + quad id image)
+// must report exactly what the software renderer counts.
+TEST_CASE(gles_bounding_box_and_counters) {
+    Twin t;
+    auto pe = [](Side& s, u32 off, bool& ok) { u64 v = 0; ok = s.pe.mmio_read(off, 2, v) && ok; return static_cast<u32>(v); };
+    auto compare = [&](const char* what) {
+        bool ok = true;
+        unsigned diffs = 0;
+        for (u32 off = 0x10; off <= 0x2A; off += 2) {
+            const u32 a = pe(t.sw, off, ok), b = pe(t.gl, off, ok);
+            if (a != b) { if (diffs++ < 4) std::printf("    %s: PE %02X sw %u gl %u\n", what, off, a, b); }
+        }
+        CHECK(ok);
+        CHECK_EQ(diffs, 0U);
+    };
+    t.scene();
+    CHECK(t.run());
+    {   // the GLES backend has not tracked anything yet: a read before BP 0x55-0x57 stops
+        u64 v = 0;
+        CHECK(!t.gl.pe.mmio_read(0x10, 2, v));
+        CHECK(t.gl.pe.mmio_error().find("BP 0x55") != std::string::npos);
+        CHECK(!t.gl.pe.mmio_read(0x18, 2, v));
+    }
+    t.bpw(bp::CLEAR_BBOX1, 0x3FFU); t.bpw(bp::CLEAR_BBOX2, 0x3FFU); t.bpw(bp::CLEAR_PIXEL_PERF, 0);
+    // z off: blend input only; a triangle and quads
+    t.prim(0x90, {{0, 0, -0.5f, 0x204080FFU}, {8, 0, -0.5f, 0x204080FFU}, {0, 8, -0.5f, 0x204080FFU}});
+    t.quad(101, 51, 7, 9, -0.5f, 0x00FF00FFU);
+    CHECK(t.run());
+    compare("z off");
+    {
+        bool ok = true;
+        CHECK_EQ(pe(t.gl, 0x10, ok), 0U); CHECK_EQ(pe(t.gl, 0x12, ok), 107U);
+        CHECK_EQ(pe(t.gl, 0x14, ok), 0U); CHECK_EQ(pe(t.gl, 0x16, ok), 59U);
+        CHECK(ok);
+    }
+    // late z, LEQUAL with update; intersecting planes, odd slopes
+    t.bpw(bp::ZMODE, 1U | (7U << 1) | (1U << 4));
+    t.prim(0x90, {{10, 100, -0.9f, 0xFF00FFFFU}, {200, 110, -0.1f, 0xFF00FFFFU}, {30, 250, -0.5f, 0xFF00FFFFU}});
+    t.bpw(bp::ZMODE, 1U | (3U << 1) | (1U << 4));
+    t.prim(0x90, {{0, 120, -0.5f, 0x00FFFFFFU}, {220, 130, -0.5f, 0x00FFFFFFU}, {20, 260, -0.5f, 0x00FFFFFFU}});
+    CHECK(t.run());
+    compare("late z");
+    // early z + alpha test that rejects half of a gradient; BP 0x55 rewritten in between
+    t.bpw(bp::ZCOMPARE, 0x40);
+    t.bpw(bp::CLEAR_BBOX1, 300U | (310U << 10));
+    t.bpw(bp::ALPHA_COMPARE, 0x80U | (4U << 16) | (0U << 22) | (7U << 19)); // a > 128 OR never -> a > 128
+    t.bpw(bp::ZMODE, 1U | (7U << 1) | (1U << 4));   // ALWAYS with update: early z passes
+    t.prim(0x90, {{300.3f, 300.2f, -0.6f, 0xFFFFFF00U}, {500.7f, 310.9f, -0.6f, 0xFFFFFFFFU}, {320.1f, 480.4f, -0.6f, 0xFFFFFF80U}});
+    t.bpw(bp::ZMODE, 1U | (1U << 1) | (1U << 4));   // LESS: equal depth fails
+    t.prim(0x90, {{300.3f, 300.2f, -0.6f, 0xFFFFFFFFU}, {500.7f, 310.9f, -0.6f, 0xFFFFFFFFU}, {320.1f, 480.4f, -0.6f, 0xFFFFFFFFU}});
+    CHECK(t.run());
+    compare("early z + alpha test");
+    {
+        bool ok = true;
+        std::printf("    counters after early z + alpha test: zloc in %u out %u, z in %u out %u, blend %u; box %u..%u x %u..%u\n",
+                    pe(t.sw, 0x18, ok), pe(t.sw, 0x1C, ok), pe(t.sw, 0x20, ok), pe(t.sw, 0x24, ok), pe(t.sw, 0x28, ok),
+                    pe(t.sw, 0x10, ok), pe(t.sw, 0x12, ok), pe(t.sw, 0x14, ok), pe(t.sw, 0x16, ok));
+        CHECK(pe(t.sw, 0x18, ok) > 0U && pe(t.sw, 0x1C, ok) > 0U && pe(t.sw, 0x1C, ok) < pe(t.sw, 0x18, ok));
+        CHECK(pe(t.sw, 0x20, ok) > 0U && pe(t.sw, 0x28, ok) > pe(t.sw, 0x24, ok));
+        CHECK(pe(t.sw, 0x12, ok) > 310U); // the box grew past the value written by BP 0x55
+        CHECK(ok);
+    }
+    // counters cleared again, then more draws across a scissor offset change (several passes)
+    t.bpw(bp::CLEAR_PIXEL_PERF, 0);
+    t.bpw(bp::ALPHA_COMPARE, (7U << 16) | (7U << 19));
+    t.bpw(bp::ZMODE, 1U | (7U << 1));
+    t.bpw(bp::SCISSOR_OFFSET, 100U | (90U << 10));
+    t.prim(0x90, {{150.5f, 140.25f, -0.4f, 0x808080FFU}, {420.75f, 150.5f, -0.4f, 0x808080FFU}, {200.0f, 400.5f, -0.4f, 0x808080FFU}});
+    CHECK(t.run());
+    compare("after clear, scissor offset");
+    // BP 0x56 right after a draw (no PE read in between): left/right must keep what the
+    // GPU accumulated, so the backend has to be synchronised before the CPU write.
+    t.bpw(bp::SCISSOR_OFFSET, 171U | (171U << 10)); // back to EFB = model coordinates
+    t.bpw(bp::CLEAR_BBOX1, 0x3FFU);
+    t.quad(601, 11, 5, 3, -0.4f, 0x123456FFU);
+    t.bpw(bp::CLEAR_BBOX2, 7U | (8U << 10));
+    CHECK(t.run());
+    compare("BP 0x56 after a draw");
+    {
+        bool ok = true;
+        CHECK_EQ(pe(t.gl, 0x10, ok), 600U); CHECK_EQ(pe(t.gl, 0x12, ok), 605U);
+        CHECK_EQ(pe(t.gl, 0x14, ok), 7U); CHECK_EQ(pe(t.gl, 0x16, ok), 8U);
+        CHECK(ok);
+    }
+    const Diff d = t.diff();
+    report("bbox/counter scenes", d);
+    CHECK_EQ(d.color, 0U);
+    CHECK_EQ(d.depth, 0U);
+}
+
 TEST_CASE(gles_timing_report) {
     // not a check: time of 64 textured full-screen quads (2 triangles each) on both paths.
     // llvmpipe runs the "GPU" on this machine's CPU, so this says nothing about a phone.

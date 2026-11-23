@@ -10,11 +10,22 @@ bool PixelEngine::read16(u32 offset, u16& v) {
     if (offset <= pe::ALPHAREAD && (offset & 1U) == 0U) { v = conf_[offset / 2U]; return true; }
     if (offset == pe::CTRL) { v = ctrl_; return true; }
     if (offset == pe::TOKEN) { v = token_; return true; }
-    char b[96];
-    if (offset >= 0x10U && offset <= 0x16U)
-        std::snprintf(b, sizeof b, "PE: bounding-box register %02X is not implemented", offset);
-    else if (offset >= 0x18U && offset <= 0x2EU)
-        std::snprintf(b, sizeof b, "PE: performance counter %02X is not implemented", offset);
+    char b[112];
+    if (offset >= 0x10U && offset <= 0x2AU && (offset & 1U) == 0U && !stats_.tracked)
+        return fail("PE: bounding box / performance counters are not tracked by the active GPU backend");
+    if (offset >= 0x10U && offset <= 0x2AU && (offset & 1U) == 0U && sync_) {
+        std::string e;
+        if (!sync_(offset <= 0x16U, e)) return fail("PE: " + e);
+    }
+    if (offset >= 0x10U && offset <= 0x16U && (offset & 1U) == 0U) { v = stats_.bbox[(offset - 0x10U) / 2U]; return true; }
+    if (offset >= 0x18U && offset <= 0x2AU && (offset & 1U) == 0U) {
+        // Order (Dolphin): ZCOMPLOC in, ZCOMPLOC out, ZCOMP in, ZCOMP out, blend in; each low then high.
+        const u32 q = stats_.quads[(offset - 0x18U) / 4U];
+        v = static_cast<u16>((offset & 2U) != 0U ? q >> 16 : q & 0xFFFFU);
+        return true;
+    }
+    if (offset == 0x2CU || offset == 0x2EU)
+        std::snprintf(b, sizeof b, "PE: EFB copy clock counter %02X has no timing model", offset);
     else
         std::snprintf(b, sizeof b, "PE: no register at offset %02X", offset);
     return fail(b);

@@ -32,6 +32,7 @@
 // Like Dolphin's software renderer, RGB565_Z16 keeps 8-bit colour and 24-bit
 // depth (not exact hardware behaviour).
 #pragma once
+#include "orca/gpu/pixel_stats.hpp"
 #include "orca/gpu/bp_memory.hpp"
 #include "orca/gpu/command_stream.hpp"
 #include "orca/gpu/sw/vertex.hpp"
@@ -104,6 +105,14 @@ public:
     // Called at the end of every draw with the state it used and the current z slope.
     virtual bool flush(const BpMemory& bp, const XfMemory& xf, const TevState& tev, const TexSource& tex,
                        const SlopeState& zslope, std::string& error) = 0;
+    // Pixel Engine statistics (bounding box, quad counters). A sink that can track them
+    // returns true from attach_stats and keeps `stats` current when sync_stats is called
+    // (before the CPU reads a PE register). The default sink cannot.
+    virtual bool attach_stats(PixelStats* /*stats*/) { return false; }
+    virtual bool sync_stats(bool /*bbox*/, std::string& error) {
+        error = "the GPU backend does not track the bounding box / counters";
+        return false;
+    }
 };
 
 class Renderer {
@@ -117,6 +126,8 @@ public:
     Efb& efb() noexcept { return efb_; }
     const Efb& efb() const noexcept { return efb_; }
     u64 pixels_written() const noexcept { return pixels_; }
+    // Bounding box and quad counters (owned by the Pixel Engine); nullptr = not tracked.
+    void set_stats(PixelStats* stats) noexcept { stats_ = stats; }
 
     // EFB colour as RGBA8 for the current pixel format (exposed for copies/tests).
     static void efb_color_rgba(u32 c24, u32 pixel_format, u8 out[4]);
@@ -144,6 +155,8 @@ private:
     const TexSource* tex_{nullptr};
     std::string err_;
     u64 pixels_{0};
+    PixelStats* stats_{nullptr};
+    u8 quad_stages_{0}; // PixelStats counters reached by the current 2x2 quad
     // per-triangle setup
     s32 xoff_{0}, yoff_{0};
     SlopeState zslope_;

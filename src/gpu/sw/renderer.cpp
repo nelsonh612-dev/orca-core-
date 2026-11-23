@@ -402,6 +402,7 @@ bool Renderer::raster(const Vtx& v0, const Vtx& v1, const Vtx& v2) {
                         if (bits(order, odd ? 18 : 6, 1) != 0U)
                             tlod[st] = calc_lod(bits(order, odd ? 12 : 0, 3), bits(order, odd ? 15 : 3, 3), uv[0][0], uv[0][1], uv[1][0]);
                     }
+                    quad_stages_ = 0;
                     for (s32 iy = 0; iy < 2; ++iy)
                         for (s32 ix = 0; ix < 2; ++ix) {
                             if (!cov[iy][ix]) continue;
@@ -411,6 +412,9 @@ bool Renderer::raster(const Vtx& v0, const Vtx& v1, const Vtx& v2) {
                                 for (unsigned c = 0; c < 4; ++c) col[i][c] = cs[i][c].at(px, py);
                             if (!pixel(px, py, zs.at(px, py), col, uv[iy][ix], tlod, ilod)) return false;
                         }
+                    if (stats_ != nullptr)
+                        for (unsigned c = 0; c < PixelStats::kCount; ++c)
+                            if ((quad_stages_ & (1U << c)) != 0U) ++stats_->quads[c];
                 }
             }
         }
@@ -443,7 +447,12 @@ bool Renderer::pixel(s32 x, s32 y, float zf, const std::array<std::array<float, 
         if (pass && (zmode & 0x10U) != 0U) efb_.set_depth24(ux, uy, zv & 0xFFFFFFU);
         return pass;
     };
-    if (early && !zcompare(static_cast<u32>(z))) return true;
+    auto reach = [this](unsigned counter) { quad_stages_ = static_cast<u8>(quad_stages_ | (1U << counter)); };
+    if (early) {
+        reach(PixelStats::ZcompLocInput);
+        if (!zcompare(static_cast<u32>(z))) return true;
+        reach(PixelStats::ZcompLocOutput);
+    }
 
     // ---- TEV ----
     using C4 = std::array<s16, 4>; // R, G, B, A
@@ -712,7 +721,13 @@ bool Renderer::pixel(s32 x, s32 y, float zf, const std::array<std::array<float, 
             out[2] = static_cast<u8>((out[2] * inv + fi8 * bits(fcol, 0, 8)) >> 8);
         }
     }
-    if (late && !zcompare(static_cast<u32>(z))) return true;
+    if (late) {
+        reach(PixelStats::ZcompInput);
+        if (!zcompare(static_cast<u32>(z))) return true;
+        reach(PixelStats::ZcompOutput);
+    }
+    reach(PixelStats::BlendInput);
+    if (stats_ != nullptr) stats_->widen(ux, uy);
 
     // ---- blending into the EFB ----
     const u32 bm = bp.reg(bp::BLENDMODE);

@@ -14,13 +14,18 @@
 // max(500, GPU cycles so far) CPU cycles later, as Dolphin does in single-core
 // mode; a second request before that only updates the pending value.
 // PI causes: PE_TOKEN while signalled && enabled, PE_FINISH likewise.
-// Bounding-box (0x10-0x16) and performance-counter (0x18-0x2E) reads, writes
-// to read-only registers and accesses that are not 16/32 bits are errors.
+//   0x10-0x16 bounding box, 0x18-0x2A quad counters as low/high halves (see
+//   gpu/pixel_stats.hpp), read only; they stop while a GPU backend that does
+//   not track them draws.
+// Errors (clear stop): 0x2C/0x2E EFB copy clocks (no model of the copy
+// timing), writes to read-only registers, accesses that are not 16/32 bits.
 #pragma once
 #include "orca/core/scheduler.hpp"
+#include "orca/gpu/pixel_stats.hpp"
 #include "orca/hw/processor_interface.hpp"
 #include "orca/memory/bus.hpp"
 
+#include <functional>
 #include <string>
 
 namespace orca::hw {
@@ -46,6 +51,9 @@ public:
     void set_finish(u64 gpu_cycles);
 
     u16 token() const noexcept { return token_; }
+    gpu::PixelStats& stats() noexcept { return stats_; }
+    // Brings stats() up to date from a GPU backend before a register read (nullptr = software).
+    void set_stats_sync(std::function<bool(bool bbox, std::string& error)> sync) { sync_ = std::move(sync); }
     u16 config(u32 offset) const noexcept { return offset <= pe::ALPHAREAD ? conf_[offset / 2U] : 0; }
 
 private:
@@ -62,6 +70,8 @@ private:
     u16 token_{0}, token_pending_{0};
     bool token_irq_pending_{false}, finish_irq_pending_{false}, event_raised_{false};
     bool token_signal_{false}, finish_signal_{false};
+    gpu::PixelStats stats_;
+    std::function<bool(bool, std::string&)> sync_;
     std::string error_;
 };
 

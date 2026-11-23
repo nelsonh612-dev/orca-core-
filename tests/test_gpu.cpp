@@ -372,10 +372,20 @@ TEST_CASE(gpu_pe_registers) {
     CHECK_EQ(v, 0x11001102ULL);
     CHECK(!t.pe.mmio_write(hw::pe::TOKEN, 2, 5));
     CHECK(t.pe.mmio_error().find("read-only") != std::string::npos);
+    // Bounding box and quad counters (M018): readable, read-only
+    t.pe.stats().bbox = {1, 2, 3, 4};
+    t.pe.stats().quads[gpu::PixelStats::BlendInput] = 0x00012345U;
+    CHECK_EQ(t.r(0x10), 1U); CHECK_EQ(t.r(0x12), 2U); CHECK_EQ(t.r(0x14), 3U); CHECK_EQ(t.r(0x16), 4U);
+    CHECK_EQ(t.r(0x28), 0x2345U); CHECK_EQ(t.r(0x2A), 0x0001U);
+    CHECK(t.pe.mmio_read(0x10, 4, v));
+    CHECK_EQ(v, 0x00010002ULL);
+    CHECK(!t.pe.mmio_write(0x10, 2, 5));
+    CHECK(!t.pe.mmio_read(0x2C, 2, v)); // EFB copy clocks: no timing model
+    CHECK(t.pe.mmio_error().find("copy clock") != std::string::npos);
+    t.pe.stats().tracked = false;       // a GPU backend that does not track them
     CHECK(!t.pe.mmio_read(0x10, 2, v));
-    CHECK(t.pe.mmio_error().find("bounding-box") != std::string::npos);
-    CHECK(!t.pe.mmio_read(0x2C, 2, v));
-    CHECK(t.pe.mmio_error().find("performance counter") != std::string::npos);
+    CHECK(t.pe.mmio_error().find("not tracked") != std::string::npos);
+    CHECK(!t.pe.mmio_read(0x18, 2, v));
     CHECK(!t.pe.mmio_read(0x0C, 2, v));
     CHECK(!t.pe.mmio_read(0x00, 1, v));
 }

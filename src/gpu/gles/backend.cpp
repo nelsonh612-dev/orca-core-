@@ -156,6 +156,14 @@ struct Backend::Impl {
     std::array<std::array<GLint, 2>, 8 * 16> lvl{};
     GLint u_off{-1}, u_bp{-1}, u_reg{-1}, u_kon{-1}, u_vp{-1}, u_zs0{-1}, u_zs1{-1}, u_tex{-1}, u_lvl{-1}, u_tri{-1};
     std::vector<u8> scratch;
+    // Pixel Engine statistics (see pixel_stats.hpp and the shader)
+    bool stats_supported{false};
+    GLuint stats_buf{0}, quad_ids{0};
+    GLint u_stats_on{-1}, u_tri_base{-1};
+    PixelStats* stats{nullptr};
+    u32 uploaded_epoch{~0U};
+    bool gpu_dirty{false};
+    u32 tri_base{0};
 
     ~Impl() {
         if (prog != 0) glDeleteProgram(prog);
@@ -167,6 +175,8 @@ struct Backend::Impl {
         if (dummy != 0) glDeleteTextures(1, &dummy);
         if (tri_tex != 0) glDeleteTextures(1, &tri_tex);
         if (tri_buf != 0) glDeleteBuffers(1, &tri_buf);
+        if (stats_buf != 0) glDeleteBuffers(1, &stats_buf);
+        if (quad_ids != 0) glDeleteTextures(1, &quad_ids);
     }
 
     // Decodes the mip levels a map can use into an RGBA8 atlas (levels stacked vertically).
@@ -272,7 +282,15 @@ bool Backend::init(std::string& error) {
     Impl& g = *impl_;
     const GLuint vs = compile(GL_VERTEX_SHADER, kVertexShader, error);
     if (vs == 0) return false;
-    const GLuint fs = compile(GL_FRAGMENT_SHADER, kFragmentShader, error);
+    // Bounding box / quad counters need one storage buffer and one image in the fragment
+    // stage; without them the shader is built without that code and the PE reports it.
+    GLint frag_ssbo = 0, frag_images = 0;
+    glGetIntegerv(GL_MAX_FRAGMENT_SHADER_STORAGE_BLOCKS, &frag_ssbo);
+    glGetIntegerv(GL_MAX_FRAGMENT_IMAGE_UNIFORMS, &frag_images);
+    g.stats_supported = frag_ssbo >= 1 && frag_images >= 1;
+    const std::string fsrc = std::string("#version 320 es\n#define ORCA_STATS ") + (g.stats_supported ? "1" : "0") +
+                             "\n" + kFragmentShader;
+    const GLuint fs = compile(GL_FRAGMENT_SHADER, fsrc.c_str(), error);
     if (fs == 0) { glDeleteShader(vs); return false; }
     g.prog = glCreateProgram();
     glAttachShader(g.prog, vs);
@@ -298,6 +316,19 @@ bool Backend::init(std::string& error) {
     g.u_tex = glGetUniformLocation(g.prog, "u_tex");
     g.u_lvl = glGetUniformLocation(g.prog, "u_lvl");
     g.u_tri = glGetUniformLocation(g.prog, "u_tri");
+    g.u_stats_on = glGetUniformLocation(g.prog, "u_stats_on");
+    g.u_tri_base = glGetUniformLocation(g.prog, "u_tri_base");
+    if (g.stats_supported) {
+        glGenBuffers(1, &g.stats_buf);
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, g.stats_buf);
+        glBufferData(GL_SHADER_STORAGE_BUFFER, 9 * sizeof(GLuint), nullptr, GL_DYNAMIC_DRAW);
+        glGenTextures(1, &g.quad_ids);
+        glBindTexture(GL_TEXTURE_2D_ARRAY, g.quad_ids);
+        glTexStorage3D(GL_TEXTURE_2D_ARRAY, 1, GL_R32UI, kW / 2, kH / 2, PixelStats::kCount);
+        const std::vector<GLuint> none(static_cast<std::size_t>(kW / 2) * (kH / 2) * PixelStats::kCount, 0xFFFFFFFFU);
+        glTexSubImage3D(GL_TEXTURE_2D_ARRAY, 0, 0, 0, 0, kW / 2, kH / 2, PixelStats::kCount, GL_RED_INTEGER,
+                        GL_UNSIGNED_INT, none.data());
+    }
     glGenBuffers(1, &g.tri_buf);
     glGenTextures(1, &g.tri_tex);
     glGenVertexArrays(1, &g.vao);
@@ -430,6 +461,24 @@ bool Backend::flush(const BpMemory& bp, const XfMemory& xf, const sw::TevState& 
         glUniform1i(g.u_tri, 8);
         glBindBuffer(GL_ARRAY_BUFFER, g.vbo);
         glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(verts_.size() * sizeof(float)), verts_.data(), GL_STREAM_DRAW);
+        // statistics: upload what the CPU changed (BP 0x55-0x57) and arm the shader
+        const bool bbox_on = g.stats != nullptr && g.stats_supported && g.stats->bbox_armed;
+        const bool quads_on = g.stats != nullptr && g.stats_supported && g.stats->quads_armed;
+        if (g.stats_supported) {
+            if ((bbox_on || quads_on) && g.stats->epoch != g.uploaded_epoch) {
+                GLuint v[9];
+                for (unsigned i = 0; i < 4; ++i) v[i] = g.stats->bbox[i];
+                for (unsigned i = 0; i < PixelStats::kCount; ++i) v[4 + i] = g.stats->quads[i];
+                glBindBuffer(GL_SHADER_STORAGE_BUFFER, g.stats_buf);
+                glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof v, v);
+                g.uploaded_epoch = g.stats->epoch;
+            }
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, g.stats_buf);
+            glBindImageTexture(0, g.quad_ids, 0, GL_TRUE, 0, GL_READ_WRITE, GL_R32UI);
+            glUniform2ui(g.u_stats_on, bbox_on ? 1U : 0U, quads_on ? 1U : 0U);
+            glUniform1ui(g.u_tri_base, g.tri_base);
+            if (bbox_on || quads_on) g.gpu_dirty = true;
+        }
         for (const Range& rx : xr)
             for (const Range& ry : yr) {
                 glUniform2f(g.u_off, static_cast<float>(rx.off), static_cast<float>(ry.off));
@@ -439,9 +488,35 @@ bool Backend::flush(const BpMemory& bp, const XfMemory& xf, const sw::TevState& 
             }
     }
     glDisable(GL_SCISSOR_TEST);
+    g.tri_base += static_cast<u32>(tris_.size()); // triangle ids for the quad counters (wrap after 2^32)
     tris_.clear();
     const GLenum e = glGetError();
     if (e != GL_NO_ERROR) { std::snprintf(eb, sizeof eb, "GL error 0x%X while drawing", e); error = eb; return false; }
+    return true;
+}
+
+bool Backend::attach_stats(PixelStats* stats) {
+    impl_->stats = stats;
+    return impl_->stats_supported;
+}
+
+bool Backend::sync_stats(bool bbox, std::string& error) {
+    Impl& g = *impl_;
+    if (!g.stats_supported || g.stats == nullptr) { error = "the GL implementation has no fragment storage buffers/images"; return false; }
+    if (!(bbox ? g.stats->bbox_armed : g.stats->quads_armed)) {
+        error = bbox ? "bounding box read before the game set it (BP 0x55/0x56): the GLES backend only tracks it from then"
+                     : "quad counters read before the game cleared them (BP 0x57): the GLES backend only counts from then";
+        return false;
+    }
+    if (!g.gpu_dirty) return true;
+    glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, g.stats_buf);
+    const auto* v = static_cast<const GLuint*>(glMapBufferRange(GL_SHADER_STORAGE_BUFFER, 0, 9 * sizeof(GLuint), GL_MAP_READ_BIT));
+    if (v == nullptr) { error = "could not map the statistics buffer"; return false; }
+    for (unsigned i = 0; i < 4; ++i) g.stats->bbox[i] = static_cast<u16>(v[i]);
+    for (unsigned i = 0; i < PixelStats::kCount; ++i) g.stats->quads[i] = v[4 + i];
+    glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
+    g.gpu_dirty = false;
     return true;
 }
 
