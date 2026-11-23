@@ -8,6 +8,20 @@
 #include <vector>
 
 namespace orca::gpu::sw {
+
+EfbRect copy_source_area(const BpMemory& bp) {
+    const u32 tl = bp.reg(bp::EFB_TL), wh = bp.reg(bp::EFB_WH);
+    const u32 x = tl & 0x3FFU, y = (tl >> 10) & 0x3FFU;
+    const u32 w = (wh & 0x3FFU) + 1U, h = ((wh >> 10) & 0x3FFU) + 1U;
+    EfbRect r;
+    r.x0 = x >= 2U ? x - 2U : 0U;
+    r.y0 = y >= 2U ? y - 2U : 0U;
+    r.x1 = std::min<u32>(x + w + 2U, kEfbWidth);
+    r.y1 = std::min<u32>(y + h + 2U, kEfbHeight);
+    if (r.x0 >= r.x1 || r.y0 >= r.y1) r = {};
+    return r;
+}
+
 namespace {
 
 

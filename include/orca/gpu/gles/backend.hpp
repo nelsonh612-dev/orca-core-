@@ -35,6 +35,7 @@
 //  * pixels exactly on a triangle edge follow the GPU's fill rule (identical on llvmpipe).
 // Requires OpenGL ES 3.2 with GL_EXT_shader_framebuffer_fetch; init() reports otherwise.
 #pragma once
+#include "orca/gpu/sw/efb_copy.hpp"
 #include "orca/gpu/sw/renderer.hpp"
 
 #include <array>
@@ -79,9 +80,10 @@ public:
     bool peek_pixel(u32 x, u32 y, u32& color, u32& depth, std::string& error) override;
     bool poke_pixel(u32 x, u32 y, bool depth, u32 value, std::string& error) override;
 
-    // EFB transfer (24-bit colour and depth values, same layout as sw::Efb).
-    void download(sw::Efb& efb);
-    void upload(const sw::Efb& efb);
+    // EFB transfer (24-bit colour and depth values, same layout as sw::Efb), of
+    // the whole EFB or of one area.
+    void download(sw::Efb& efb, const sw::EfbRect& area = {0, 0, sw::kEfbWidth, sw::kEfbHeight});
+    void upload(const sw::Efb& efb, const sw::EfbRect& area = {0, 0, sw::kEfbWidth, sw::kEfbHeight});
 
     u64 draws() const noexcept { return draws_; }
     u64 texture_uploads() const noexcept { return tex_uploads_; }

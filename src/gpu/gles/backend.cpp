@@ -576,32 +576,50 @@ bool Backend::poke_pixel(u32 x, u32 y, bool depth, u32 value, std::string& error
     return true;
 }
 
-void Backend::download(sw::Efb& efb) {
+void Backend::download(sw::Efb& efb, const sw::EfbRect& area) {
     Impl& g = *impl_;
-    std::vector<GLuint> px(static_cast<std::size_t>(kW) * kH * 4U);
+    const int x0 = static_cast<int>(area.x0), y0 = static_cast<int>(area.y0);
+    const int w = static_cast<int>(area.x1) - x0, h = static_cast<int>(area.y1) - y0;
+    if (w <= 0 || h <= 0) return;
     glBindFramebuffer(GL_FRAMEBUFFER, g.fbo);
     for (int a = 0; a < 2; ++a) {
         glReadBuffer(static_cast<GLenum>(GL_COLOR_ATTACHMENT0 + a));
-        glReadPixels(0, 0, kW, kH, GL_RGBA_INTEGER, GL_UNSIGNED_INT, px.data());
-        for (int y = 0; y < kH; ++y)
-            for (int x = 0; x < kW; ++x) {
-                const u32 v = px[(static_cast<std::size_t>(y) * kW + static_cast<std::size_t>(x)) * 4U] & 0xFFFFFFU;
-                if (a == 0) efb.set_color24(static_cast<u32>(x), static_cast<u32>(y), v);
-                else efb.set_depth24(static_cast<u32>(x), static_cast<u32>(y), v);
+        // GL ES always accepts RGBA_INTEGER; the implementation may also offer
+        // RED_INTEGER for an R32UI attachment (a quarter of the data to move)
+        GLint fmt = 0, type = 0;
+        glGetIntegerv(GL_IMPLEMENTATION_COLOR_READ_FORMAT, &fmt);
+        glGetIntegerv(GL_IMPLEMENTATION_COLOR_READ_TYPE, &type);
+        const bool red = fmt == GL_RED_INTEGER && type == GL_UNSIGNED_INT;
+        const std::size_t comps = red ? 1U : 4U;
+        std::vector<GLuint> px(static_cast<std::size_t>(w) * static_cast<std::size_t>(h) * comps);
+        glPixelStorei(GL_PACK_ALIGNMENT, 4);
+        glReadPixels(x0, y0, w, h, red ? GL_RED_INTEGER : GL_RGBA_INTEGER, GL_UNSIGNED_INT, px.data());
+        for (int y = 0; y < h; ++y)
+            for (int x = 0; x < w; ++x) {
+                const u32 v = px[(static_cast<std::size_t>(y) * static_cast<std::size_t>(w) + static_cast<std::size_t>(x)) * comps] & 0xFFFFFFU;
+                const auto ex = static_cast<u32>(x0 + x), ey = static_cast<u32>(y0 + y);
+                if (a == 0) efb.set_color24(ex, ey, v);
+                else efb.set_depth24(ex, ey, v);
             }
     }
 }
 
-void Backend::upload(const sw::Efb& efb) {
+void Backend::upload(const sw::Efb& efb, const sw::EfbRect& area) {
     Impl& g = *impl_;
-    std::vector<GLuint> px(static_cast<std::size_t>(kW) * kH);
+    const int x0 = static_cast<int>(area.x0), y0 = static_cast<int>(area.y0);
+    const int w = static_cast<int>(area.x1) - x0, h = static_cast<int>(area.y1) - y0;
+    if (w <= 0 || h <= 0) return;
+    std::vector<GLuint> px(static_cast<std::size_t>(w) * static_cast<std::size_t>(h));
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
     for (int a = 0; a < 2; ++a) {
-        for (int y = 0; y < kH; ++y)
-            for (int x = 0; x < kW; ++x)
-                px[static_cast<std::size_t>(y) * kW + static_cast<std::size_t>(x)] =
-                    a == 0 ? efb.color24(static_cast<u32>(x), static_cast<u32>(y)) : efb.depth24(static_cast<u32>(x), static_cast<u32>(y));
+        for (int y = 0; y < h; ++y)
+            for (int x = 0; x < w; ++x) {
+                const auto ex = static_cast<u32>(x0 + x), ey = static_cast<u32>(y0 + y);
+                px[static_cast<std::size_t>(y) * static_cast<std::size_t>(w) + static_cast<std::size_t>(x)] =
+                    a == 0 ? efb.color24(ex, ey) : efb.depth24(ex, ey);
+            }
         glBindTexture(GL_TEXTURE_2D, g.efb[a]);
-        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, kW, kH, GL_RED_INTEGER, GL_UNSIGNED_INT, px.data());
+        glTexSubImage2D(GL_TEXTURE_2D, 0, x0, y0, w, h, GL_RED_INTEGER, GL_UNSIGNED_INT, px.data());
     }
 }
 

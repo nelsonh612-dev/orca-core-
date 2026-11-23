@@ -52,6 +52,16 @@
 
 namespace orca::gpu::sw {
 
+// EFB area (x0, y0 inclusive; x1, y1 exclusive).
+struct EfbRect {
+    u32 x0{0}, y0{0}, x1{0}, y1{0};
+};
+
+// The EFB pixels a copy with the current BP 0x49/0x4A source rectangle can read
+// or clear: the rectangle plus two pixels on every side (the copy filter reads
+// the lines above and below; half-scale reads 2x2 blocks), clamped to the EFB.
+EfbRect copy_source_area(const BpMemory& bp);
+
 // What one BP 0x52 write did (for the VI and for tests).
 struct CopyResult {
     bool ignored{false};   // rectangle outside the EFB: nothing done

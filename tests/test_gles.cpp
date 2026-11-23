@@ -41,7 +41,7 @@ struct Side {
             std::string e;
             if (!be->init(e)) std::printf("    backend init: %s\n", e.c_str());
             gles::Backend* b = be.get();
-            gpu.set_backend(b, [b](sw::Efb& f) { b->download(f); }, [b](const sw::Efb& f) { b->upload(f); });
+            gpu.set_backend(b, [b](sw::Efb& f, const sw::EfbRect& r) { b->download(f, r); }, [b](const sw::Efb& f, const sw::EfbRect& r) { b->upload(f, r); });
         }
     }
 };
@@ -744,7 +744,7 @@ TEST_CASE(gles_gpu_draw_program) {
         if (side == 1) {
             std::string e;
             CHECK(be.init(e));
-            sys.gpu().set_backend(&be, [&be](sw::Efb& f) { be.download(f); }, [&be](const sw::Efb& f) { be.upload(f); });
+            sys.gpu().set_backend(&be, [&be](sw::Efb& f, const sw::EfbRect& r) { be.download(f, r); }, [&be](const sw::Efb& f, const sw::EfbRect& r) { be.upload(f, r); });
         }
         std::string err;
         CHECK(sys.load_executable(file, err));

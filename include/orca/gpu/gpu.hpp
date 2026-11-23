@@ -66,8 +66,10 @@ public:
     // Draws with a GPU backend instead of the software rasterizer (nullptr = software).
     // `download` / `upload` move the EFB between the backend and renderer().efb() around
     // EFB copies and clears, which run on the CPU.
-    void set_backend(sw::TriangleSink* sink, std::function<void(sw::Efb&)> download,
-                     std::function<void(const sw::Efb&)> upload) {
+    // `download` / `upload` move the given EFB area between the backend and
+    // renderer().efb() around an EFB copy (and its clear).
+    void set_backend(sw::TriangleSink* sink, std::function<void(sw::Efb&, const sw::EfbRect&)> download,
+                     std::function<void(const sw::Efb&, const sw::EfbRect&)> upload) {
         renderer_.set_sink(sink);
         PixelStats& s = pe_.stats();
         s.tracked = sink == nullptr || sink->attach_stats(&s);
@@ -127,8 +129,8 @@ private:
     std::vector<u8> tmem_ = std::vector<u8>(1U << 20, 0); // 1 MiB texture memory
     std::vector<u8> pending_;
     sw::CopyResult last_copy_;
-    std::function<void(sw::Efb&)> download_;
-    std::function<void(const sw::Efb&)> upload_;
+    std::function<void(sw::Efb&, const sw::EfbRect&)> download_;
+    std::function<void(const sw::Efb&, const sw::EfbRect&)> upload_;
     u64 copies_{0};
     u64 cycles_{0};       // total GPU time
     u64 batch_start_{0};  // cycles_ at the start of the current feed()
