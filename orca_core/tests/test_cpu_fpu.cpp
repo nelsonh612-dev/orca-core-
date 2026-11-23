@@ -406,6 +406,43 @@ TEST_CASE(psq_update_indexed_and_undefined_type) {
 }
 
 // ------------------------------------------------------------ locked cache
+TEST_CASE(locked_cache_dcbst_casts_out_and_retains_line) {
+    FpMachine m;
+    m.s().hid2 |= HID2_LCE;
+    m.s().dbat[3] = {0x80000002U, 0x80000002U};
+    m.s().msr |= MSR_DR;
+    m.s().gpr[3] = 0x80003000U;
+    m.s().gpr[4] = 0;
+    m.s().gpr[5] = 0xA1B2C3D4U;
+    m.bus.write32(0x80003000U, 0x11223344U);
+    CHECK(m.exec(A::dcbz_l(3, 4)) == StepResult::Executed);
+    CHECK(m.exec(A::stw(5, 0, 3)) == StepResult::Executed);
+    CHECK_EQ(m.r32(0x80003000U), 0x11223344U); // write remains in locked cache
+    const u32 dcbst = (31U << 26U) | (3U << 16U) | (4U << 11U) | (54U << 1U);
+    CHECK(m.exec(dcbst) == StepResult::Executed);
+    CHECK_EQ(m.r32(0x80003000U), 0xA1B2C3D4U);
+    CHECK_EQ(m.cpu->locked_cache_lines(), 1U); // dcbst retains the line
+    std::array<u8, 32> line{};
+    CHECK(m.cpu->locked_cache_line(0x80003000U, line));
+}
+
+TEST_CASE(locked_cache_dcbf_casts_out_and_invalidates_line) {
+    FpMachine m;
+    m.s().hid2 |= HID2_LCE;
+    m.s().dbat[3] = {0x80000002U, 0x80000002U};
+    m.s().msr |= MSR_DR;
+    m.s().gpr[3] = 0x80003000U;
+    m.s().gpr[4] = 0;
+    m.s().gpr[5] = 0x55667788U;
+    m.bus.write32(0x80003000U, 0x01020304U);
+    CHECK(m.exec(A::dcbz_l(3, 4)) == StepResult::Executed);
+    CHECK(m.exec(A::stw(5, 0, 3)) == StepResult::Executed);
+    const u32 dcbf = (31U << 26U) | (3U << 16U) | (4U << 11U) | (86U << 1U);
+    CHECK(m.exec(dcbf) == StepResult::Executed);
+    CHECK_EQ(m.r32(0x80003000U), 0x55667788U);
+    CHECK_EQ(m.cpu->locked_cache_lines(), 0U);
+}
+
 TEST_CASE(locked_cache_dcbi_invalidates_matching_line) {
     FpMachine m;
     m.s().hid2 |= HID2_LCE;
