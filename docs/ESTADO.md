@@ -1,4 +1,4 @@
-# Estado del proyecto — Milestone 018 (rama `orca-core-0.1`)
+# Estado del proyecto — Milestone 019 en curso (rama `orca-core-0.1`)
 
 ## Funciones implementadas (todas con pruebas)
 
@@ -109,6 +109,16 @@
 - **Bounding box:** BP 0x55 (izquierda/derecha, 10 bits cada una) y BP 0x56 (arriba/abajo); cada píxel que llega a la mezcla (tras alpha test y Z) lo amplía hasta los bordes de su bloque 2x2. Registros PE 0x10-0x16 de solo lectura.
 - **Contadores de rendimiento:** quads que entran/pasan la Z temprana, entran/pasan la Z tardía (solo con la prueba Z activa) y entran a la mezcla (siempre), en PE 0x18-0x2A como mitades baja/alta; BP 0x57 los borra. Un quad 2x2 cuenta una vez por triángulo si al menos uno de sus píxeles llega a la etapa. Los ciclos de copia del EFB (0x2C/0x2E) siguen detenidos: no hay modelo de tiempo de las copias.
 - **Backend GLES:** los mismos valores con un *storage buffer* (atomicMin/Max/Add) y una imagen R32UI de 320x264x5 con el último triángulo que contó cada quad (imageAtomicExchange). Se activan con la primera escritura de BP 0x55/0x56 (caja) o 0x57 (contadores), como Dolphin; leer antes da una parada clara. Antes de que la CPU reescriba media caja se sincroniza con la GPU. Si el GL no ofrece buffers/imágenes en el fragment shader, el shader se compila sin esto y la lectura se detiene.
+
+**JIT PowerPC → AArch64 (M019, en curso)** — código propio; fuentes: Arm ARM (codificaciones), PEM/750CL (semántica, ya en el intérprete):
+- **Emisor AArch64** (`jit/a64_emitter`): 109 codificaciones idénticas a `llvm-mc`, inmediatos lógicos, secuencias MOVZ/MOVN/MOVK/ORR.
+- **Memoria ejecutable W^X** (`jit/code_buffer`): RW al escribir, RX al ejecutar (mprotect) y coherencia de la caché de instrucciones; válido en Android.
+- **Traducción nativa:** ALU entera (formas XO con CA/OV/SO y Rc), rotaciones y desplazamientos, comparaciones, lógica de CR, mfcr/mtcrf/mcrf, XER/LR/CTR, todos los saltos (b, bc, bclr, bcctr con CTR y LK), cargas y almacenamientos enteros D/X (con actualización e invertidos). Caché de 7 GPR invitados en registros x22-x28.
+- **FP y paired singles dentro del bloque:** la instrucción llama en su sitio a la implementación del intérprete (FPSCR, NaN y redondeo de referencia); las de memoria solo si el acceso es RAM normal.
+- **Exactitud por construcción:** lo que no se traduce y todo acceso que no sea RAM normal (MMIO, cruce de página, caché bloqueada, fallo) sale del bloque *antes* de la instrucción y lo ejecuta el intérprete, excepciones incluidas. Los almacenamientos en código traducido invalidan bloques (y detienen el bloque en curso si se escribe a sí mismo).
+- **Tiempo exacto:** `System::run` solo deja entrar en un bloque si cabe antes del siguiente evento del planificador, del desborde del decrementador y del fin del tramo; las interrupciones se ven donde las ve el intérprete.
+- **Validado en ARM64 real (CI):** 3000 programas aleatorios (enteros, memoria, saltos, autoescritura, FP, paired singles, psq con GQR aleatorios) sin ninguna diferencia con el intérprete; integer_suite, float_suite y hardware_suite (ELF y DOL) con salida, instrucciones, ciclos, estado y RAM idénticos. Tiempo del System completo en el mismo runner: integer_suite 153,8 → 39,7 ms; float_suite 39,7 → 29,8 ms; hardware_suite 3,4 → 2,7 ms.
+- **Pendiente:** FP/paired singles nativos (hoy por llamada), enlace directo entre bloques, acceso rápido a memoria sin helper, lmw/stmw, lwarx/stwcx., dcbz; las instrucciones de tiempo/contexto (mftb, mtmsr, rfi, sc, mtspr de sistema) seguirán en el intérprete por diseño.
 
 **Caché de texturas del backend GLES sin hash por dibujo (M018)**:
 - Antes, cada dibujo decodificaba la textura entera (con sus mipmaps) y solo después comprobaba si ya estaba subida. Ahora: (1) clave de parámetros y paleta, nivel por nivel, sin tocar los texels; (2) si la textura está en RAM y ninguna escritura tocó sus páginas desde la última comprobación, se reutiliza sin hash; (3) si no, se hace el hash de los texels; (4) solo si cambiaron se decodifica y se sube.

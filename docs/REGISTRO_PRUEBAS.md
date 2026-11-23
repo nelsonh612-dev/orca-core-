@@ -38,6 +38,14 @@ Todos los resultados son de ejecuciones reales del 2026-11-22 en este entorno, s
 | **gles** (M016 + M018, Mesa llvmpipe 25.2.8, GLES 3.2) | 14 | 2.820 | 0 |
 | encodings (vs `llvm-mc`) | 189 instrucciones | 181 ensambladas + 8 desensambladas | 0 diferencias |
 
+### JIT AArch64 (M019, en curso) — ejecutado en ARM64 real (GitHub Actions `ubuntu-24.04-arm`)
+
+- `jit_emitter`: 109 instrucciones idénticas a `llvm-mc -show-encoding`; secuencias `mov_imm` verificadas.
+- `jit`: un bloque de 7 instrucciones PowerPC da 121 instrucciones AArch64 válidas para `llvm-mc` (en cualquier anfitrión). En ARM64: 3000 programas aleatorios comparados con el intérprete (registros, CR, XER, LR, CTR, FPR, FPSCR, GQR, toda la RAM alcanzable, resultado y contador de instrucciones retiradas): **0 diferencias**.
+- `programs`: integer_suite (ELF/DOL), float_suite y hardware_suite con y sin JIT: idénticos en salida, instrucciones, ciclos, estado y RAM. Tiempos del System completo en el mismo runner (interprete → JIT): 153,8 → 39,7 ms; 39,7 → 29,8 ms; 3,4 → 2,7 ms.
+- **Errores encontrados por el CI de ARM64 y corregidos:** (1) en una carga con actualización y desplazamiento de más de 12 bits, el registro temporal del valor cargado se reutilizaba para recalcular la dirección (lwzu/lbzu daban el desplazamiento); lo localizó la reproducción paso a paso que imprime el primer bloque divergente. (2) Una función sin usar que Clang rechaza con `-Werror` (no la vi porque subí sin compilar antes con Clang). (3) Un commit que no compilaba (faltaba `<chrono>`) por encadenar el commit tras una compilación fallida; corregido en el commit siguiente.
+- **Revisión antes de ejecutar:** encontré que con base r0 la dirección usaba ADD inmediato con el registro 31, que ahí es SP y no cero; se corrigió antes de la primera ejecución.
+
 ### CI en ARM64 real y Android NDK (M018)
 
 - Flujo `.github/workflows/orca-core-0.1.yml` (sin APK): pruebas en ARM64 nativo (`ubuntu-24.04-arm`) con GCC, Clang y ASan+UBSan, y compilación del núcleo con el NDK de Android para arm64-v8a, API 26.
