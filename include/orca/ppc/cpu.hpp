@@ -59,6 +59,7 @@ struct StopInfo {
 
 class Cpu {
 public:
+    friend class Jit; // reads state and translation helpers, adds retired instructions
     Cpu(mem::Bus& bus, CpuConfig config);
     ~Cpu();
     Cpu(const Cpu&) = delete;

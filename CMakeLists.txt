@@ -57,6 +57,9 @@ add_library(orca_core
     src/gpu/sw/renderer.cpp
     src/gpu/sw/efb_copy.cpp
     src/video/xfb.cpp
+    src/jit/a64_emitter.cpp
+    src/jit/code_buffer.cpp
+    src/ppc/jit.cpp
     src/hw/external_interface.cpp
     src/hw/serial_interface.cpp
     src/hw/video_interface.cpp
@@ -232,6 +235,22 @@ if(ORCA_BUILD_TESTS)
     target_include_directories(orca_encoding_check PRIVATE tests)
     add_test(NAME encodings COMMAND orca_encoding_check "${ORCA_LLVM_MC}")
     set_tests_properties(encodings PROPERTIES SKIP_RETURN_CODE 77)
+
+    add_executable(orca_test_jit_emitter tests/test_jit_emitter.cpp)
+    target_link_libraries(orca_test_jit_emitter PRIVATE orca_core)
+    target_include_directories(orca_test_jit_emitter PRIVATE tests)
+    target_compile_definitions(orca_test_jit_emitter PRIVATE ORCA_LLVM_MC="${ORCA_LLVM_MC}")
+    add_test(NAME jit_emitter COMMAND orca_test_jit_emitter)
+    set_tests_properties(jit_emitter PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT ${ORCA_TEST_TIMEOUT})
+
+    add_executable(orca_test_jit tests/test_jit.cpp)
+    target_link_libraries(orca_test_jit PRIVATE orca_core)
+    target_include_directories(orca_test_jit PRIVATE tests)
+    if(ORCA_LLVM_MC)
+        target_compile_definitions(orca_test_jit PRIVATE ORCA_LLVM_MC="${ORCA_LLVM_MC}")
+    endif()
+    add_test(NAME jit COMMAND orca_test_jit)
+    set_tests_properties(jit PROPERTIES TIMEOUT ${ORCA_TEST_TIMEOUT})
 endif()
 
 foreach(tool bench_interpreter elf2dol orca_run)
