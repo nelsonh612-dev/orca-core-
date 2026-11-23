@@ -1,4 +1,4 @@
-# Estado del proyecto — Milestone 006
+# Estado del proyecto — Milestone 007
 
 ## Funciones implementadas (todas con pruebas)
 
@@ -44,10 +44,17 @@
 - `System::call_guest` y `run_until`: llamadas a funciones invitadas con una dirección de retorno que nunca se ejecuta.
 - `System::boot_disc`: copia de la cabecera del disco a 0x80000000, 0x0D15EA5E, tamaño de MEM1, relojes de bus y CPU (0xF8/0xFC), bi2.bin con su puntero en 0xF4, apploader en 0x81200000 con su pila, y el protocolo entry/init(report)/main/close; cada lectura solicitada se valida (RAM y límites del disco) antes de hacerse. `orca_run` acepta `.iso` y `.gcm`.
 
+**Video, entrada y audio (M007)**
+- `hw::VideoInterface` (0x0C002000): banco de registros de 16 bits (accesos de 16 y 32 bits). La temporización sale de los registros: el reloj de píxel es VICLK/2 (13,5 o 27 MHz), una semilínea son HLW píxeles y las semilíneas por campo son 3·EQU + PRB + 2·ACV + PSB (VTO para los campos impares, VTE para los pares). Con los valores por defecto documentados en YAGCD, NTSC da 525 semilíneas por campo (59,94 Hz) y PAL 625 (50 Hz exactos). DPV cuenta líneas por cuadro (o por campo con NIN) desde 1 y DPH cuenta píxeles desde 1. DI0-DI3 activan INT al llegar a (VCT, HCT) con ENB; el software solo puede borrar INT. La causa VI del PI sigue a cualquier INT activo y habilitado. Hay aviso de inicio de campo y direcciones de XFB (TFBL/BFBL con PGOFF).
+- `hw::SerialInterface` (0x0C006400): SICnOUTBUF, SICnINBUFH/L (leerlos borra RDST), SIPOLL, SICOMCSR (TCINT que se limpia escribiendo 1, máscaras, COMERR, RDSTINT, longitudes donde 0 = 128, canal, TSTART), SISR (errores por canal que se limpian escribiendo 1, WR), SIEXILK y buffer de E/S de 128 bytes. Canal vacío → NOREP + COMERR; respuesta de longitud distinta → OVRUN/UNRUN. Sondeo automático cada X líneas de video para los canales habilitados.
+- `hw::StandardController`: 0x00/0xFF → 09 00 status (necesita origin, motor, modo analógico); 0x40 modo 3 → 8 bytes; 0x41/0x42 → 10 bytes. El frontend fija `state`.
+- `hw::AudioInterface` (0x0C006C00): AICR (PSTAT, AFR, AIINTMSK, AIINT que se limpia escribiendo 1, AIINTVLD, SCRESET), AIVR, AISCNT exacto respecto del tiempo de CPU (10.125 ciclos por muestra a 48 kHz en GC) y AIIT con interrupción vía PI.
+- Planificador: ahora cada evento se dispara con `now` igual a su tiempo previsto. Antes veía el tiempo final del avance, y un dispositivo que se reprogramaba de forma relativa perdía eventos intermedios. Lo detectó la prueba de campos de la VI.
+
 ## Funciones pendientes (en orden)
 
-1. **M007 — Video y entrada:** VI (registros, contadores de línea, interrupciones de display, XFB y modos NTSC/PAL), SI (controles estándar), EXI (tarjeta de memoria, RTC/SRAM), AI y MI. Para estos dispositivos hace falta investigar la temporización con fuentes verificables antes de implementarla. Otros comandos de la DI (inquiry, request error, audio streaming) y el FST.
-2. **M008 — JIT ARM64:** emisor ARM64 verificado con el desensamblador de LLVM, bloques básicos, asignación de registros, caché de bloques conectada a la invalidación del bus, y pruebas diferenciales intérprete vs JIT, que tienen que correr en un dispositivo ARM64.
+1. **M008 — EXI y tiempos finos:** EXI (3 canales, DMA, tarjeta de memoria, RTC/SRAM, ROM de fuentes del IPL), MI, comandos restantes de la DI, FST y dispositivos de Wii básicos. Hay que investigarlos antes, igual que en M007.
+2. **M009 — JIT ARM64:** emisor ARM64 verificado con el desensamblador de LLVM, bloques básicos, asignación de registros, caché de bloques conectada a la invalidación del bus, y pruebas diferenciales intérprete vs JIT, que tienen que correr en un dispositivo ARM64.
 3. **Después:** GPU (CP/FIFO, XF, BP, TEV, EFB/XFB → Vulkan para Mali), DSP y audio, DI y discos, SI y controles, EXI, AI y los componentes de Wii (Hollywood, IOS, Bluetooth).
 
 ## Pendiente de verificación en hardware real
@@ -75,6 +82,13 @@ Son comportamientos que el PEM deja indefinidos o que el manual del 750CL no det
 | DI: tiempo de las lecturas | Sin modelo de la unidad: termina en el siguiente paso del planificador o tras `latency_cycles` |
 | Arranque HLE desde disco: dirección de bi2 (0x817FE000), pila del apploader (0x816FFFF0), stubs en 0x81300000 | Elecciones propias, porque el IPL real usa direcciones que no documenté; un apploader real solo necesita que sean memoria válida |
 | Globales del SO que no se escriben (tipo de consola, arena, modo de video, FST) | El apploader del juego escribe algunos; los demás quedan en 0 |
+| VI: los registros de temporización se aplican al momento y reinician la posición (el hardware tiene doble buffer para algunos campos) | Aproximación |
+| VI: INT de DIn solo se activa con ENB=1 | YAGCD no aclara si se activa sin ENB |
+| VI: escribir DPV/DPH se ignora | Son contadores de solo lectura |
+| SI: bit EN del canal c = bit (7 − c) de SIPOLL; Y (sondeos por cuadro) y VBCPY no se modelan; el sondeo empieza en el siguiente campo de video | Sin verificar |
+| SI: solo el modo analógico 3 del mando (el que usa el SDK); los modos 0-2 y 4 dan una parada clara | El orden exacto de los nibbles en esos modos no está confirmado |
+| SI: las transferencias terminan en el siguiente paso del planificador (sin el tiempo real del bus Joy-Bus) | Aproximación |
+| SI: bit 7 del segundo byte de estado = 1 (USE_ORIGIN) | Coinciden dos fuentes independientes; YAGCD lo marca como "unused" |
 
 ## Problemas conocidos
 
@@ -91,7 +105,8 @@ Son comportamientos que el PEM deja indefinidos o que el manual del 750CL no det
 | 9 | `lmw/stmw`, instrucciones de cadena y `lwarx/stwcx.` no pasan por la caché bloqueada | Bajo |
 | 10 | El DMA de la caché bloqueada y las ráfagas del gather pipe terminan al instante | Falta conectarlos al planificador con tiempos reales |
 | 11 | Coste fijo de 1 ciclo por instrucción: no hay modelo de pipeline ni de caché | El tiempo es determinista, no exacto al ciclo |
-| 12 | Solo PI, gather pipe y DI existen como dispositivos; VI, SI, EXI, AI, DSP, MI y CP/PE dan `MemoryFault` al tocarse | Un juego comercial puede pasar su apploader, pero se detiene en cuanto toca el video o los controles |
+| 12 | Existen PI, gather pipe, DI, VI, SI y AI; EXI, DSP, MI y CP/PE dan `MemoryFault` al tocarse | Un juego comercial se detiene al acceder a la tarjeta de memoria/RTC (EXI), al DSP o a la GPU |
+| No hay salida de video (no se convierte el XFB a imagen) ni de audio | Sin frontend todavía |
 | DI: solo existe la lectura 0xA8 por DMA; los discos Wii, el audio streaming y los formatos comprimidos no están implementados | Parada clara con el comando |
 | 13 | Rendimiento en el anfitrión x86: unos 20 M instr/s en enteros y unos 4 M instr/s en FP. El motor FP cambia el modo de redondeo del anfitrión en cada operación | Esperado: el intérprete es la referencia de precisión; la velocidad vendrá del JIT |
 | 14 | No se ha compilado para Android/ARM64 (no hay NDK en este entorno) | Hay que verificarlo |

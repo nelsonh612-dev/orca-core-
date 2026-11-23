@@ -38,19 +38,22 @@ TEST_CASE(scheduler_cancel_reschedule_and_lateness) {
     CHECK(!s.cancel(id));
     // a periodic event that reschedules itself relative to its *due* time (now - late),
     // so it does not drift when it fires late
+    std::vector<u64> seen_now;
     std::function<void(u64, u64)> tick = [&](u64 now, u64 l) {
+        seen_now.push_back(now);
         late.push_back(l);
         const u64 due = now - l;
         if (due < 40) s.schedule_at(due + 10, "tick", tick);
     };
     s.schedule_at(10, "tick", tick);
-    s.advance_to(23);           // fires at 10 (late 13); reschedules at 20 -> already due -> fires (late 3)
-    CHECK(late == (std::vector<u64>{13, 3}));  // due 10 and due 20, both within this advance
+    s.advance_to(23);           // fires at its due time 10, reschedules for 20, which also fires within this advance
+    CHECK(late == (std::vector<u64>{0, 0}));   // each callback runs at its exact due time
     s.schedule_at(0, "past", [&](u64, u64 l) { late.push_back(1000 + l); });
     s.advance_to(23);           // time does not move, but the past event fires
     CHECK_EQ(late.back(), 1023U);
-    s.advance_to(100);          // due 30 and due 40 fire (late 70, 60); due 40 does not reschedule
-    CHECK(late == (std::vector<u64>{13, 3, 1023, 70, 60}));
+    s.advance_to(100);          // due 30 and due 40 fire on time; due 40 does not reschedule
+    CHECK(late == (std::vector<u64>{0, 0, 1023, 0, 0}));
+    CHECK(seen_now == (std::vector<u64>{10, 20, 30, 40}));
     s.advance_to(50);           // never goes backwards
     CHECK_EQ(s.now(), 100U);
 }

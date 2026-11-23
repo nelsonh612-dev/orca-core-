@@ -1,4 +1,4 @@
-# Registro de pruebas — Milestone 006
+# Registro de pruebas — Milestone 007
 
 Todos los resultados son de ejecuciones reales del 2026-11-14 en este entorno, sobre una copia limpia de los fuentes entregados.
 
@@ -8,9 +8,9 @@ Todos los resultados son de ejecuciones reales del 2026-11-14 en este entorno, s
 
 | Configuración | Compilación | Advertencias (`-Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion -Wshadow -Werror`) | CTest |
 |---|---|---|---|
-| GCC Release | OK | 0 | 11/11 pasan (1,7 s) |
-| Clang Release | OK | 0 | 11/11 pasan (1,4 s) |
-| GCC Debug + ASan + UBSan (`-fno-sanitize-recover=all`) | OK | 0 | 11/11 pasan (34,5 s) |
+| GCC Release | OK | 0 | 12/12 pasan (3,9 s) |
+| Clang Release | OK | 0 | 12/12 pasan (2,7 s) |
+| GCC Debug + ASan + UBSan (`-fno-sanitize-recover=all`) | OK | 0 | 12/12 pasan (70,0 s) |
 | Clang + ASan/UBSan | **NO EJECUTADO**: falta `compiler-rt` en el entorno | — | — |
 | Android NDK arm64-v8a | **NO EJECUTADO**: no hay NDK ni sysroot AArch64 | — | — |
 
@@ -28,7 +28,29 @@ Todos los resultados son de ejecuciones reales del 2026-11-14 en este entorno, s
 | **system** (M005) | 13 | 108 | 0 |
 | **programs** (M005) | 3 | 34 | 0 |
 | **disc** (M006) | 12 | 145 | 0 |
+| **av** (M007) | 12 | 292 | 0 |
 | encodings (vs `llvm-mc`) | 189 instrucciones | 181 ensambladas + 8 desensambladas | 0 diferencias |
+
+### Video, entrada y audio (M007)
+
+Unitarias, con los registros cargados con los valores por defecto de YAGCD:
+- La temporización NTSC da 525 semilíneas por campo y 429 píxeles por semilínea: **8.108.100 ciclos por campo = 59,94 Hz**. PAL da 625 × 432 × 36 = **9.720.000 ciclos = 50 Hz exactos**.
+- DPV/DPH: VCT 263 con HCT 430 al inicio del segundo campo; **VCT 264 es la primera línea completa del segundo campo**, como dice YAGCD; 525 es la última línea del cuadro; en modo no entrelazado va de 1 a 263.
+- DI0 (valor por defecto, 263/430) dispara una vez por cuadro. DI1 (1/1) y DI0 quedan separados **exactamente un campo**, medido con el planificador.
+- SI: identificación 09 00 23, origin, poll con botones y sticks, canal vacío con NOREP + COMERR, OVRUN/UNRUN, modos no soportados con una parada que da el motivo, sondeo automático que respeta las líneas de video.
+- AI: 480 muestras a 48 kHz tras 10.125 × 480 ciclos exactos; a 32 kHz, la interrupción AIIT llega a los 4.860.000 ciclos exactos (10 ms); SCRESET y AIINTVLD.
+
+Programa `av_suite` compilado con clang: programa la VI con los valores NTSC, usa el mando por transferencias y por sondeo automático, cuenta interrupciones de display en el vector 0x500 y espera la coincidencia de la AI:
+
+| Medición en Orca | Valor | Esperado |
+|---|---|---|
+| Identificación del mando | 0x09002300 | 09 00 + estado (necesita origin, modo 3) |
+| Poll con A + START, stick (0xA0, 0x60) | 0x1180A060 | igual |
+| Canal 1 vacío | NOREP | NOREP |
+| Time base entre interrupciones DI0 (un cuadro) | **1.351.350 ticks** las dos veces | 2 × 675.675 = 1.351.350 |
+| DPV leído dentro del manejador | 263 | 263 |
+| AISCNT al coincidir con AIIT = 480 | 480 | 480 |
+| Time base durante 480 muestras | 405.001 ticks | 405.000 (10 ms a 40,5 MHz) |
 
 ### Arranque desde disco con un apploader real (M006)
 
@@ -93,7 +115,15 @@ P13 (palabra alta de `fctiw`) sobrevivió como se esperaba, porque son bits inde
 
 **Disco y DI (M006), 11 de 11 detectadas:** D1 DIMAR no avanza · **D2 escribir DISR borra todas las interrupciones: no se detectaba al principio** → se añadió `di_writing_masks_keeps_pending_interrupts` · D3 TCINT ignora la máscara · D4 offset del disco sin multiplicar por 4 · D5 una lectura fuera de rango informa éxito · D6 finalización síncrona · D7 bucle del apploader cortado · D8 la cabecera del disco no se copia a memoria baja · D9 el divisor pasa offsets absolutos · D10 los discos Wii no se rechazan · D11 falta el global del reloj de CPU.
 
-**Total: 54 mutaciones detectadas.**
+**Video, entrada, audio y planificador (M007), 14 de 14 detectadas:** V1 fórmula de longitud de campo · V2 VCT empezando en 0 · **V3 el software puede activar INT: no se detectaba al principio** → se añadió `vi_software_cannot_set_int` · V4 VICLK ignorado · V5 PGOFF del XFB ignorado · V6 NIN ignorado · S1 falta el bit 7 del segundo byte de estado · S2 leer INBUF no borra RDST · S3 canal vacío sin NOREP · S4 orden de los bits EN invertido · A1 SCRESET ignorado · A2 AIINTVLD ignorado · A3 la coincidencia AIIT llega tarde · C1 los eventos ven el tiempo final del avance (el error real corregido en este hito).
+
+**Total: 68 mutaciones detectadas.**
+
+## Errores encontrados durante M007
+
+- **Error real en el planificador (presente desde M005):** al avanzar varios eventos de una vez, cada callback veía el tiempo final del avance y no su propio tiempo previsto, así que un dispositivo que se reprogramaba de forma relativa perdía eventos intermedios. Lo descubrió `vi_field_listener_and_xfb`: con 4 campos solo se disparaba 1. Ahora el tiempo avanza evento por evento. Se actualizaron las expectativas de `scheduler_cancel_reschedule_and_lateness`, que dependían de la semántica anterior, y ahora también comprueba que cada callback ve su tiempo exacto.
+- **Error real en la VI durante el desarrollo:** al reiniciarse la temporización, un evento en la posición (1,1) se reprogramaba indefinidamente en el mismo instante, y la prueba se colgaba. Se corrigió con un indicador de arranque reciente que solo vale para la primera programación.
+- **Errores en mis pruebas:** expresiones con ternarios sin sentido (se cambiaron por constantes calculadas), un origin esperado incorrecto (es el de fábrica, no el estado actual), una prueba del SI que borraba TCINTMSK, DI0 esperado a medio campo en lugar de uno completo, y 10 ms calculados como 40.500 ticks en vez de 405.000.
 
 ## Errores encontrados durante M006
 

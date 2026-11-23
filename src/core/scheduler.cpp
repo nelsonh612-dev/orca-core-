@@ -24,13 +24,18 @@ std::optional<u64> Scheduler::next_event_time() const {
 }
 
 void Scheduler::advance_to(u64 time) {
-    if (time > now_) now_ = time;
-    while (!queue_.empty() && queue_.begin()->first.first <= now_) {
+    const u64 target = time > now_ ? time : now_;
+    // Events fire in order; time is moved to each event's due time before its
+    // callback runs, so devices that compute relative timings see the exact
+    // instant. `late` is non-zero only for events scheduled in the past.
+    while (!queue_.empty() && queue_.begin()->first.first <= target) {
         auto node = queue_.extract(queue_.begin());
         index_.erase(node.key().second);
         const u64 due = node.key().first;
+        if (due > now_) now_ = due;
         node.mapped().callback(now_, now_ - due);
     }
+    now_ = target;
 }
 
 } // namespace orca::core

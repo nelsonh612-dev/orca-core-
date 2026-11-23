@@ -22,6 +22,7 @@ _start:
 # counters at physical 0x2000 (decrementer) and 0x2004 (system call).
         .text
         .globl  dec_handler, dec_handler_end, sc_handler, sc_handler_end, ext_handler, ext_handler_end
+        .globl  vi_handler, vi_handler_end
 dec_handler:
         mtspr   272, 3                  # SPRG0
         mtspr   273, 4                  # SPRG1
@@ -65,3 +66,32 @@ ext_handler:
         mfspr   4, 273
         rfi
 ext_handler_end:
+
+# External interrupt handler for av_suite.c: acknowledges VI display interrupt
+# 0 (writes DI0 back with INT = 0), records the time base and the current
+# vertical position. Real mode: VI at physical 0x0C002000.
+#   0x2010 count   0x2014 DPV at the last interrupt   0x2020 + 4*n time base
+vi_handler:
+        mtspr   272, 3
+        mtspr   273, 4
+        mtspr   274, 5
+        lis     3, 0x0C00
+        ori     3, 3, 0x2000
+        lhz     5, 0x2C(3)              # DPV
+        lwz     4, 0x30(3)              # DI0
+        rlwinm  4, 4, 0, 1, 31          # clear INT (bit 31)
+        stw     4, 0x30(3)
+        li      3, 0
+        stw     5, 0x2014(3)
+        .long   0x7CAC42E6              # mftb r5 (750CL encoding, XO 371)
+        lwz     4, 0x2010(3)
+        slwi    3, 4, 2
+        stw     5, 0x2020(3)
+        addi    4, 4, 1
+        li      3, 0
+        stw     4, 0x2010(3)
+        mfspr   3, 272
+        mfspr   4, 273
+        mfspr   5, 274
+        rfi
+vi_handler_end:

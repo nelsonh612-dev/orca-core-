@@ -10,7 +10,10 @@
 #pragma once
 #include "orca/core/scheduler.hpp"
 #include "orca/disc/disc_image.hpp"
+#include "orca/hw/audio_interface.hpp"
 #include "orca/hw/disc_interface.hpp"
+#include "orca/hw/serial_interface.hpp"
+#include "orca/hw/video_interface.hpp"
 #include "orca/hw/mmio_splitter.hpp"
 #include "orca/hw/processor_interface.hpp"
 #include "orca/loader/executable.hpp"
@@ -62,6 +65,11 @@ public:
     hw::ProcessorInterface& pi() noexcept { return *pi_; }
     hw::GatherPipe& gather_pipe() noexcept { return *gather_pipe_; }
     hw::DiscInterface& di() noexcept { return *di_; }
+    hw::VideoInterface& vi() noexcept { return *vi_; }
+    hw::SerialInterface& si() noexcept { return *si_; }
+    hw::AudioInterface& ai() noexcept { return *ai_; }
+    // Called at every VI field start (top = false / bottom = true), after the SI hook.
+    void set_field_listener(std::function<void(bool)> f) { field_listener_ = std::move(f); }
     void insert_disc(std::unique_ptr<disc::DiscReader> d) { di_->insert(std::move(d)); }
     const SystemConfig& config() const noexcept { return config_; }
     const Clocks& clocks() const noexcept { return clocks_; }
@@ -121,6 +129,10 @@ private:
     std::unique_ptr<hw::GatherPipe> gather_pipe_;
     std::unique_ptr<hw::MmioSplitter> page_0c006_;
     std::unique_ptr<hw::DiscInterface> di_;
+    std::unique_ptr<hw::VideoInterface> vi_;
+    std::unique_ptr<hw::SerialInterface> si_;
+    std::unique_ptr<hw::AudioInterface> ai_;
+    std::function<void(bool)> field_listener_;
     std::optional<u32> stop_pc_;
     u64 timebase_remainder_{0};
 };

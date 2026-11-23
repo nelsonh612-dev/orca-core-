@@ -1,8 +1,8 @@
-# Orca Core — Milestone 006
+# Orca Core — Milestone 007
 
 Orca Core es un emulador independiente de GameCube/Wii escrito en C++20, con Android ARM64 como plataforma objetivo. **No contiene código de Dolphin** y no deriva de él.
 
-> **Estado:** la CPU Gekko/Broadway está completa como intérprete de referencia: enteros, sistema, MMU, FPU, paired-singles, cuantización GQR y caché bloqueada. Además, el sistema arranca programas DOL/ELF y **discos GameCube (GCM/ISO) a través de su apploader**, con planificador de tiempo, interrupciones, gather pipe y Disc Interface. **Todavía no es un emulador jugable.** Faltan VI (video), SI (controles), EXI (tarjeta de memoria), AI/DSP (audio), el JIT, la GPU y los componentes de Wii.
+> **Estado:** la CPU Gekko/Broadway está completa como intérprete de referencia: enteros, sistema, MMU, FPU, paired-singles, cuantización GQR y caché bloqueada. Además, el sistema arranca programas DOL/ELF y **discos GameCube (GCM/ISO) a través de su apploader**, con planificador de tiempo, interrupciones, gather pipe y Disc Interface. Desde M007 también tiene **Video Interface** (temporización NTSC/PAL e interrupciones de display), **Serial Interface con mando estándar** y **Audio Interface** (contador de muestras e interrupción). **Todavía no es un emulador jugable.** Faltan EXI (tarjeta de memoria, RTC/SRAM), el DSP y la salida de audio, la GPU (CP/PE/XF/BP/TEV), el JIT y los componentes de Wii.
 
 ## Qué incluye este milestone
 
@@ -27,7 +27,10 @@ Orca Core es un emulador independiente de GameCube/Wii escrito en C++20, con And
 | **Discos (M006)** | Lectura de imágenes GCM/ISO crudas (desde archivo o memoria); cabecera de disco y de apploader validadas; los discos Wii se rechazan con un mensaje explícito |
 | **Disc Interface (M006)** | Registros DISR, DICVR, CMDBUF0-2, DIMAR, DILENGTH, DICR, DIIMMBUF; lectura 0xA8 por DMA asíncrona con TCINT/DEINT e interrupción vía PI; cualquier otro comando da una parada clara con el motivo |
 | **Arranque desde disco (M006)** | HLE del IPL: globales documentados en memoria baja, bi2, carga del apploader en 0x81200000 y ejecución de su protocolo entry/init/main/close con llamadas a funciones invitadas |
-| Pruebas | 11 suites; 268.917 casos diferenciales (enteros y FP contra referencias independientes, la de FP con aritmética racional exacta); 189 codificaciones verificadas con `llvm-mc`; 54 mutaciones detectadas; 4 programas C y un apploader compilados con clang, arrancados también desde discos sintéticos |
+| **Video Interface (M007)** | Registros 0x00-0x7F; temporización derivada de HTR0/VTR/VTO/VTE/DCR/VICLK (NTSC sale a 59,94 Hz y PAL a 50 Hz a partir de los valores documentados); DPV/DPH; DI0-DI3 → PI; campos y direcciones de XFB |
+| **Serial Interface (M007)** | Transferencias SICOMCSR con buffer de E/S, SISR con errores por canal, sondeo automático SIPOLL cada X líneas de video; mando estándar: identificación (0x09 0x00), poll en modo analógico 3, origin y calibrate |
+| **Audio Interface (M007)** | AICR/AIVR/AISCNT/AIIT; contador exacto a 48/32 kHz; interrupción AIIT → PI. Sin salida de sonido todavía |
+| Pruebas | 12 suites; 268.917 casos diferenciales (enteros y FP contra referencias independientes, la de FP con aritmética racional exacta); 189 codificaciones verificadas con `llvm-mc`; 68 mutaciones detectadas; 5 programas C y un apploader compilados con clang, arrancados también desde discos sintéticos |
 
 ## Compilar y probar
 
@@ -88,6 +91,9 @@ include/orca/system/system.hpp      consola: bus + CPU + planificador + disposit
 include/orca/disc/disc_image.hpp    imágenes de disco GCM/ISO
 include/orca/hw/disc_interface.hpp  Disc Interface (DI)
 include/orca/hw/mmio_splitter.hpp   reparte la página 0x0C006000 (DI/SI/EXI/AI)
+include/orca/hw/video_interface.hpp VI
+include/orca/hw/serial_interface.hpp SI + mando estándar
+include/orca/hw/audio_interface.hpp AI
 include/orca/ppc/fpu.hpp            motor de punto flotante (puro, sin estado)
 include/orca/ppc/cpu.hpp            intérprete de referencia
 src/ppc/cpu_fpu.cpp                 FP, paired-singles, psq, caché bloqueada
@@ -104,3 +110,13 @@ docs/AUDITORIA_M002.md  docs/REGISTRO_PRUEBAS.md  docs/ESTADO.md
 2. Una parada del anfitrión (`UnsupportedInstruction`, `InvalidForm`, `MemoryFault`) **no modifica nada del estado**, ni siquiera el PC. Nada no soportado se ejecuta como NOP.
 3. No se toca el estado hasta que todos los accesos a memoria de la instrucción están traducidos y validados.
 4. El intérprete es la referencia de precisión para el futuro JIT.
+
+## Fuentes de hardware consultadas
+
+- PowerPC Programming Environments Manual (PEM) y manual del IBM PowerPC 750CL: CPU, FPU y MMU.
+- YAGCD (*Yet Another GameCube Documentation*, capítulos 5 y 9; espejo hitmen.c02.at): registros de VI, SI, AI, DI y PI, y protocolo Joy-Bus.
+- NetBSD `sys/arch/evbppc/wii/dev/vireg.h` (licencia BSD): campos de bits de la VI, derivados de YAGCD.
+- libjoybus (loopj): longitudes de los comandos 0x00/0x40/0x41/0x42 y formato del estado del mando.
+- Patentes de Nintendo US6609977 / US7976392: descripción de los registros de display de la VI.
+
+No se usó código de Dolphin.

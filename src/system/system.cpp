@@ -19,8 +19,18 @@ System::System(SystemConfig config) : config_(config), clocks_(clocks_for(config
     bus_.map_mmio("GatherPipe", hw::pi::kGatherPipeBase, 0x1000, *gather_pipe_);
     di_ = std::make_unique<hw::DiscInterface>(bus_, scheduler_, *pi_);
     page_0c006_ = std::make_unique<hw::MmioSplitter>();
-    page_0c006_->attach(0x000, 0x40, *di_); // SI (0x400), EXI (0x800), AI (0xC00): not implemented yet
+    vi_ = std::make_unique<hw::VideoInterface>(scheduler_, *pi_, clocks_.cpu_hz);
+    si_ = std::make_unique<hw::SerialInterface>(scheduler_, *pi_, vi_.get());
+    ai_ = std::make_unique<hw::AudioInterface>(scheduler_, *pi_, clocks_.cpu_hz);
+    vi_->set_field_listener([this](bool bottom) {
+        si_->on_video_field();
+        if (field_listener_) field_listener_(bottom);
+    });
+    page_0c006_->attach(0x000, 0x40, *di_);
+    page_0c006_->attach(hw::si::kOffsetInPage, 0x100, *si_);
+    page_0c006_->attach(hw::ai::kOffsetInPage, 0x20, *ai_); // EXI (0x800) not implemented yet
     bus_.map_mmio("DI/SI/EXI/AI", hw::di::kBase, 0x1000, *page_0c006_);
+    bus_.map_mmio("VI", hw::vi::kBase, 0x1000, *vi_);
 }
 
 System::~System() = default;

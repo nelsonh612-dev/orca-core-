@@ -19,8 +19,8 @@ namespace orca::core {
 class Scheduler {
 public:
     using EventId = u64;
-    // `now` is the current time; `late` is how many cycles after its due time
-    // the event actually fired (non-zero when the CPU overshot the deadline).
+    // `now` is the event's due time (time advances event by event); `late` is
+    // non-zero only for events that were scheduled for a time already past.
     using Callback = std::function<void(u64 now, u64 late)>;
 
     u64 now() const noexcept { return now_; }
