@@ -736,9 +736,11 @@ TEST_CASE(jit_directed_division_of_tiny_numbers) {
     if (!jit::host_can_execute()) return;
     // fdiv / fdivs where a and b are tiny (some subnormal) but the quotient is normal
     Rng r{4242};
-    for (int k = 0; k < 400; ++k) {
-        const u64 a = (static_cast<u64>(r.next()) << 32 | r.next()) & 0x800FFFFFFFFFFFFFULL | static_cast<u64>(r.u(200)) << 52;
-        const u64 b = (static_cast<u64>(r.next()) << 32 | r.next()) & 0x800FFFFFFFFFFFFFULL | static_cast<u64>(r.u(200)) << 52;
+    for (int k = 0; k < 1500; ++k) {
+        // mostly subnormal or barely normal operands: there the remainder a - q*b underflows
+        const unsigned range = k % 3 == 0 ? 200U : 3U;
+        const u64 a = (static_cast<u64>(r.next()) << 32 | r.next()) & 0x800FFFFFFFFFFFFFULL | static_cast<u64>(r.u(range)) << 52;
+        const u64 b = (static_cast<u64>(r.next()) << 32 | r.next()) & 0x800FFFFFFFFFFFFFULL | static_cast<u64>(r.u(range)) << 52;
         auto init = [&](Machine& m) {
             m.code(kCode, {63U << 26 | 3U << 21 | 1U << 16 | 2U << 11 | 18U << 1,   // fdiv f3, f1, f2
                            59U << 26 | 4U << 21 | 1U << 16 | 2U << 11 | 18U << 1,   // fdivs f4, f1, f2
