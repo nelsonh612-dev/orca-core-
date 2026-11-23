@@ -1,6 +1,7 @@
 // Orca Core — SHA-1 (FIPS 180-4, section 6.1). See sha1.hpp.
 #include "orca/crypto/sha1.hpp"
 
+#include <algorithm>
 #include <cstring>
 
 namespace orca::crypto {

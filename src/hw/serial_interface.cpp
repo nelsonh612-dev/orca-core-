@@ -2,6 +2,7 @@
 
 #include "orca/hw/video_interface.hpp"
 
+#include <algorithm>
 #include <cstdio>
 
 namespace orca::hw {

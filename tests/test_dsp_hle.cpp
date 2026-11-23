@@ -6,6 +6,7 @@
 #include "orca/hw/dsp_interface.hpp"
 #include "test_framework.hpp"
 
+#include <algorithm>
 #include <cstdio>
 #include <vector>
 

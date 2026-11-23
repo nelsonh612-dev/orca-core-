@@ -10,6 +10,7 @@
 #include "orca/system/system.hpp"
 #include "test_framework.hpp"
 
+#include <algorithm>
 #include <filesystem>
 #include <string>
 #include <vector>

@@ -2,6 +2,7 @@
 
 #include "orca/memory/console_maps.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstdio>
 #include <vector>

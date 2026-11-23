@@ -5,6 +5,7 @@
 #include "orca/crypto/sha1.hpp"
 #include "test_framework.hpp"
 
+#include <algorithm>
 #include <cstdio>
 #include <string>
 #include <vector>

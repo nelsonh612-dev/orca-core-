@@ -6,6 +6,7 @@
 #include "orca/hw/pixel_engine.hpp"
 #include "test_framework.hpp"
 
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <functional>

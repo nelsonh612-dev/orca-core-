@@ -5,6 +5,7 @@
 #include "orca/disc/wii_disc.hpp"
 #include "test_framework.hpp"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <fstream>

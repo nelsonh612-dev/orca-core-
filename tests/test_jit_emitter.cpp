@@ -6,6 +6,7 @@
 #include "orca/jit/a64_emitter.hpp"
 #include "test_framework.hpp"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>

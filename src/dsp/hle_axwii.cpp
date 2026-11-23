@@ -12,6 +12,8 @@
 // into the largest one. Not verified against the real ucode (not available here).
 #include "hle_ax_common.hpp"
 
+#include <algorithm>
+
 namespace orca::dsp::hle {
 
 namespace {
