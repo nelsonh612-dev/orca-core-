@@ -10,7 +10,7 @@
 // the per-bus volumes (with ramps), and finally writes 16-bit stereo to RAM for the
 // AI DMA. It then sends DSP_YIELD with an interrupt.
 // Not verified against the real ucode (it is not available here): see ESTADO.md.
-#include "orca/dsp/hle.hpp"
+#include "hle_ax_common.hpp"
 
 #include <algorithm>
 #include <array>
@@ -27,8 +27,8 @@ constexpr unsigned kSamples = 32 * 5; // 5 ms at 32 kHz
 namespace pbw {
 inline constexpr unsigned NEXT_HI = 0, NEXT_LO = 1, SRC_TYPE = 4, COEF_SELECT = 5, MIXER_CONTROL = 6, RUNNING = 7,
                           IS_STREAM = 8, MIXER = 9, ITD_ON = 27, NUM_UPDATES = 34, UPDATES_HI = 39, UPDATES_LO = 40,
-                          DPOP = 41, VOL = 50, VOL_DELTA = 51, LOOPING = 55, FORMAT = 56, LOOP_HI = 57, LOOP_LO = 58,
-                          END_HI = 59, END_LO = 60, CUR_HI = 61, CUR_LO = 62, COEFS = 63, GAIN = 79, PRED_SCALE = 80,
+                          DPOP = 41, VOL = 50, VOL_DELTA = 51, LOOPING = 55, FORMAT = 56, LOOP_HI = 57,
+                          END_HI = 59, CUR_HI = 61, COEFS = 63, GAIN = 79, PRED_SCALE = 80,
                           YN1 = 81, YN2 = 82, RATIO_HI = 83, RATIO_LO = 84, FRAC = 85, LAST = 86, LOOP_PS = 90,
                           LOOP_YN1 = 91, LOOP_YN2 = 92, LPF_ON = 93, LPF_YN1 = 94, LPF_A0 = 95, LPF_B0 = 96,
                           LOOP_COUNTER = 97, SIZE = 122;
@@ -49,92 +49,20 @@ enum : u32 {
 
 constexpr u32 kOldAx = 0x4E8A8B21U; // the oldest known version: no low-pass filter in the PB, other mixer bits
 
-s16 clamp16(s64 v) { return static_cast<s16>(std::clamp<s64>(v, -0x8000, 0x7FFF)); }
+using ax::clamp16;
 
-class AxUcode final : public Ucode {
+constexpr ax::VoiceWords kWords{pbw::RUNNING, pbw::IS_STREAM, pbw::LOOPING, pbw::FORMAT, pbw::LOOP_HI, pbw::END_HI, pbw::CUR_HI,
+                                pbw::COEFS, pbw::GAIN, pbw::PRED_SCALE, pbw::YN1, pbw::YN2, pbw::SRC_TYPE, pbw::COEF_SELECT,
+                                pbw::RATIO_HI, pbw::FRAC, pbw::LAST, pbw::LOOP_PS, pbw::LOOP_YN1, pbw::LOOP_YN2,
+                                static_cast<int>(pbw::LOOP_COUNTER)};
+
+class AxUcode final : public ax::AxBase {
 public:
-    AxUcode(Dsp& dsp, u32 hash) : Ucode(dsp, hash) {}
+    AxUcode(Dsp& dsp, u32 hash) : AxBase(dsp, hash) {}
     const char* name() const noexcept override { return "AX (GameCube)"; }
-    void start() override { dsp_.push_mail(kMailInit, true); }
-
-    void mail(u32 m) override {
-        if (task_switching()) { task_switch_param(m); return; }
-        switch (state_) {
-        case State::Size:
-            if ((m & 0xFFFF0000U) == 0xBABE0000U) { size_ = m & 0xFFFFU; state_ = State::Address; }
-            else bad_mail(m, "a command list (0xBABExxxx)");
-            break;
-        case State::Address:
-            if (!copy_list(m, size_)) return;
-            run_list();
-            if (dsp_.failed()) return;
-            // the CPU is told when the list is done; Dolphin's delay (minimum seen in games)
-            dsp_.push_mail(kMailYield, true, 2500);
-            state_ = State::Task;
-            break;
-        case State::Task: {
-            const u32 t = 0xCDD10000U | (m & 0xFFFFU); // the ucode does not check the prefix
-            if (t == kCpuResume) { dsp_.push_mail(kMailResume, true); state_ = State::Size; }
-            else if (t == kCpuNewUcode) { begin_task_switch(); state_ = State::Size; }
-            else if (t == kCpuReset) dsp_.reset(false);
-            else if (t == kCpuContinue) state_ = State::Size;
-            else bad_mail(m, "a task mail (0xCDD1000x)");
-            break;
-        }
-        }
-    }
 
 private:
-    enum class State { Size, Address, Task } state_{State::Size};
-
-    void bad_mail(u32 m, const char* expected) {
-        char buf[128];
-        std::snprintf(buf, sizeof buf, "DSP HLE AX: mail %08X where %s was expected", m, expected);
-        dsp_.fail(buf);
-    }
-
-    // ---- RAM access (big-endian) ------------------------------------------------
-    bool read16s(u32 addr, u16* out, std::size_t n) {
-        std::vector<u8> b(2U * n);
-        if (!dsp_.host().ram_read(addr & 0x1FFFFFFFU, b)) return fault(addr);
-        for (std::size_t i = 0; i < n; ++i) out[i] = static_cast<u16>(b[2 * i] << 8 | b[2 * i + 1]);
-        return true;
-    }
-    bool write16s(u32 addr, const u16* in, std::size_t n) {
-        std::vector<u8> b(2U * n);
-        for (std::size_t i = 0; i < n; ++i) { b[2 * i] = static_cast<u8>(in[i] >> 8); b[2 * i + 1] = static_cast<u8>(in[i]); }
-        return dsp_.host().ram_write(addr & 0x1FFFFFFFU, b) || fault(addr);
-    }
-    bool read32s(u32 addr, s32* out, std::size_t n) {
-        std::vector<u8> b(4U * n);
-        if (!dsp_.host().ram_read(addr & 0x1FFFFFFFU, b)) return fault(addr);
-        for (std::size_t i = 0; i < n; ++i)
-            out[i] = static_cast<s32>(u32{b[4 * i]} << 24 | u32{b[4 * i + 1]} << 16 | u32{b[4 * i + 2]} << 8 | b[4 * i + 3]);
-        return true;
-    }
-    bool write32s(u32 addr, const s32* in, std::size_t n) {
-        std::vector<u8> b(4U * n);
-        for (std::size_t i = 0; i < n; ++i) {
-            const auto v = static_cast<u32>(in[i]);
-            b[4 * i] = static_cast<u8>(v >> 24); b[4 * i + 1] = static_cast<u8>(v >> 16);
-            b[4 * i + 2] = static_cast<u8>(v >> 8); b[4 * i + 3] = static_cast<u8>(v);
-        }
-        return dsp_.host().ram_write(addr & 0x1FFFFFFFU, b) || fault(addr);
-    }
-    bool fault(u32 addr) {
-        char buf[96];
-        std::snprintf(buf, sizeof buf, "DSP HLE AX: access outside RAM at %08X", addr);
-        dsp_.fail(buf);
-        return false;
-    }
-
-    // ---- command list --------------------------------------------------------------
-    bool copy_list(u32 addr, u32 size) {
-        if (size >= list_.size()) { dsp_.fail("DSP HLE AX: command list longer than 512 words"); return false; }
-        return read16s(addr, list_.data(), size);
-    }
-
-    void run_list() {
+    void run_list() override {
         u32 i = 0, pb_addr = 0;
         auto arg = [&]() -> u16 { return i < list_.size() ? list_[i++] : 0; };
         auto arg32 = [&]() -> u32 { const u32 hi = arg(); return hi << 16 | arg(); };
@@ -350,90 +278,15 @@ private:
         }
     }
 
-    // One sample from the accelerator, with the AX handling of the end of the sample.
-    s16 acc_sample(Pb& pb) {
-        DspCore& c = dsp_.host().core();
-        u16 v = 0;
-        if (!c.accelerator_read(ifx::ACDSAMP, v)) { dsp_.fail("DSP HLE AX: accelerator: " + c.error()); return 0; }
-        if ((c.pending_exceptions() & (1U << 5)) != 0U) { // end of the sample
-            c.clear_pending_exceptions();
-            if (pb[pbw::LOOPING] != 0U) {
-                c.accelerator_write(ifx::PRED_SCALE, pb[pbw::LOOP_PS]);
-                u16 y1 = 0, y2 = 0;
-                c.accelerator_read(ifx::YN1, y1);
-                c.accelerator_read(ifx::YN2, y2);
-                if (pb[pbw::IS_STREAM] != 1U) { y1 = pb[pbw::LOOP_YN1]; y2 = pb[pbw::LOOP_YN2]; }
-                else ++pb[pbw::LOOP_COUNTER];
-                c.accelerator_write(ifx::YN1, y1);
-                c.accelerator_write(ifx::YN2, y2); // writing YN2 lets the accelerator read again
-            } else {
-                pb[pbw::RUNNING] = 0;
-            }
-        }
-        return static_cast<s16>(v);
-    }
-
     void voice(Pb& pb, unsigned at) {
         if (pb[pbw::RUNNING] != 1U) return;
-        DspCore& c = dsp_.host().core();
-        // accelerator set-up from the PB
-        auto w = [&](u16 reg, u16 v) { c.accelerator_write(reg, v); };
-        w(ifx::FORMAT, pb[pbw::FORMAT]);
-        w(ifx::ACSAH, pb[pbw::LOOP_HI]); w(ifx::ACSAL, pb[pbw::LOOP_LO]);
-        w(ifx::ACEAH, pb[pbw::END_HI]); w(ifx::ACEAL, pb[pbw::END_LO]);
-        w(ifx::ACCAH, pb[pbw::CUR_HI]); w(ifx::ACCAL, pb[pbw::CUR_LO]);
-        for (u16 k = 0; k < 16; ++k) w(static_cast<u16>(0xFFA0U + k), pb[pbw::COEFS + k]);
-        w(ifx::GAIN, pb[pbw::GAIN]);
-        w(ifx::PRED_SCALE, pb[pbw::PRED_SCALE]);
-        w(ifx::YN1, pb[pbw::YN1]);
-        w(ifx::YN2, pb[pbw::YN2]);
-        c.clear_pending_exceptions();
-
-        // resampling (32 output samples)
+        acc_setup(pb.data(), kWords);
         std::array<s16, 32> s{};
-        u32 pos = pb[pbw::FRAC];
         const u32 ratio = u32{pb[pbw::RATIO_HI]} << 16 | pb[pbw::RATIO_LO];
-        const u16 type = pb[pbw::SRC_TYPE];
-        std::span<const u16> coef = c.coef_rom();
-        if (type == 0U && coef.empty()) {
-            dsp_.warn("AX: polyphase resampling without the DSP COEF ROM dump: linear interpolation is used instead");
-        }
-        if (type == 0U || type == 1U) {
-            s16 t[4] = {static_cast<s16>(pb[pbw::LAST]), static_cast<s16>(pb[pbw::LAST + 1]), static_cast<s16>(pb[pbw::LAST + 2]),
-                        static_cast<s16>(pb[pbw::LAST + 3])};
-            u32 idx = 0; // t[idx & 3] is the oldest of the four
-            for (unsigned k = 0; k < 32; ++k) {
-                pos += ratio;
-                while (pos >= 0x10000U) { t[idx++ & 3U] = acc_sample(pb); pos -= 0x10000U; }
-                if (type == 0U && !coef.empty()) { // 4-tap polyphase with the COEF ROM
-                    const u32 f = ((pos & 0xFFFFU) >> 9) << 2;
-                    const auto* cf = &coef[(pb[pbw::COEF_SELECT] & 3U) * 0x200U + f];
-                    const s64 sum = s64{t[idx & 3U]} * static_cast<s16>(cf[0]) + s64{t[(idx + 1) & 3U]} * static_cast<s16>(cf[1]) +
-                                    s64{t[(idx + 2) & 3U]} * static_cast<s16>(cf[2]) + s64{t[(idx + 3) & 3U]} * static_cast<s16>(cf[3]);
-                    s[k] = clamp16(sum >> 15);
-                } else { // linear, between the two oldest of the four
-                    const u32 frac = pos & 0xFFFFU;
-                    if (frac != 0U) {
-                        const s32 a = t[idx & 3U], b = t[(idx + 1) & 3U];
-                        s[k] = static_cast<s16>((a * static_cast<s32>((0x10000U - frac) & 0xFFFFU) + b * static_cast<s32>(frac)) >> 16);
-                    } else {
-                        s[k] = t[idx & 3U];
-                    }
-                }
-            }
-            for (unsigned k = 0; k < 4; ++k) pb[pbw::LAST + k] = static_cast<u16>(t[(idx + k) & 3U]);
-        } else { // no conversion
-            for (unsigned k = 0; k < 32; ++k) s[k] = acc_sample(pb);
-            for (unsigned k = 0; k < 4; ++k) pb[pbw::LAST + k] = static_cast<u16>(s[28 + k]);
-        }
+        resample(pb.data(), std::span<s16>(s), [&] { return acc_sample(pb.data(), kWords); }, ratio, pbw::LAST, pbw::FRAC,
+                 pb[pbw::SRC_TYPE], pb[pbw::COEF_SELECT]);
         if (dsp_.failed()) return;
-        pb[pbw::FRAC] = static_cast<u16>(pos);
-        u16 v = 0;
-        c.accelerator_read(ifx::ACCAH, v); pb[pbw::CUR_HI] = v;
-        c.accelerator_read(ifx::ACCAL, v); pb[pbw::CUR_LO] = v;
-        c.accelerator_read(ifx::YN1, v); pb[pbw::YN1] = v;
-        c.accelerator_read(ifx::YN2, v); pb[pbw::YN2] = v;
-        c.accelerator_read(ifx::PRED_SCALE, v); pb[pbw::PRED_SCALE] = v;
+        acc_store(pb.data(), kWords);
 
         // volume envelope (signed on GameCube)
         for (auto& x : s) {
@@ -469,8 +322,6 @@ private:
         }
     }
 
-    std::array<u16, 512> list_{};
-    u32 size_{0};
     std::array<std::array<s32, kSamples>, kBufs> buf_{};
     u16 compressor_pos_{0};
 };

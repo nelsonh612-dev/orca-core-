@@ -293,4 +293,109 @@ TEST_CASE(ax_through_the_dsp_interface_with_a_matching_ucode_image) {
     CHECK_EQ(di.csr() & hw::dsp::CSR_DSPINT, hw::dsp::CSR_DSPINT);
 }
 
+// ---------------------------------------------------------------- AXWii
+namespace {
+// largest Wii PB layout (word offsets)
+enum : u32 { W_RUNNING = 8, W_SRC = 4, W_MIX_HI = 6, W_MIX_LO = 7, W_MIXER = 10, W_UPD = 53, W_VOL = 58, W_FORMAT = 61, W_LOOP = 62,
+             W_END = 64, W_CUR = 66, W_GAIN = 84, W_BIQUAD = 102, W_HPF_END = 106, W_BIQ_END = 112, W_REMOTE = 112,
+             W_RMC = 113, W_RMIX = 114, W_SIZE = 155 };
+// writes a PB given in the largest layout, in the memory layout of a version
+void write_wii_pb(FakeHost& h, u32 addr, const std::vector<u16>& pb, bool updates, bool biquad) {
+    std::vector<u16> mem;
+    for (u32 w = 0; w < W_SIZE; ++w) {
+        if (!updates && w >= W_UPD && w < W_UPD + 5) continue;
+        if (!biquad && w >= W_HPF_END && w < W_BIQ_END) continue;
+        mem.push_back(pb[w]);
+    }
+    for (std::size_t i = 0; i < mem.size(); ++i) h.w16(addr + 2U * static_cast<u32>(i), mem[i]);
+}
+std::vector<u16> wii_pcm_pb(u32 ab, u32 n) {
+    std::vector<u16> pb(W_SIZE, 0);
+    pb[W_RUNNING] = 1; pb[W_SRC] = 2; pb[W_MIX_LO] = 0x0001; // main left
+    pb[W_FORMAT] = 0x000A; pb[W_GAIN] = 0x0800;
+    const u32 start = ab / 2, end = start + n - 1;
+    pb[W_LOOP] = static_cast<u16>(start >> 16); pb[W_LOOP + 1] = static_cast<u16>(start);
+    pb[W_END] = static_cast<u16>(end >> 16); pb[W_END + 1] = static_cast<u16>(end);
+    pb[W_CUR] = static_cast<u16>(start >> 16); pb[W_CUR + 1] = static_cast<u16>(start);
+    pb[W_VOL] = 0x8000; pb[W_MIXER] = 0x8000;
+    return pb;
+}
+struct WiiRig {
+    FakeHost host;
+    hle::Dsp dsp{host, true};
+    explicit WiiRig(u32 hash) {
+        dsp.reset(false); dsp.set_halted(false);
+        (void)read_mail();
+        dsp.switch_to(hash);
+        (void)read_mail(); // DSP_INIT
+    }
+    u32 read_mail() { const u32 hi = dsp.cpu_mailbox_high(); return hi << 16 | dsp.cpu_mailbox_low(); }
+    void send(u32 m) { dsp.cpu_write_high(static_cast<u16>(m >> 16)); dsp.cpu_write_low(static_cast<u16>(m)); }
+    void run(const std::vector<u16>& list) {
+        for (std::size_t i = 0; i < list.size(); ++i) host.w16(0x10000U + 2U * static_cast<u32>(i), list[i]);
+        send(0xBABE0000U | static_cast<u32>(list.size()));
+        send(0x00010000U);
+    }
+};
+void ramp_aram(FakeHost& h, u32 ab, u32 n) {
+    for (u32 k = 0; k < n; ++k) {
+        const auto v = static_cast<u16>(static_cast<s16>(50 * static_cast<s32>(k) - 2000));
+        h.aram_[ab + 2 * k] = static_cast<u8>(v >> 8); h.aram_[ab + 2 * k + 1] = static_cast<u8>(v);
+    }
+}
+} // namespace
+
+TEST_CASE(axwii_voice_in_each_pb_layout) {
+    struct V { u32 hash; bool updates, biquad, old; };
+    const V versions[] = {{0x347112BAU, false, true, false}, {0xD9C4BF34U, false, false, false}, {0xFA450138U, true, false, true}};
+    for (const V& v : versions) {
+        WiiRig r(v.hash);
+        ramp_aram(r.host, 0x1000, 200);
+        write_wii_pb(r.host, 0x70000, wii_pcm_pb(0x1000, 200), v.updates, v.biquad);
+        for (u32 w = 0; w < 60; ++w) r.host.w16(0x18000 + 2 * w, 0);
+        std::vector<u16> list = cat(std::vector<u16>{0x0000}, addr(0x18000));
+        if (v.old) list = cat(list, std::vector<u16>{0x0004}, addr(0x70000), std::vector<u16>{0x0005, 0x000C}, addr(0x30000), addr(0x20000),
+                              std::vector<u16>{0x000F});
+        else if (v.hash == 0xD9C4BF34U) list = cat(list, std::vector<u16>{0x0004}, addr(0x70000), std::vector<u16>{0x000B}, addr(0x30000),
+                                                   addr(0x20000), std::vector<u16>{0x000E});
+        else list = cat(list, std::vector<u16>{0x0004}, addr(0x70000), std::vector<u16>{0x000B, 0x8000}, addr(0x30000), addr(0x20000),
+                        std::vector<u16>{0x000E});
+        r.run(list);
+        CHECK(!r.dsp.failed());
+        if (r.dsp.failed()) { std::printf("    %08X: %s\n", v.hash, r.dsp.error().c_str()); continue; }
+        CHECK_EQ(r.read_mail(), hle::kMailSync);    // after the output
+        CHECK_EQ(r.read_mail(), hle::kMailYield);
+        bool ok = true;
+        for (u32 k = 0; k < 96; ++k) {
+            const auto expect = static_cast<s16>(50 * static_cast<s32>(k) - 2000); // unsigned 0x8000 = 1.0 everywhere
+            ok = ok && static_cast<s16>(r.host.r16(0x20000 + 4 * k + 2)) == expect && r.host.r16(0x20000 + 4 * k) == 0;
+        }
+        CHECK(ok);
+        if (!ok) std::printf("    version %08X: first sample %d\n", v.hash, static_cast<s16>(r.host.r16(0x20002)));
+        CHECK(r.dsp.warnings().empty());              // no ramp (0x8000 -> 0x8000), no polyphase
+    }
+}
+
+TEST_CASE(axwii_wii_remote_speaker_and_unknown_layout) {
+    WiiRig r(0x347112BAU);
+    for (u32 k = 0; k < 200; ++k) { r.host.aram_[0x1000 + 2 * k] = 0x03; r.host.aram_[0x1000 + 2 * k + 1] = 0xE8; } // 1000
+    auto pb = wii_pcm_pb(0x1000, 200);
+    pb[W_REMOTE] = 1;
+    pb[W_RMC] = 0x0001;                // channel main0 on, no ramp
+    pb[W_RMIX] = 0x8000;
+    write_wii_pb(r.host, 0x70000, pb, false, true);
+    for (u32 w = 0; w < 60; ++w) r.host.w16(0x18000 + 2 * w, 0);
+    r.run(cat(std::vector<u16>{0x0000}, addr(0x18000), std::vector<u16>{0x0004}, addr(0x70000), std::vector<u16>{0x000D}, addr(0x40000),
+              addr(0x40100), addr(0x40200), addr(0x40300), std::vector<u16>{0x000E}));
+    CHECK(!r.dsp.failed());
+    // 18 speaker samples, resampled by ~96/18 from the voice (linear without the COEF dump)
+    CHECK_EQ(static_cast<s16>(r.host.r16(0x40000 + 2 * 17)), 1000);
+    CHECK_EQ(r.host.r16(0x40100), 0U);  // speaker 1 got nothing
+    CHECK(!r.dsp.warnings().empty());   // polyphase without the COEF ROM: reported
+    WiiRig u(0x2EA36CE6U);              // a version whose PB layout Orca does not know
+    u.run(cat(std::vector<u16>{0x0004}, addr(0x70000), std::vector<u16>{0x000E}));
+    CHECK(u.dsp.failed());
+    CHECK(u.dsp.error().find("layout") != std::string::npos);
+}
+
 TEST_MAIN("dsp_hle")

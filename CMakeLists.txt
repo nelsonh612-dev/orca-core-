@@ -45,6 +45,8 @@ add_library(orca_core
     src/dsp/dsp_core.cpp
     src/dsp/hle.cpp
     src/dsp/hle_ax.cpp
+    src/dsp/hle_ax_common.cpp
+    src/dsp/hle_axwii.cpp
     src/hw/audio_interface.cpp
     src/hw/disc_interface.cpp
     src/hw/dsp_interface.cpp

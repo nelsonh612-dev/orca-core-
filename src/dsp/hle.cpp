@@ -165,10 +165,12 @@ void Dsp::warn(std::string w) {
     warnings_.push_back(std::move(w));
 }
 
-std::unique_ptr<Ucode> make_ax_ucode(Dsp& dsp, u32 hash); // hle_ax.cpp (nullptr if not AX)
+std::unique_ptr<Ucode> make_ax_ucode(Dsp& dsp, u32 hash);    // hle_ax.cpp (nullptr if not AX)
+std::unique_ptr<Ucode> make_axwii_ucode(Dsp& dsp, u32 hash); // hle_axwii.cpp
 
 std::unique_ptr<Ucode> make_ucode(Dsp& dsp, u32 hash) {
-    return make_ax_ucode(dsp, hash);
+    if (auto u = make_ax_ucode(dsp, hash)) return u;
+    return make_axwii_ucode(dsp, hash);
 }
 
 } // namespace orca::dsp::hle
