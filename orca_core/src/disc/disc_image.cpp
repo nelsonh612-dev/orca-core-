@@ -11,7 +11,11 @@ u32 be32(const u8* p) { return (u32{p[0]} << 24U) | (u32{p[1]} << 16U) | (u32{p[
 
 bool MemoryDisc::read(u64 offset, std::span<u8> out) {
     if (offset > data_.size() || out.size() > data_.size() - offset) return false;
-    std::memcpy(out.data(), data_.data() + offset, out.size());
+    // A zero-length read is valid at any position up to EOF. Avoid pointer
+    // arithmetic on data() when the backing vector is empty and avoid passing
+    // a potentially null span::data() to memcpy, even with a zero byte count.
+    if (out.empty()) return true;
+    std::memcpy(out.data(), data_.data() + static_cast<std::size_t>(offset), out.size());
     return true;
 }
 
@@ -20,16 +24,172 @@ std::unique_ptr<FileDisc> FileDisc::open(const std::string& path, std::string& e
     d->file_.open(path, std::ios::binary);
     if (!d->file_) { error = "cannot open disc image " + path; return nullptr; }
     d->file_.seekg(0, std::ios::end);
-    d->size_ = static_cast<u64>(d->file_.tellg());
+    const std::streampos end = d->file_.tellg();
+    if (end < std::streampos{0}) {
+        error = "cannot determine disc image size " + path;
+        return nullptr;
+    }
+    d->size_ = static_cast<u64>(end);
+    d->file_.seekg(0, std::ios::beg);
+    if (!d->file_) {
+        error = "cannot seek to start of disc image " + path;
+        return nullptr;
+    }
     return d;
 }
 
 bool FileDisc::read(u64 offset, std::span<u8> out) {
     if (offset > size_ || out.size() > size_ - offset) return false;
+    if (out.empty()) return true;
     file_.clear();
     file_.seekg(static_cast<std::streamoff>(offset));
     file_.read(reinterpret_cast<char*>(out.data()), static_cast<std::streamsize>(out.size()));
     return static_cast<std::size_t>(file_.gcount()) == out.size();
+}
+
+std::optional<std::vector<WiiPartition>> parse_wii_partition_table(DiscReader& disc, std::string& error) {
+    // The four group descriptors occupy 0x20 bytes at 0x40000. Each
+    // descriptor contains a partition count and a byte offset divided by 4.
+    constexpr u64 kGroupTableBytes = kWiiPartitionGroupCount * 8U;
+    if (disc.size() < kWiiPartitionInfoOffset ||
+        kGroupTableBytes > disc.size() - kWiiPartitionInfoOffset) {
+        error = "Wii disc: partition information table is truncated";
+        return std::nullopt;
+    }
+    std::array<u8, kGroupTableBytes> groups{};
+    if (!disc.read(kWiiPartitionInfoOffset, groups)) {
+        error = "Wii disc: cannot read partition group table";
+        return std::nullopt;
+    }
+
+    constexpr u32 kMaxPartitions = 4096U;
+    std::vector<WiiPartition> partitions;
+    for (u32 group = 0; group < kWiiPartitionGroupCount; ++group) {
+        const u32 count = be32(&groups[group * 8U]);
+        const u32 offset_words = be32(&groups[group * 8U + 4U]);
+        if (count == 0U) continue;
+        if (count > kMaxPartitions || partitions.size() > kMaxPartitions - count) {
+            error = "Wii disc: unreasonable partition count";
+            return std::nullopt;
+        }
+        const u64 table_offset = u64{offset_words} * 4U;
+        const u64 table_bytes = u64{count} * 8U;
+        if (table_offset > disc.size() || table_bytes > disc.size() - table_offset) {
+            error = "Wii disc: partition entry table extends past the image";
+            return std::nullopt;
+        }
+
+        std::vector<u8> entries(static_cast<std::size_t>(table_bytes));
+        if (!disc.read(table_offset, entries)) {
+            error = "Wii disc: cannot read partition entries";
+            return std::nullopt;
+        }
+        for (u32 i = 0; i < count; ++i) {
+            const u64 partition_offset = u64{be32(&entries[i * 8U])} * 4U;
+            const u32 type = be32(&entries[i * 8U + 4U]);
+            if (partition_offset >= disc.size()) {
+                error = "Wii disc: partition offset outside the image";
+                return std::nullopt;
+            }
+            partitions.push_back({partition_offset, type});
+        }
+    }
+    if (partitions.empty()) {
+        error = "Wii disc: partition table contains no partitions";
+        return std::nullopt;
+    }
+    return partitions;
+}
+
+
+
+std::optional<WiiTicket> parse_wii_ticket(
+    DiscReader& disc, const WiiPartition& partition, std::string& error) {
+    constexpr u64 kTicketSize = 0x2A4U;
+    constexpr u64 kEncryptedTitleKeyOffset = 0x1BFU;
+    constexpr u64 kTitleIdOffset = 0x1DCU;
+    constexpr u64 kCommonKeyIndexOffset = 0x1F1U;
+    if (partition.offset > disc.size() || kTicketSize > disc.size() - partition.offset) {
+        error = "Wii ticket: ticket extends past the disc image";
+        return std::nullopt;
+    }
+    std::array<u8, kTicketSize> raw{};
+    if (!disc.read(partition.offset, raw)) {
+        error = "Wii ticket: cannot read ticket";
+        return std::nullopt;
+    }
+    WiiTicket ticket;
+    std::copy_n(raw.begin() + static_cast<std::ptrdiff_t>(kEncryptedTitleKeyOffset),
+                ticket.encrypted_title_key.size(), ticket.encrypted_title_key.begin());
+    std::copy_n(raw.begin() + static_cast<std::ptrdiff_t>(kTitleIdOffset),
+                ticket.title_id.size(), ticket.title_id.begin());
+    ticket.common_key_index = raw[static_cast<std::size_t>(kCommonKeyIndexOffset)];
+    if (std::all_of(ticket.encrypted_title_key.begin(), ticket.encrypted_title_key.end(),
+                    [](u8 value) { return value == 0U; })) {
+        error = "Wii ticket: encrypted title key is empty";
+        return std::nullopt;
+    }
+    if (std::all_of(ticket.title_id.begin(), ticket.title_id.end(),
+                    [](u8 value) { return value == 0U; })) {
+        error = "Wii ticket: title ID is empty";
+        return std::nullopt;
+    }
+    return ticket;
+}
+
+std::optional<WiiPartitionHeader> parse_wii_partition_header(
+    DiscReader& disc, const WiiPartition& partition, std::string& error) {
+    constexpr u64 kTicketSize = 0x2A4U;
+    constexpr u64 kMetadataSize = 0x1CU;
+    constexpr u64 kH3Size = 0x18000U;
+    if (partition.offset > disc.size() ||
+        kTicketSize + kMetadataSize > disc.size() - partition.offset) {
+        error = "Wii partition: ticket or metadata block is truncated";
+        return std::nullopt;
+    }
+
+    std::array<u8, kMetadataSize> raw{};
+    if (!disc.read(partition.offset + kTicketSize, raw)) {
+        error = "Wii partition: cannot read metadata block";
+        return std::nullopt;
+    }
+
+    WiiPartitionHeader result;
+    result.tmd_size = be32(&raw[0x00]);
+    result.tmd_offset = u64{be32(&raw[0x04])} * 4U;
+    result.cert_size = be32(&raw[0x08]);
+    result.cert_offset = u64{be32(&raw[0x0C])} * 4U;
+    result.h3_offset = u64{be32(&raw[0x10])} * 4U;
+    result.data_offset = u64{be32(&raw[0x14])} * 4U;
+    result.data_size = u64{be32(&raw[0x18])} * 4U;
+
+    const u64 partition_size = disc.size() - partition.offset;
+    const auto range_in_partition = [partition_size](u64 offset, u64 length) {
+        return offset <= partition_size && length <= partition_size - offset;
+    };
+    if (result.tmd_size == 0U || !range_in_partition(result.tmd_offset, result.tmd_size)) {
+        error = "Wii partition: TMD range is empty or outside the image";
+        return std::nullopt;
+    }
+    if (result.cert_size != 0U && !range_in_partition(result.cert_offset, result.cert_size)) {
+        error = "Wii partition: certificate chain extends outside the image";
+        return std::nullopt;
+    }
+    if (!range_in_partition(result.h3_offset, kH3Size)) {
+        error = "Wii partition: H3 table extends outside the image";
+        return std::nullopt;
+    }
+    if (result.data_size == 0U || !range_in_partition(result.data_offset, result.data_size)) {
+        error = "Wii partition: encrypted data range is empty or outside the image";
+        return std::nullopt;
+    }
+    if (result.data_offset < kTicketSize + kMetadataSize ||
+        result.tmd_offset < kTicketSize + kMetadataSize ||
+        (result.cert_size != 0U && result.cert_offset < kTicketSize + kMetadataSize)) {
+        error = "Wii partition: metadata overlaps the ticket/header";
+        return std::nullopt;
+    }
+    return result;
 }
 
 std::optional<DiscHeader> parse_header(DiscReader& disc, std::string& error) {

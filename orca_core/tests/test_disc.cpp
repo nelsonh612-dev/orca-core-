@@ -75,6 +75,121 @@ TEST_CASE(disc_header_and_apploader_parsing) {
     std::vector<u8> out(16);
     CHECK(d.read(0x1FFFF0, out));
     CHECK(!d.read(0x1FFFF1, out));
+    std::span<u8> empty;
+    CHECK(d.read(d.size(), empty)); // zero bytes at EOF is a valid read
+    CHECK(!d.read(d.size() + 1U, empty));
+
+    disc::MemoryDisc empty_disc(std::vector<u8>{});
+    CHECK(empty_disc.read(0, empty));
+    CHECK(!empty_disc.read(1, empty));
+}
+
+TEST_CASE(wii_partition_table_parsing_and_bounds) {
+    std::vector<u8> image(0x60000U, 0);
+    put32(image, 0x40000U, 1U);       // group 0: one partition
+    put32(image, 0x40004U, 0x10010U); // entry table at 0x40040
+    put32(image, 0x40040U, 0x12000U); // partition at 0x48000
+    put32(image, 0x40044U, 0U);       // data partition
+    disc::MemoryDisc d(std::move(image));
+    std::string error;
+    const auto parts = disc::parse_wii_partition_table(d, error);
+    CHECK(parts.has_value());
+    if (parts) {
+        CHECK_EQ(parts->size(), 1U);
+        CHECK_EQ((*parts)[0].offset, 0x48000U);
+        CHECK_EQ((*parts)[0].type, 0U);
+    }
+
+    std::vector<u8> bad_image(0x60000U, 0);
+    put32(bad_image, 0x40000U, 1U);
+    put32(bad_image, 0x40004U, 0x10010U);
+    put32(bad_image, 0x40040U, 0xFFFFFFFFU); // multiplied offset is outside image
+    disc::MemoryDisc bad(std::move(bad_image));
+    CHECK(!disc::parse_wii_partition_table(bad, error).has_value());
+
+    disc::MemoryDisc truncated(std::vector<u8>(0x40010U, 0));
+    CHECK(!disc::parse_wii_partition_table(truncated, error).has_value());
+
+    std::vector<u8> no_parts(0x50000U, 0);
+    disc::MemoryDisc empty(std::move(no_parts));
+    CHECK(!disc::parse_wii_partition_table(empty, error).has_value());
+}
+
+
+
+TEST_CASE(wii_ticket_fields_and_validation) {
+    constexpr std::size_t base = 0x48000U;
+    std::vector<u8> image(base + 0x2A4U, 0);
+    for (std::size_t i = 0; i < 16U; ++i) image[base + 0x1BFU + i] = static_cast<u8>(i + 1U);
+    for (std::size_t i = 0; i < 8U; ++i) image[base + 0x1DCU + i] = static_cast<u8>(0xA0U + i);
+    image[base + 0x1F1U] = 0U;
+    disc::MemoryDisc d(std::move(image));
+    std::string error;
+    const auto ticket = disc::parse_wii_ticket(d, {base, 0U}, error);
+    CHECK(ticket.has_value());
+    if (ticket) {
+        CHECK_EQ(ticket->encrypted_title_key[0], 1U);
+        CHECK_EQ(ticket->encrypted_title_key[15], 16U);
+        CHECK_EQ(ticket->title_id[0], 0xA0U);
+        CHECK_EQ(ticket->title_id[7], 0xA7U);
+        CHECK_EQ(ticket->common_key_index, 0U);
+    }
+
+    std::vector<u8> bad(base + 0x2A4U, 0);
+    for (std::size_t i = 0; i < 16U; ++i) bad[base + 0x1BFU + i] = static_cast<u8>(i + 1U);
+    for (std::size_t i = 0; i < 8U; ++i) bad[base + 0x1DCU + i] = static_cast<u8>(0xA0U + i);
+    bad[base + 0x1F1U] = 2U; // preserve unknown key indices for caller policy
+    disc::MemoryDisc alternate_key(std::move(bad));
+    const auto alternate = disc::parse_wii_ticket(alternate_key, {base, 0U}, error);
+    CHECK(alternate.has_value());
+    if (alternate) CHECK_EQ(alternate->common_key_index, 2U);
+
+    std::vector<u8> zero_id(base + 0x2A4U, 0);
+    for (std::size_t i = 0; i < 16U; ++i) zero_id[base + 0x1BFU + i] = static_cast<u8>(i + 1U);
+    disc::MemoryDisc invalid_id(std::move(zero_id));
+    CHECK(!disc::parse_wii_ticket(invalid_id, {base, 0U}, error).has_value());
+
+    disc::MemoryDisc truncated(std::vector<u8>(base + 0x200U, 0));
+    CHECK(!disc::parse_wii_ticket(truncated, {base, 0U}, error).has_value());
+}
+
+TEST_CASE(wii_partition_header_metadata_and_bounds) {
+    constexpr std::size_t base = 0x48000U;
+    std::vector<u8> image(0x90000U, 0);
+    // Ticket is [base, base+0x2A4); metadata follows it.
+    put32(image, base + 0x2A4U, 0x100U);    // TMD size
+    put32(image, base + 0x2A8U, 0x00B0U);   // TMD offset = base + 0x2C0
+    put32(image, base + 0x2ACU, 0x80U);     // certificate size
+    put32(image, base + 0x2B0U, 0x00F0U);   // certificate offset = base + 0x3C0
+    put32(image, base + 0x2B4U, 0x10000U);  // H3 offset = base + 0x40000
+    put32(image, base + 0x2B8U, 0x20000U);  // data offset = base + 0x80000
+    put32(image, base + 0x2BCU, 0x1000U);   // data size = 0x4000
+    disc::MemoryDisc d(std::move(image));
+    std::string error;
+    const disc::WiiPartition part{base, 0U};
+    const auto header = disc::parse_wii_partition_header(d, part, error);
+    CHECK(header.has_value());
+    if (header) {
+        CHECK_EQ(header->tmd_size, 0x100U);
+        CHECK_EQ(header->tmd_offset, 0x2C0U);
+        CHECK_EQ(header->cert_size, 0x80U);
+        CHECK_EQ(header->cert_offset, 0x3C0U);
+        CHECK_EQ(header->h3_offset, 0x40000U);
+        CHECK_EQ(header->data_offset, 0x80000U);
+        CHECK_EQ(header->data_size, 0x4000U);
+    }
+
+    std::vector<u8> bad(0x90000U, 0);
+    put32(bad, base + 0x2A4U, 0x100U);
+    put32(bad, base + 0x2A8U, 0x00B0U);
+    put32(bad, base + 0x2B4U, 0xFFFFFFFFU); // H3 outside partition/image
+    put32(bad, base + 0x2B8U, 0x20000U);
+    put32(bad, base + 0x2BCU, 0x1000U);
+    disc::MemoryDisc invalid(std::move(bad));
+    CHECK(!disc::parse_wii_partition_header(invalid, part, error).has_value());
+
+    disc::MemoryDisc truncated(std::vector<u8>(base + 0x2A4U + 0x10U, 0));
+    CHECK(!disc::parse_wii_partition_header(truncated, part, error).has_value());
 }
 
 TEST_CASE(disc_rejections) {
@@ -112,6 +227,20 @@ TEST_CASE(file_disc_reads_ranges) {
     CHECK(!d->read(0x1FFFFE, w));
     CHECK(d->read(0, w)); // still usable after a failed read
     CHECK_EQ(w[0], static_cast<u8>('O'));
+    std::span<u8> empty;
+    CHECK(d->read(d->size(), empty)); // zero bytes at EOF must not touch the stream
+    CHECK(!d->read(d->size() + 1U, empty));
+
+    const char* empty_path = "orca_test_empty_disc.gcm";
+    { std::ofstream f(empty_path, std::ios::binary); }
+    auto empty_disc = disc::FileDisc::open(empty_path, err);
+    CHECK(empty_disc != nullptr);
+    if (empty_disc) {
+        CHECK_EQ(empty_disc->size(), 0U);
+        CHECK(empty_disc->read(0, empty));
+        CHECK(!empty_disc->read(1, empty));
+    }
+    std::remove(empty_path);
     CHECK(disc::FileDisc::open("/nonexistent/disc.iso", err) == nullptr);
 }
 

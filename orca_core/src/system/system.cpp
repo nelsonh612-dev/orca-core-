@@ -186,8 +186,12 @@ RunResult System::run(u64 max_cycles) {
 #if defined(__aarch64__)
         // Run native blocks only up to the next scheduler boundary. This keeps
         // VI/AI/DI/DSP events and asynchronous interrupt delivery ordered.
+        // Never batch a second instruction unless its full nominal cost
+        // fits before the requested end/event boundary. A single instruction
+        // may still cross a boundary when fewer than cpi cycles remain, which
+        // matches the interpreter's instruction-granular timing model.
         const auto cycles_to_instructions = [cpi](u64 cycles) {
-            return cycles / cpi + (cycles % cpi != 0U ? 1U : 0U);
+            return std::max<u64>(1U, cycles / cpi);
         };
         u64 budget = std::max<u64>(1U, cycles_to_instructions(end - scheduler_.now()));
         if (const auto next = scheduler_.next_event_time()) {

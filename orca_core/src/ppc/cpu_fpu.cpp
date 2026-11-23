@@ -491,6 +491,10 @@ Cpu::Outcome Cpu::op_dcbz_l(u32 ins) {
     } else {
         it->second.fill(0);
     }
+    // dcbz_l allocates/clears the line in Modified (M) state.
+    locked_cache_dirty_.insert(lo);
+    // Treat the zero-fill as a write for reservation and code-coherency observers.
+    bus_.notify_external_write(lo, 32U, mem::AccessSource::Cpu);
     return o;
 }
 
@@ -516,6 +520,9 @@ Cpu::Outcome Cpu::locked_cache_dma(u32 dmal) {
             (void)bus_.dma_read(mem_addr + k * 32U, line);
             locked_cache_[lc_addr + k * 32U] = line;
         }
+        // DMA into the locked-cache address space is still a write to the
+        // CPU-visible physical block for reservation/coherency tracking.
+        bus_.notify_external_write(lc_addr, lines * 32U, mem::AccessSource::Dma);
     } else {
         for (u32 k = 0; k < lines; ++k)
             if (locked_cache_.find(lc_addr + k * 32U) == locked_cache_.end())

@@ -14,6 +14,7 @@
 #pragma once
 #include "orca/core/bits.hpp"
 
+#include <array>
 #include <fstream>
 #include <memory>
 #include <optional>
@@ -74,6 +75,39 @@ struct ApploaderHeader {
     u32 size{0};
     u32 trailer_size{0};
 };
+
+// Wii disc partition table (all on-disc offsets are stored in 4-byte words).
+inline constexpr u64 kWiiPartitionInfoOffset = 0x40000U;
+inline constexpr u32 kWiiPartitionGroupCount = 4U;
+struct WiiPartition {
+    u64 offset{0};
+    u32 type{0}; // 0 = data, 1 = update, other values are reserved
+};
+std::optional<std::vector<WiiPartition>> parse_wii_partition_table(DiscReader& disc, std::string& error);
+
+struct WiiTicket {
+    std::array<u8, 16> encrypted_title_key{};
+    std::array<u8, 8> title_id{};
+    u8 common_key_index{0};
+};
+// Reads the fixed-size ticket at the start of a partition. The common key
+// itself is deliberately supplied by the caller and is never embedded here.
+std::optional<WiiTicket> parse_wii_ticket(
+    DiscReader& disc, const WiiPartition& partition, std::string& error);
+
+struct WiiPartitionHeader {
+    u32 tmd_size{0};
+    u64 tmd_offset{0};
+    u32 cert_size{0};
+    u64 cert_offset{0};
+    u64 h3_offset{0};
+    u64 data_offset{0};
+    u64 data_size{0};
+};
+// Parses the 0x1C-byte metadata block at partition +0x2A4 and validates
+// every referenced range against the raw disc image.
+std::optional<WiiPartitionHeader> parse_wii_partition_header(
+    DiscReader& disc, const WiiPartition& partition, std::string& error);
 
 std::optional<DiscHeader> parse_header(DiscReader& disc, std::string& error);
 std::optional<ApploaderHeader> parse_apploader_header(DiscReader& disc, std::string& error);

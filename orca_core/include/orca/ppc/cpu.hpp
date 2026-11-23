@@ -90,6 +90,7 @@ public:
     Exception last_exception() const noexcept { return last_exception_; }
     const StopInfo& last_stop() const noexcept { return last_stop_; }
     u64 instructions_retired() const noexcept { return retired_; }
+    u64 jit_memory_fastpath_hits() const noexcept { return jit_memory_fastpath_hits_; }
 
 private:
     struct Outcome;
@@ -106,6 +107,11 @@ private:
     bool phys_read(u32 pa, unsigned size, u64& value);
     bool phys_write(u32 pa, unsigned size, u64 value);
     Outcome translate_data(u32 ea, u32 size, bool write, u32& pa_lo, u32& pa_hi, u32& split, u8& wimg);
+    // Fast path resolver used only for contiguous ordinary RAM. Any MMU,
+    // MMIO, locked-cache, page-crossing or protection case returns null and
+    // the dispatcher retries the instruction through step()/the Bus.
+    static void* jit_memory_resolver(CpuState* state, void* context, u32 ea, u32 size, u32 access_flags);
+    void* resolve_jit_ram(u32 ea, u32 size, bool write, bool floating_point);
 
     // Instruction groups
     Outcome op_load_store_d(u32 ins, unsigned op);
@@ -154,11 +160,17 @@ private:
     std::size_t observer_id_{0};
     IcacheInvalidateHandler icbi_handler_;
     std::unordered_map<u32, std::array<u8, 32>> locked_cache_;
+    std::unordered_set<u32> locked_cache_dirty_; // lines in Modified (M) state
     // Effective PC -> immutable translated straight-line block. JIT currently
     // only caches real-mode instruction fetches (MSR[IR]=0), so PC is also PA.
     struct JitBlockEntry;
     std::unordered_map<u32, std::unique_ptr<JitBlockEntry>> jit_blocks_;
     std::unordered_set<u32> jit_code_pages_;
+    bool jit_pending_write_{false};
+    bool jit_memory_fallback_{false};
+    u32 jit_pending_write_address_{0};
+    u32 jit_pending_write_size_{0};
+    u64 jit_memory_fastpath_hits_{0};
 };
 
 } // namespace orca::ppc
