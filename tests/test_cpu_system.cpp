@@ -276,6 +276,19 @@ TEST_CASE(external_and_decrementer_interrupts) {
     CHECK_EQ(d.s().pc, 0x900U);
 }
 
+TEST_CASE(writing_dec_does_not_cancel_a_pending_request) {
+    // PEM: the decrementer request is cleared only when the exception is taken.
+    Machine d;
+    d.cpu->advance_timebase(1); // DEC 0 -> -1: request pending
+    CHECK(d.s().dec_pending);
+    d.s().gpr[3] = 5000;
+    CHECK(d.exec(A::mtspr(spr::DEC, 3)) == StepResult::Executed);
+    CHECK(d.s().dec_pending);
+    d.s().msr = MSR_EE;
+    CHECK(d.cpu->step() == StepResult::ExceptionTaken);
+    CHECK(d.cpu->last_exception() == Exception::Decrementer);
+}
+
 TEST_CASE(decrementer_large_advances) {
     Machine d;
     d.s().dec = 0xFFFFFFFFU; // -1: next 0->-1 transition is 2^32 ticks away

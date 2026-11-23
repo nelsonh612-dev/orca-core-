@@ -1,4 +1,4 @@
-# Registro de pruebas — Milestone 004
+# Registro de pruebas — Milestone 005
 
 Todos los resultados son de ejecuciones reales del 2026-11-14 en este entorno, sobre una copia limpia de los fuentes entregados.
 
@@ -8,9 +8,9 @@ Todos los resultados son de ejecuciones reales del 2026-11-14 en este entorno, s
 
 | Configuración | Compilación | Advertencias (`-Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion -Wshadow -Werror`) | CTest |
 |---|---|---|---|
-| GCC Release | OK | 0 | 8/8 pasan |
-| Clang Release | OK | 0 | 8/8 pasan |
-| GCC Debug + ASan + UBSan (`-fno-sanitize-recover=all`) | OK | 0 | 8/8 pasan (26,4 s) |
+| GCC Release | OK | 0 | 10/10 pasan (1,6 s) |
+| Clang Release | OK | 0 | 10/10 pasan (1,6 s) |
+| GCC Debug + ASan + UBSan (`-fno-sanitize-recover=all`) | OK | 0 | 10/10 pasan (33,3 s) |
 | Clang + ASan/UBSan | **NO EJECUTADO**: falta `compiler-rt` en el entorno | — | — |
 | Android NDK arm64-v8a | **NO EJECUTADO**: no hay NDK ni sysroot AArch64 | — | — |
 
@@ -20,12 +20,26 @@ Todos los resultados son de ejecuciones reales del 2026-11-14 en este entorno, s
 |---|---|---|---|
 | memory | 10 | 65 | 0 |
 | cpu_integer (incluye las 9 pruebas de M002) | 33 | 215 | 0 |
-| cpu_system | 22 | 216 | 0 |
+| cpu_system | 23 | 221 | 0 |
 | mmu | 14 | 70 | 0 |
 | reference (diferencial de enteros) | 6 | 152.001 | 0 |
 | **fpu_engine** (M004) | 9 | 101.990 | 0 |
 | **cpu_fpu** (M004) | 28 | 30.751 | 0 |
+| **system** (M005) | 13 | 108 | 0 |
+| **programs** (M005) | 3 | 34 | 0 |
 | encodings (vs `llvm-mc`) | 189 instrucciones | 181 ensambladas + 8 desensambladas | 0 diferencias |
+
+### Programas reales compilados con clang (M005)
+
+Tres programas C (`tests/programs/`) se compilan con **clang 18 para `powerpc-unknown-eabi -mcpu=750`** y se enlazan con ld.lld usando un crt0 y un linker script propios. Cada uno se ejecuta en Orca dos veces: como ELF y como DOL convertido con `orca_elf2dol`. El código lo genera un compilador externo, así que esta prueba no depende de mi ensamblador de pruebas.
+
+| Programa | Contenido | Instrucciones en Orca | Resultado |
+|---|---|---|---|
+| integer_suite | CRC-32, quicksort, criba, aritmética de 64 bits, divisiones con signo y sin signo, recursión, punteros a función, `switch`, extensión de signo, trucos de bits | 3.419.606 | 20 valores **idénticos** al mismo programa compilado para x86-64 (ELF y DOL) |
+| float_suite | Series en doble, acumulación en simple, Newton, matriz 4×4, conversiones int↔float, comparaciones, `frsp`, denormales, overflow | 518.813 | 60 valores **idénticos bit a bit** al anfitrión (ELF y DOL) |
+| hardware_suite | Vectores de excepción instalados en tiempo de ejecución (`dcbst`/`icbi`), `sc`, interrupciones del decrementador con `rfi`, time base, FIFO del PI y gather pipe, INTMR | 96.400 | 9 valores iguales a lo esperado (ELF y DOL) |
+
+Ambos lados se compilan con `-ffp-contract=off` para que ningún compilador fusione multiplicaciones y sumas por su cuenta.
 
 ### Referencia exacta de punto flotante (M004)
 
@@ -64,7 +78,18 @@ P13 (palabra alta de `fctiw`) sobrevivió como se esperaba, porque son bits inde
 
 **Enteros, sistema y MMU (M003): 15 de 15 detectadas.**
 
-**Total: 34 mutaciones detectadas.**
+**Sistema (M005), 9 mutaciones reales, 9 detectadas:** S1 eventos simultáneos en orden inverso · S2 se pierde el resto del time base · S3 mapas de RAM GC/Wii intercambiados · S4 el PI ignora la máscara · S5 vuelta del FIFO con error de uno · S6 bit de ejecución del ELF · S7 inicio del BSS del DOL desplazado · S8 DBAT1 del arranque HLE en una dirección incorrecta (la primera versión de esta mutación era equivalente y no rompía nada; se reemplazó) · S9 bloqueo en `Idle` no informado: la prueba se cuelga, así que se añadió un TIMEOUT de 300 s a cada prueba de CTest para que un cuelgue cuente como falla.
+
+**Total: 43 mutaciones detectadas.**
+
+## Errores encontrados durante M005
+
+- **Ninguno en el emulador.** Las fallas que aparecieron venían de mis propias expectativas, y se investigaron antes de cambiar nada:
+  - Un evento periódico se desfasaba porque lo reprogramaba con `now`; la prueba ahora usa el tiempo previsto (`now − late`).
+  - Esperaba que SRR1 guardara MSR[POW], pero el PEM no lo incluye entre los bits que se guardan.
+  - `hardware_suite` esperaba 5 periodos del decrementador. Al trazar TB y DEC en cada interrupción se vio que la primera ya estaba pendiente desde el arranque (DEC pasa de 0 a −1 con el primer tick), y según el PEM esa petición solo se borra al tomar la excepción. Se corrigió la expectativa (4 periodos completos) y se añadió `writing_dec_does_not_cancel_a_pending_request`.
+- clang ensambla `mftb` como `mfspr 268`, que Orca no acepta (el 750CL documenta `mftb` con XO 371). El programa usa la codificación del 750 escrita directamente.
+- El linker cargaba las cabeceras ELF en 0x80000000, encima de los vectores de excepción. Se resolvió con PHDRS explícitos en el linker script.
 
 ## Pruebas modificadas en M004
 

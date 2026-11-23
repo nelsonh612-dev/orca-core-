@@ -1,4 +1,4 @@
-# Estado del proyecto — Milestone 004
+# Estado del proyecto — Milestone 005
 
 ## Funciones implementadas (todas con pruebas)
 
@@ -28,10 +28,18 @@
 - Sin HID2[PSE] las paired-singles son ilegales; `psq_*` también necesita HID2[LSQE].
 - Caché bloqueada: HID2[LCE], `dcbz_l` y accesos de la CPU que pasan por las líneas bloqueadas, con capacidad de 512 líneas. DMA por DMAU/DMAL en ambos sentidos, con *flush* y el bit T, que se borra al terminar. Si se apaga LCE, se descarta el contenido.
 
+**Sistema (M005)**
+- `core::Scheduler`: eventos ordenados por (tiempo, orden de llegada). Se pueden cancelar, se reprograman desde su propio callback, informan del retraso y el tiempo nunca retrocede.
+- `system::System`: bus, CPU, planificador, PI y gather pipe. Bucle de ejecución que avanza el time base 1 tick cada 12 ciclos (con resto acumulado). Si la CPU queda en `Idle` (MSR[POW]), salta al siguiente evento; si nada puede despertarla, lo informa.
+- PI: INTSR (escribir RSW la reconoce), INTMR, FIFO_BASE, FIFO_END y FIFO_WP (con bit de vuelta), y la línea de interrupción externa hacia la CPU. **Cualquier otro registro del PI da `MemoryFault` con la dirección**, en lugar de devolver valores inventados.
+- Gather pipe en 0x0C008000: acepta escrituras de 1, 2, 4 y 8 bytes y las vuelca en ráfagas de 32 bytes a la RAM en FIFO_WP, volviendo a BASE al llegar a END. Una ráfaga que no pueda escribirse no modifica nada. Hay un *hook* para el futuro procesador de comandos.
+- Cargadores DOL y ELF32 big-endian (EM_PPC, PT_LOAD), con validación de límites y de direcciones que dan la vuelta. La carga a RAM se valida entera antes de escribir. `make_dol` y la herramienta `orca_elf2dol`. `orca_run` es un ejecutor sin interfaz gráfica.
+- Arranque HLE mínimo: IBAT0/DBAT0 en caché y DBAT1 sin caché (256 MiB cada uno), MSR = FP|IR|DR, 0x80000020 = 0x0D15EA5E y 0x80000028 = tamaño de MEM1.
+
 ## Funciones pendientes (en orden)
 
-1. **M005 — Planificación y arranque:** planificador de eventos con la relación CPU/bus/timebase, controlador de interrupciones PI, esqueleto de MI/PI/VI, *write-gather pipe* conectado al FIFO de la GPU, cargador DOL/ELF y ejecución de programas homebrew de prueba.
-2. **M006 — JIT ARM64:** emisor ARM64 verificado con el desensamblador de LLVM, bloques básicos, asignación de registros, caché de bloques conectada a la invalidación del bus, y pruebas diferenciales intérprete vs JIT, que tienen que correr en un dispositivo ARM64.
+1. **M006 — Video y dispositivos básicos:** VI (registros, contadores de línea, interrupciones de display, XFB), SI (controles), EXI (tarjeta de memoria y RTC), AI, DI (lectura de imágenes de disco) y MI. Arranque de un juego por HLE del apploader.
+2. **M007 — JIT ARM64:** emisor ARM64 verificado con el desensamblador de LLVM, bloques básicos, asignación de registros, caché de bloques conectada a la invalidación del bus, y pruebas diferenciales intérprete vs JIT, que tienen que correr en un dispositivo ARM64.
 3. **Después:** GPU (CP/FIFO, XF, BP, TEV, EFB/XFB → Vulkan para Mali), DSP y audio, DI y discos, SI y controles, EXI, AI y los componentes de Wii (Hollywood, IOS, Bluetooth).
 
 ## Pendiente de verificación en hardware real
@@ -52,6 +60,9 @@ Son comportamientos que el PEM deja indefinidos o que el manual del 750CL no det
 | `stfs` de magnitudes menores que un denormal simple | Se guarda un cero con signo |
 | Modo no-IEEE FPSCR[NI]=1 | Se ignora: siempre se usa IEEE |
 | Bits del FR/FI en estimaciones | Se ponen en 0 |
+| `mfspr rD,268/269` (alias moderno de `mftb`, el que genera clang) | Parada del anfitrión. El 750CL documenta `mftb` (XO 371) |
+| DEC = 0 tras el arranque HLE (deja pendiente una excepción de decrementador) | Igual que se deja; falta saber qué valor deja el IPL real |
+| Escribir INTSR con bits distintos de RSW | Se ignora |
 
 ## Problemas conocidos
 
@@ -60,13 +71,15 @@ Son comportamientos que el PEM deja indefinidos o que el manual del 750CL no det
 | 1 | DSISR de las excepciones de alineación queda en 0 | Bajo |
 | 2 | Si falla la segunda página de un acceso que cruza páginas, DAR guarda la EA original | Bajo |
 | 3 | Sin TLB: cada acceso recorre los BAT y la tabla de páginas | Rendimiento |
-| 4 | No se emulan las cachés normales de datos e instrucciones. El *write-gather pipe* llega en M005 | — |
+| 4 | No se emulan las cachés normales de datos e instrucciones (el gather pipe sí existe desde M005) | — |
 | 5 | Modo little-endian, modo traza y breakpoints IABR/DABR activos: parada del anfitrión | No se ejecuta nada mal en silencio |
 | 6 | Machine check no modelado (`MemoryFault`) | Diagnóstico |
 | 7 | BAT extra de Broadway (HID4[SBE]) y `eciwx`/`ecowx` sin implementar | Wii pendiente |
 | 8 | Excepciones FP habilitadas con MSR[FE0/FE1] ≠ 0, o resultados escalados con OE=1/UE=1: parada clara | Los juegos suelen tener las excepciones FP desactivadas; falta verificarlo |
 | 9 | `lmw/stmw`, instrucciones de cadena y `lwarx/stwcx.` no pasan por la caché bloqueada | Bajo |
-| 10 | El DMA de la caché bloqueada termina al instante; todavía no hay modelo de tiempos | Se corrige con el planificador de M005 |
-| 11 | Rendimiento en el anfitrión x86: unos 20 M instr/s en enteros y unos 4 M instr/s en FP. El motor FP cambia el modo de redondeo del anfitrión en cada operación | Esperado: el intérprete es la referencia de precisión; la velocidad vendrá del JIT |
-| 12 | No se ha compilado para Android/ARM64 (no hay NDK en este entorno) | Hay que verificarlo |
-| 13 | `lswx`, `stswx`, `mcrxr` y todas las instrucciones paired-single y `psq` no se pueden verificar con LLVM. Se revisaron contra las tablas de opcodes del manual del 750CL | Medio: hace falta otra fuente (binutils con -m750cl o hardware) |
+| 10 | El DMA de la caché bloqueada y las ráfagas del gather pipe terminan al instante | Falta conectarlos al planificador con tiempos reales |
+| 11 | Coste fijo de 1 ciclo por instrucción: no hay modelo de pipeline ni de caché | El tiempo es determinista, no exacto al ciclo |
+| 12 | Solo PI y gather pipe existen como dispositivos; VI, SI, EXI, AI, DSP, DI, MI y CP/PE dan `MemoryFault` al tocarse | Ningún juego comercial arranca todavía |
+| 13 | Rendimiento en el anfitrión x86: unos 20 M instr/s en enteros y unos 4 M instr/s en FP. El motor FP cambia el modo de redondeo del anfitrión en cada operación | Esperado: el intérprete es la referencia de precisión; la velocidad vendrá del JIT |
+| 14 | No se ha compilado para Android/ARM64 (no hay NDK en este entorno) | Hay que verificarlo |
+| 15 | `lswx`, `stswx`, `mcrxr` y todas las instrucciones paired-single y `psq` no se pueden verificar con LLVM. Se revisaron contra las tablas de opcodes del manual del 750CL | Medio: hace falta otra fuente (binutils con -m750cl o hardware) |
