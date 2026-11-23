@@ -638,6 +638,95 @@ TEST_CASE(gles_timing_report) {
     CHECK_EQ(d.color, 0U);
 }
 
+// Texture cache invalidation: the GLES backend skips hashing while no write touched the
+// texture's RAM pages (bus write epochs); every kind of write must still be seen.
+TEST_CASE(gles_texture_cache_invalidation) {
+    Twin t;
+    t.scene();
+    std::vector<u8> img(64U * 64U * 2U);
+    for (std::size_t i = 0; i < img.size(); ++i) img[i] = static_cast<u8>(i * 13U + 7U);
+    t.ram(0x30000, img);                       // 8 KiB: pages 0x30 and 0x31
+    t.tex_scene(4, 64, 64, 0x30000);
+    t.bpw(0x80, 1U | (1U << 2) | (1U << 4));
+    auto draw = [&](float x) {
+        t.tprim(0x80, {{x, 0, -0.5f, 0xFFFFFFFFU, 0, 0}, {x + 64, 0, -0.5f, 0xFFFFFFFFU, 1, 0},
+                       {x + 64, 64, -0.5f, 0xFFFFFFFFU, 1, 1}, {x, 64, -0.5f, 0xFFFFFFFFU, 0, 1}});
+        CHECK(t.run());
+    };
+    auto uploads = [&] { return t.gl.be->texture_uploads(); };
+    draw(0);
+    const u64 u0 = uploads();
+    draw(70);                                  // unchanged: no upload
+    CHECK_EQ(uploads(), u0);
+    // 1. CPU-style store into the second page of the texture
+    for (Side* s : {&t.sw, &t.gl}) CHECK(s->bus.write32(0x31F00, 0x12345678U) == mem::BusStatus::Ok);
+    draw(140);
+    CHECK_EQ(uploads(), u0 + 1U);
+    // 2. same bytes written again: the pages are stamped, the hash finds the same texels;
+    //    the next draw needs no hashing at all
+    for (Side* s : {&t.sw, &t.gl}) CHECK(s->bus.write32(0x31F00, 0x12345678U) == mem::BusStatus::Ok);
+    const u64 h0 = t.gl.be->texture_hashes();
+    draw(210);
+    CHECK_EQ(uploads(), u0 + 1U);
+    CHECK_EQ(t.gl.be->texture_hashes(), h0 + 1U);
+    draw(215);
+    CHECK_EQ(t.gl.be->texture_hashes(), h0 + 1U);
+    // 3. a write next to the texture (another page): no upload
+    for (Side* s : {&t.sw, &t.gl}) CHECK(s->bus.write32(0x32000, 0xFFFFFFFFU) == mem::BusStatus::Ok);
+    draw(280);
+    CHECK_EQ(uploads(), u0 + 1U);
+    // 4. external writer through ram_pointer + notify_external_write (as DMA engines do)
+    for (Side* s : {&t.sw, &t.gl}) {
+        u8* p = s->bus.ram_pointer(0x30010, 16);
+        CHECK(p != nullptr);
+        for (int i = 0; i < 16; ++i) p[i] = static_cast<u8>(0xF0 + i);
+        s->bus.notify_external_write(0x30010, 16, mem::AccessSource::Dma);
+    }
+    draw(350);
+    CHECK_EQ(uploads(), u0 + 2U);
+    // 5. DMA block write
+    const std::vector<u8> blk(256, 0x5A);
+    for (Side* s : {&t.sw, &t.gl}) CHECK(s->bus.dma_write(0x30800, blk) == mem::BusStatus::Ok);
+    draw(420);
+    CHECK_EQ(uploads(), u0 + 3U);
+    const Diff d = t.diff();
+    report("texture cache invalidation", d);
+    CHECK_EQ(d.color, 0U);
+    CHECK_EQ(d.depth, 0U);
+}
+
+TEST_CASE(gles_texture_cost_report) {
+    // not a check of speed: CPU time of the GLES backend for 400 small draws that all
+    // sample the same 512x512 RGB565 texture (the cost is the per-draw texture work,
+    // not pixels). Used to compare texture-cache changes on the same machine.
+    Twin t;
+    t.scene();
+    std::vector<u8> big(512U * 512U * 2U);
+    for (std::size_t i = 0; i < big.size(); ++i) big[i] = static_cast<u8>(i * 37U + (i >> 9));
+    t.ram(0x10000, big);
+    t.tex_scene(4, 512, 512, 0x10000);
+    t.bpw(0x80, 1U | (1U << 2) | (1U << 4));
+    for (int i = 0; i < 400; ++i) {
+        const float x = static_cast<float>((i % 20) * 30), y = static_cast<float>((i / 20) * 25);
+        t.tprim(0x90, {{x, y, -0.5f, 0xFFFFFFFFU, 0, 0}, {x + 20, y, -0.5f, 0xFFFFFFFFU, 1, 0}, {x, y + 20, -0.5f, 0xFFFFFFFFU, 0, 1}});
+    }
+    const std::vector<u8> c = t.cmd;
+    t.cmd.clear();
+    CHECK(t.sw.gpu.feed(c));
+    const u64 uploads_before = t.gl.be->texture_uploads();
+    const auto t0 = std::chrono::steady_clock::now();
+    CHECK(t.gl.gpu.feed(c));
+    sw::Efb e;
+    t.gl.be->download(e);
+    const auto t1 = std::chrono::steady_clock::now();
+    std::printf("    400 draws with one 512x512 RGB565 texture: GLES backend %.1f ms, %llu texture upload(s)\n",
+                std::chrono::duration<double, std::milli>(t1 - t0).count(),
+                static_cast<unsigned long long>(t.gl.be->texture_uploads() - uploads_before));
+    const Diff d = t.diff();
+    CHECK_EQ(d.color, 0U);
+    CHECK_EQ(d.depth, 0U);
+}
+
 #ifdef ORCA_PROGRAMS_DIR
 TEST_CASE(gles_gpu_draw_program) {
     // the PowerPC drawing program on the whole System, software vs GLES: same XFB bytes

@@ -85,6 +85,9 @@ public:
 
     u64 draws() const noexcept { return draws_; }
     u64 texture_uploads() const noexcept { return tex_uploads_; }
+    // Texture binds that had to hash the texel bytes (their RAM pages were written since
+    // the last check, or the texture is in TMEM).
+    u64 texture_hashes() const noexcept { return tex_hashes_; }
 
 private:
     struct Impl;
@@ -94,6 +97,7 @@ private:
     std::vector<float> slopes_;
     u64 draws_{0};
     u64 tex_uploads_{0};
+    u64 tex_hashes_{0};
 };
 
 } // namespace orca::gpu::gles

@@ -164,3 +164,35 @@ TEST_CASE(console_ram_maps) {
 }
 
 TEST_MAIN("memory")
+
+// Write epochs (used by the GLES texture cache to skip hashing unchanged memory)
+TEST_CASE(write_epochs_track_pages) {
+    Bus bus;
+    map_wii_ram(bus);
+    const u64 e0 = bus.write_epoch();
+    CHECK(bus.unchanged_since(0x00001000U, 0x2000U, e0));
+    CHECK(bus.write32(0x00002FFCU, 1U) == BusStatus::Ok);   // last word of page 2
+    const u64 e1 = bus.write_epoch();
+    CHECK(e1 > e0);
+    CHECK(!bus.unchanged_since(0x00001000U, 0x2000U, e0));  // pages 1-2 contain it
+    CHECK(bus.unchanged_since(0x00001000U, 0x1000U, e0));   // page 1 alone does not
+    CHECK(bus.unchanged_since(0x00003000U, 0x1000U, e0));   // nor page 3
+    CHECK(bus.unchanged_since(0x00001000U, 0x2000U, e1));   // nothing since e1
+    // a 64-bit write across a page boundary stamps both pages
+    CHECK(bus.write64(0x00004FFCU, 0x0102030405060708ULL) == BusStatus::Ok);
+    CHECK(!bus.unchanged_since(0x00004000U, 0x1000U, e1));
+    CHECK(!bus.unchanged_since(0x00005000U, 0x1000U, e1));
+    // DMA and external writes
+    const u64 e2 = bus.write_epoch();
+    const std::array<u8, 8> blk{};
+    CHECK(bus.dma_write(0x10000000U, blk) == BusStatus::Ok);  // Wii MEM2
+    CHECK(!bus.unchanged_since(0x10000000U, 8U, e2));
+    const u64 e3 = bus.write_epoch();
+    bus.notify_external_write(0x00800000U, 4U, AccessSource::Dma);
+    CHECK(!bus.unchanged_since(0x00800000U, 4U, e3));
+    CHECK(bus.unchanged_since(0x00801000U, 4U, e3));
+    // beyond the tracked range (>= 0x14000000): always "changed"
+    CHECK(!bus.unchanged_since(0x14000000U, 4U, bus.write_epoch()));
+    CHECK(!bus.unchanged_since(0x13FFFFFCU, 8U, bus.write_epoch()));
+    CHECK(bus.unchanged_since(0x13FFF000U, 0x1000U, bus.write_epoch()));
+}

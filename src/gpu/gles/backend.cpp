@@ -149,10 +149,19 @@ std::string HeadlessContext::renderer_name() const {
 
 // ------------------------------------------------------------------ backend
 
+// RAM bytes a texture map reads (all levels); `ram` false for TMEM textures.
+struct TexRange {
+    bool ram{false};
+    u32 lo{0}, size{0};
+};
+
 struct Backend::Impl {
     GLuint prog{0}, vao{0}, vbo{0}, fbo{0}, efb[2]{0, 0}, dummy{0}, tri_buf{0}, tri_tex{0};
     std::array<GLuint, 8> tex{};
-    std::array<u64, 8> tex_key{};
+    std::array<u64, 8> tex_key{};   // parameters + palette + texels of the uploaded texture
+    std::array<u64, 8> tex_pkey{};  // parameters + palette only
+    std::array<u64, 8> tex_epoch{}; // bus write epoch when the texels were last known equal
+    std::array<bool, 8> tex_epoch_valid{};
     std::array<std::array<GLint, 2>, 8 * 16> lvl{};
     GLint u_off{-1}, u_bp{-1}, u_reg{-1}, u_kon{-1}, u_vp{-1}, u_zs0{-1}, u_zs1{-1}, u_tex{-1}, u_lvl{-1}, u_tri{-1};
     std::vector<u8> scratch;
@@ -181,7 +190,11 @@ struct Backend::Impl {
 
     // Decodes the mip levels a map can use into an RGBA8 atlas (levels stacked vertically).
     bool decode_map(const BpMemory& bp, const sw::TexSource& src, u32 map, std::vector<u8>& atlas, u32& aw, u32& ah,
-                    std::array<std::array<GLint, 2>, 16>& levels, u64& key, std::string& error) {
+                    std::array<std::array<GLint, 2>, 16>& levels, u64& key, bool hash_data, bool decode,
+                    TexRange& range, std::string& error) {
+        // Passes: (hash_data = false) key of the parameters and palette, level layout and the
+        // RAM range read; (hash_data) + hash of the texel bytes; (decode) + the decoded atlas.
+        range = {};
         const u32 m0 = tex_reg(bp, map, 0), m1 = tex_reg(bp, map, 1), i0 = tex_reg(bp, map, 2), i1 = tex_reg(bp, map, 3),
                   i2 = tex_reg(bp, map, 4), i3 = tex_reg(bp, map, 5), tl = tex_reg(bp, map, 6);
         char b[128];
@@ -190,6 +203,7 @@ struct Backend::Impl {
         const TexFormat f = static_cast<TexFormat>(fmt);
         const bool manual = bits(i1, 21, 1) != 0U;
         const bool tmem_rgba8 = manual && f == TexFormat::RGBA8;
+        range.ram = !manual;
         if (tex_format_paletted(f) && bits(tl, 10, 2) > 2U) { error = "invalid TLUT format 3"; return false; }
         const u32 mipf = bits(m0, 5, 2), maxlod = bits(m1, 8, 8);
         const u32 nlev = mipf == 0U ? 1U : std::min(16U, (maxlod >> 4) + 2U);
@@ -207,7 +221,7 @@ struct Backend::Impl {
         aw = wm1 + 1U;
         ah = 0;
         for (u32 m = 0; m < nlev; ++m) ah += (hm1 >> m) + 1U;
-        atlas.assign(static_cast<std::size_t>(aw) * ah * 4U, 0);
+        if (decode) atlas.assign(static_cast<std::size_t>(aw) * ah * 4U, 0);
         u32 offset = 0, mw = wm1 + 1U, mh = hm1 + 1U, y0 = 0;
         for (u32 m = 0; m < nlev; ++m) {
             const u32 w = (wm1 >> m) + 1U, h = (hm1 >> m) + 1U;
@@ -215,18 +229,20 @@ struct Backend::Impl {
             std::vector<u8> img;
             if (tmem_rgba8) {
                 const std::size_t ar = static_cast<std::size_t>(bits(i1, 0, 15)) * 32U, gb = static_cast<std::size_t>(bits(i2, 0, 15)) * 32U;
-                img.assign(static_cast<std::size_t>(w) * h * 4U, 0);
                 auto rd = [&](std::size_t a) { return a < src.tmem.size() ? src.tmem[a] : u8{0}; };
                 const std::size_t bw = (static_cast<std::size_t>(wm1) >> 2) + 1U;
-                for (u32 y = 0; y < h; ++y)
+                if (decode) img.assign(static_cast<std::size_t>(w) * h * 4U, 0);
+                for (u32 y = 0; decode && y < h; ++y)
                     for (u32 x = 0; x < w; ++x) {
                         const std::size_t blk = (static_cast<std::size_t>(y >> 2) * bw + (x >> 2)) << 4;
                         const std::size_t off = (blk + ((y & 3U) << 2) + (x & 3U)) << 1;
                         u8* o = &img[(static_cast<std::size_t>(y) * w + x) * 4U];
                         o[3] = rd(ar + off); o[0] = rd(ar + off + 1U); o[1] = rd(gb + off); o[2] = rd(gb + off + 1U);
                     }
-                key = fnv(key, src.tmem.data() + std::min(ar, src.tmem.size()), std::min<std::size_t>(bw * (((hm1 >> 2) + 1U)) * 32U, src.tmem.size() - std::min(ar, src.tmem.size())));
-                key = fnv(key, src.tmem.data() + std::min(gb, src.tmem.size()), std::min<std::size_t>(bw * (((hm1 >> 2) + 1U)) * 32U, src.tmem.size() - std::min(gb, src.tmem.size())));
+                if (hash_data) {
+                    key = fnv(key, src.tmem.data() + std::min(ar, src.tmem.size()), std::min<std::size_t>(bw * (((hm1 >> 2) + 1U)) * 32U, src.tmem.size() - std::min(ar, src.tmem.size())));
+                    key = fnv(key, src.tmem.data() + std::min(gb, src.tmem.size()), std::min<std::size_t>(bw * (((hm1 >> 2) + 1U)) * 32U, src.tmem.size() - std::min(gb, src.tmem.size())));
+                }
             } else {
                 const u32 bytes = tex_size_bytes(f, w, h);
                 std::span<const u8> data;
@@ -241,17 +257,21 @@ struct Backend::Impl {
                         if (m == 0U) { std::snprintf(b, sizeof b, "texture at %08X (%u bytes) is outside RAM", addr, bytes); error = b; return false; }
                         // a level the game may never sample: keep it black (the software renderer
                         // would stop only when sampling it)
-                        img.assign(static_cast<std::size_t>(w) * h * 4U, 0);
+                        key = fnv32(key, 0xDEADu + m);
+                        if (decode) img.assign(static_cast<std::size_t>(w) * h * 4U, 0);
                     } else {
                         data = std::span<const u8>(p, bytes);
+                        if (range.size == 0U) range.lo = addr;
+                        range.size = std::max(range.size, addr + bytes - range.lo); // levels are consecutive
+                        if (addr < range.lo) range.ram = false; // wrapped around the mask: no epoch shortcut
                     }
                 }
                 if (!data.empty()) {
-                    key = fnv(key, data.data(), data.size());
-                    if (!decode_texture(f, data, w, h, tlut, tf, img, error)) { error = "texture: " + error; return false; }
+                    if (hash_data) key = fnv(key, data.data(), data.size());
+                    if (decode && !decode_texture(f, data, w, h, tlut, tf, img, error)) { error = "texture: " + error; return false; }
                 }
             }
-            for (u32 y = 0; y < h; ++y)
+            for (u32 y = 0; decode && y < h; ++y)
                 std::memcpy(&atlas[(static_cast<std::size_t>(y0 + y) * aw) * 4U], &img[static_cast<std::size_t>(y) * w * 4U], static_cast<std::size_t>(w) * 4U);
             y0 += h;
             mw = std::max(mw, tex_block_width(f));
@@ -402,11 +422,24 @@ bool Backend::flush(const BpMemory& bp, const XfMemory& xf, const sw::TevState& 
         std::vector<u8> atlas;
         u32 aw = 0, ah = 0;
         std::array<std::array<GLint, 2>, 16> lv{};
-        u64 key = 0;
-        if (!g.decode_map(bp, tex, m, atlas, aw, ah, lv, key, error)) { tris_.clear(); return false; }
+        u64 pkey = 0, key = 0;
+        TexRange range;
+        if (!g.decode_map(bp, tex, m, atlas, aw, ah, lv, pkey, false, false, range, error)) { tris_.clear(); return false; }
         for (u32 l = 0; l < 16; ++l) g.lvl[m * 16U + l] = lv[l];
         glBindTexture(GL_TEXTURE_2D, g.tex[m]);
-        if (key != g.tex_key[m]) {
+        // Same parameters and palette, and no write to its RAM pages since it was checked:
+        // the uploaded texture is still right, without hashing the texels.
+        const bool same_memory = range.ram && g.tex_epoch_valid[m] && pkey == g.tex_pkey[m] && tex.bus != nullptr &&
+                                 tex.bus->unchanged_since(range.lo, range.size, g.tex_epoch[m]);
+        if (!same_memory) {
+            ++tex_hashes_;
+            if (!g.decode_map(bp, tex, m, atlas, aw, ah, lv, key, true, false, range, error)) { tris_.clear(); return false; }
+        }
+        g.tex_pkey[m] = pkey;
+        g.tex_epoch_valid[m] = range.ram && tex.bus != nullptr;
+        if (g.tex_epoch_valid[m]) g.tex_epoch[m] = tex.bus->write_epoch();
+        if (!same_memory && key != g.tex_key[m]) {
+            if (!g.decode_map(bp, tex, m, atlas, aw, ah, lv, key, true, true, range, error)) { tris_.clear(); return false; }
             glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8UI, static_cast<GLsizei>(aw), static_cast<GLsizei>(ah), 0, GL_RGBA_INTEGER,
                          GL_UNSIGNED_BYTE, atlas.data());
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);

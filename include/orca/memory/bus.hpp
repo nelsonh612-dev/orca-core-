@@ -97,6 +97,15 @@ public:
     u8* ram_pointer(u32 address, u32 size) noexcept;
     void notify_external_write(u32 address, u32 size, AccessSource src);
 
+    // Write epochs for caches of memory contents (e.g. decoded textures): every write
+    // advances a global counter and stamps the 4 KiB pages it touches. A range is
+    // unchanged since epoch E when none of its pages was stamped after E. Only the
+    // first kEpochPages pages (physical 0 - 0x13FFFFFF: MEM1 and Wii MEM2) are tracked;
+    // ranges beyond always count as changed.
+    static constexpr u32 kEpochPages = 0x14000000U >> kPageShift;
+    u64 write_epoch() const noexcept { return write_epoch_; }
+    bool unchanged_since(u32 address, u32 size, u64 epoch) const noexcept;
+
     // Write observers are called after every successful write (CPU and DMA).
     using WriteObserver = std::function<void(const WriteEvent&)>;
     std::size_t add_write_observer(WriteObserver observer);
@@ -139,6 +148,8 @@ private:
     std::vector<Region> regions_;          // index 0 unused (means unmapped)
     std::unique_ptr<u16[]> page_region_;   // kPageCount entries
     std::unique_ptr<u64[]> code_pages_;    // bitmap, kPageCount bits
+    std::unique_ptr<u64[]> page_epoch_;    // kEpochPages write stamps
+    u64 write_epoch_{0};
     std::vector<std::pair<std::size_t, WriteObserver>> observers_;
     std::size_t next_observer_id_{1};
     CodeInvalidationHandler code_handler_;

@@ -9,7 +9,7 @@ namespace orca::mem {
 Bus::Bus()
     : regions_(1),
       page_region_(std::make_unique<u16[]>(kPageCount)),
-      code_pages_(std::make_unique<u64[]>(kPageCount / 64U)) {}
+      code_pages_(std::make_unique<u64[]>(kPageCount / 64U)), page_epoch_(std::make_unique<u64[]>(kEpochPages)) {}
 
 Bus::~Bus() = default;
 
@@ -176,7 +176,22 @@ void Bus::notify_external_write(u32 address, u32 size, AccessSource src) {
     if (size != 0U) after_write(address, size, src);
 }
 
+bool Bus::unchanged_since(u32 address, u32 size, u64 epoch) const noexcept {
+    if (size == 0U) return true;
+    const u64 end = static_cast<u64>(address) + size - 1U;
+    if ((end >> kPageShift) >= kEpochPages) return false;
+    for (u32 p = address >> kPageShift; p <= static_cast<u32>(end >> kPageShift); ++p)
+        if (page_epoch_[p] > epoch) return false;
+    return true;
+}
+
 void Bus::after_write(u32 address, u32 size, AccessSource src) {
+    ++write_epoch_;
+    {
+        const u64 end = static_cast<u64>(address) + size - 1U;
+        const u32 last = static_cast<u32>(std::min<u64>(end >> kPageShift, kEpochPages - 1U));
+        for (u32 p = address >> kPageShift; p <= last && p < kEpochPages; ++p) page_epoch_[p] = write_epoch_;
+    }
     if (code_handler_) {
         const u32 first = address >> kPageShift;
         const u32 last = static_cast<u32>((static_cast<u64>(address) + size - 1U) >> kPageShift);
