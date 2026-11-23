@@ -1186,8 +1186,24 @@ Cpu::Outcome Cpu::op_cache_x(u32 ins, unsigned xo, bool& handled) {
     switch (xo) {
     case 278: case 246: // dcbt / dcbtst: hints, never cause exceptions
         return Outcome::done();
-    case 54: case 86: { // dcbst / dcbf: no data cache modelled; memory is always up to date
-        return translate_data(ea & ~31U, 32, false, lo, hi, split, wimg);
+    case 54: case 86: { // dcbst / dcbf
+        Outcome o = translate_data(ea & ~31U, 32, false, lo, hi, split, wimg);
+        if (!o.ok()) return o;
+        const auto it = locked_cache_.find(lo);
+        if (it == locked_cache_.end()) return o;
+        // 750CL §9.2.2.4-.5: a modified locked-cache hit is cast out;
+        // dcbf invalidates the line, while dcbst leaves it resident.
+        // All lines currently represented here are allocated/modified by
+        // dcbz_l or updated by CPU/DMA, so a castout writes the full line.
+        for (u32 offset = 0; offset < 32U; offset += 8U) {
+            u64 value = 0;
+            for (u32 byte = 0; byte < 8U; ++byte)
+                value = (value << 8U) | it->second[offset + byte];
+            if (bus_.write64(lo + offset, value) != mem::BusStatus::Ok)
+                return Outcome::stop(StepResult::MemoryFault, "locked-cache castout failed", lo + offset);
+        }
+        if (xo == 86U) locked_cache_.erase(it); // dcbf -> I; dcbst -> E
+        return o;
     }
     case 470: { // dcbi (supervisor; invalidate a matching locked-cache line)
         if (problem_state()) return Outcome::privileged();
