@@ -43,7 +43,6 @@ const Offsets& offsets() {
     return o;
 }
 
-constexpr u32 rotl32(u32 v, unsigned s) { return s == 0U ? v : (v << s) | (v >> (32U - s)); }
 constexpr u32 ppc_mask(unsigned mb, unsigned me) {
     const u32 a = 0xFFFFFFFFU >> mb, b = me == 31U ? 0xFFFFFFFFU : ~(0xFFFFFFFFU >> (me + 1U));
     return mb <= me ? (a & b) : (a | b);
