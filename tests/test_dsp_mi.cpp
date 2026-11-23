@@ -208,24 +208,111 @@ TEST_CASE(aram_dma_alignment_timing_and_errors) {
     CHECK(wii.mmio_error().find("Wii") != std::string::npos);
 }
 
-TEST_CASE(ai_dma_registers_store_and_playback_is_refused) {
+TEST_CASE(aram_register_masks_reset_values_and_timing) {
     Rig t;
-    CHECK(t.dw32(hw::dsp::AIDMA_H, 0x0012345FU));
-    CHECK_EQ(t.dr(hw::dsp::AIDMA_H), 0x0012U);
-    CHECK_EQ(t.dr(hw::dsp::AIDMA_L), 0x3440U);
-    CHECK(t.dw(hw::dsp::AIDMA_CTRL, 0x0010));
-    CHECK_EQ(t.dr(hw::dsp::AIDMA_CTRL), 0x0010U);
-    CHECK(!t.dw(hw::dsp::AIDMA_CTRL, 0x8010));
-    CHECK(t.dsp.mmio_error().find("AI DMA playback") != std::string::npos);
-    CHECK_EQ(t.dr(hw::dsp::AIDMA_LEFT), 0U);
-    // AR_SIZE / AR_MODE / AR_REFRESH are stored
+    CHECK_EQ(t.dr(hw::dsp::AR_MODE), 1U);      // read-only: controller initialised
+    CHECK(t.dw(hw::dsp::AR_MODE, 0x1234));
+    CHECK_EQ(t.dr(hw::dsp::AR_MODE), 1U);
+    CHECK_EQ(t.dr(hw::dsp::AR_REFRESH), 156U);
+    CHECK(t.dw(hw::dsp::AR_REFRESH, 0xFFFF));
+    CHECK_EQ(t.dr(hw::dsp::AR_REFRESH), 0x07FFU);
     CHECK(t.dw(hw::dsp::AR_SIZE, 0x0143));
-    CHECK(t.dw(hw::dsp::AR_REFRESH, 0x009C));
-    CHECK_EQ(t.dr(hw::dsp::AR_SIZE), 0x0143U);
-    CHECK_EQ(t.dr(hw::dsp::AR_REFRESH), 0x009CU);
+    CHECK_EQ(t.dr(hw::dsp::AR_SIZE), 0x0043U);
+    CHECK(t.dw(hw::dsp::MMADDR_H, 0xFFFF));
+    CHECK_EQ(t.dr(hw::dsp::MMADDR_H), 0x03FFU);
+    CHECK(t.dw(hw::dsp::ARADDR_H, 0xFFFF));
+    CHECK_EQ(t.dr(hw::dsp::ARADDR_H), 0x03FFU);
+    CHECK(t.dw(hw::dsp::CNT_H, 0xFFFF));
+    CHECK_EQ(t.dr(hw::dsp::CNT_H), 0x83FFU);
+    // default timing: 246 CPU cycles per 32 bytes
+    Rig u;
+    CHECK(u.dw32(hw::dsp::MMADDR_H, 0x1000U));
+    CHECK(u.dw32(hw::dsp::ARADDR_H, 0x0100U));
+    const u64 t0 = u.sched.now();
+    CHECK(u.dw32(hw::dsp::CNT_H, 0x40U));
+    CHECK_EQ(*u.sched.next_event_time() - t0, 492U);
+    u.settle();
+    // (AR_SIZE & 0xF) == 4: writes below 4 MiB are mirrored 4 MiB higher
+    Rig v;
+    for (u32 i = 0; i < 32; i += 4) CHECK(v.bus.write32(0x2000 + i, 0xC0DE0000U + i) == mem::BusStatus::Ok);
+    CHECK(v.dw(hw::dsp::AR_SIZE, 0x0004));
+    CHECK(v.dw32(hw::dsp::MMADDR_H, 0x2000U));
+    CHECK(v.dw32(hw::dsp::ARADDR_H, 0x0100U));
+    CHECK(v.dw32(hw::dsp::CNT_H, 0x20U));
+    v.settle();
+    CHECK_EQ(v.dsp.aram()[0x100], 0xC0U);
+    CHECK_EQ(v.dsp.aram()[0x400100], 0xC0U);
+    CHECK_EQ(v.dsp.aram()[0x40011F], 0x1CU);
+}
+
+TEST_CASE(ai_dma_blocks_interrupts_and_relatch) {
+    Rig t;
+    std::vector<u32> seen;
+    t.dsp.set_audio_sink([&](std::span<const u8> b) {
+        seen.push_back((static_cast<u32>(b[0]) << 24) | (static_cast<u32>(b[1]) << 16) | (static_cast<u32>(b[2]) << 8) | b[3]);
+    });
+    bool is32 = true;
+    t.dsp.set_aid_rate_source([&] { return is32; });
+    CHECK_EQ(t.dsp.aid_block_cycles(), 121392U); // 8 * 486e6 * 3372 / 108e6
+    is32 = false;
+    CHECK_EQ(t.dsp.aid_block_cycles(), 80928U);  // 8 * 486e6 * 2248 / 108e6
+    is32 = true;
+    for (u32 blk = 0; blk < 3; ++blk) CHECK(t.bus.write32(0x1000 + blk * 32, 0xB0000000U + blk) == mem::BusStatus::Ok);
+    CHECK(t.dw(hw::dsp::AIDMA_H, 0xFFFF));
+    CHECK_EQ(t.dr(hw::dsp::AIDMA_H), 0x03FFU); // GameCube mask
+    CHECK(t.dw32(hw::dsp::AIDMA_H, 0x00001000U));
+    CHECK_EQ(t.dr(hw::dsp::AIDMA_L), 0x1000U);
+    CHECK(t.dw(hw::dsp::AIDMA_CTRL, 0x8003)); // enable, 3 blocks
+    CHECK_EQ(t.dr(hw::dsp::AIDMA_LEFT), 2U);
+    const u64 t0 = t.sched.now();
+    t.sched.advance_to(t0 + 199);
+    CHECK_EQ(t.dr(hw::dsp::CSR) & hw::dsp::CSR_AIDINT, 0U);
+    t.sched.advance_to(t0 + 200);
+    CHECK_EQ(t.dr(hw::dsp::CSR) & hw::dsp::CSR_AIDINT, hw::dsp::CSR_AIDINT); // raised when the DMA latches
+    CHECK(t.dw(hw::dsp::CSR, hw::dsp::CSR_HALT | hw::dsp::CSR_AIDINT));
+    t.sched.advance_to(t0 + 121392);
+    CHECK_EQ(seen.size(), 1U);
+    CHECK_EQ(t.dr(hw::dsp::AIDMA_LEFT), 1U);
+    t.sched.advance_to(t0 + 3 * 121392);
+    CHECK_EQ(seen.size(), 3U);
+    CHECK_EQ(t.dr(hw::dsp::CSR) & hw::dsp::CSR_AIDINT, hw::dsp::CSR_AIDINT); // count ran out: relatch + interrupt
+    CHECK_EQ(t.dr(hw::dsp::AIDMA_LEFT), 2U);
+    t.sched.advance_to(t0 + 4 * 121392);
+    CHECK_EQ(seen.size(), 4U);
+    CHECK_EQ(seen[0], 0xB0000000U);
+    CHECK_EQ(seen[1], 0xB0000001U);
+    CHECK_EQ(seen[2], 0xB0000002U);
+    CHECK_EQ(seen[3], 0xB0000000U); // started again from the latched address
+    // disabling stops the blocks; RES clears the control register
+    CHECK(t.dw(hw::dsp::AIDMA_CTRL, 0x0003));
+    t.sched.advance_to(t0 + 8 * 121392);
+    CHECK_EQ(seen.size(), 4U);
+    CHECK(t.dw(hw::dsp::AIDMA_CTRL, 0x8003));
+    CHECK(t.dw(hw::dsp::CSR, hw::dsp::CSR_RES | hw::dsp::CSR_HALT));
+    CHECK_EQ(t.dr(hw::dsp::AIDMA_CTRL), 0U);
+    t.sched.advance_to(t0 + 12 * 121392);
+    CHECK_EQ(seen.size(), 4U);
+    CHECK_EQ(t.dsp.audio_blocks_played(), 4U);
+    // Wii mask for the start address
+    mem::Bus bus2;
+    core::Scheduler s2;
+    ProcessorInterface pi2{bus2, nullptr};
+    hw::DspInterface wii{bus2, s2, pi2, false, 729000000ULL};
+    CHECK(wii.mmio_write(hw::dsp::AIDMA_H, 2, 0xFFFF));
     u64 v = 0;
+    CHECK(wii.mmio_read(hw::dsp::AIDMA_H, 2, v));
+    CHECK_EQ(v, 0x1FFFU);
+    CHECK_EQ(wii.aid_block_cycles(), 8ULL * 729000000ULL * 3375ULL / 108000000ULL);
+    // undocumented offsets still stop
     CHECK(!t.dsp.mmio_read(0x40, 2, v));
     CHECK(!t.dsp.mmio_read(0x00, 1, v));
+}
+
+TEST_CASE(system_ai_dma_rate_follows_aicr_bit6) {
+    system::System gc({});
+    CHECK_EQ(gc.dsp().aid_block_cycles(), 80928U); // AICR = 0: 48 kHz
+    CHECK(gc.bus().write32(0x0C006C00U, hw::ai::DSPRATE) == mem::BusStatus::Ok);
+    CHECK_EQ(gc.dsp().aid_block_cycles(), 121392U); // bit 6 set: 32 kHz
 }
 
 TEST_CASE(system_maps_mi_and_dsp) {

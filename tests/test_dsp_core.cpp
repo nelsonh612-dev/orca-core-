@@ -567,23 +567,27 @@ bool run_main(Rig& t, std::initializer_list<u16> main_code, u64 budget = 10000) 
 }
 } // namespace
 
-TEST_CASE(dsp_accelerator_adpcm_hand_values_loop_and_acsov) {
+TEST_CASE(dsp_accelerator_adpcm_hand_values_end_and_acsov) {
     Rig t;
-    // frame 0: header 0x00 (pair 0, scale 1), nibbles 1, 2, 3, -1, ...
+    // frame 0: header 0x00 (pair 0, scale 1), nibbles 1, 2, 3, -1, ...; ACCA starts after the header
     t.host.aram[0] = 0x00; t.host.aram[1] = 0x12; t.host.aram[2] = 0x3F;
     t.load({0x029F, 0x0040}, 0x000A);                    // ACSOV vector -> 0x40
     t.load({LRI(AC1M), 0x00AA, 0x02FF}, 0x0040);         // handler: mark, RTI
-    // main at 0x60: 14 two-word setup instructions (0x60-0x7B), BLOOPI at 0x7C, body 0x7E-0x7F
+    // main at 0x60: 15 two-word setup instructions (0x60-0x7D), BLOOPI at 0x7E, body 0x80-0x81
     CHECK(run_main(t, {LRI(SR_), SR_IE, SI(0xFFA0), 0x0800, SI(0xFFA1), 0x0000, SI(ifx::FORMAT), 0x0000,
                        SI(ifx::ACSAH), 0, SI(ifx::ACSAL), 2, SI(ifx::ACEAH), 0, SI(ifx::ACEAL), 5,
-                       SI(ifx::ACCAH), 0, SI(ifx::ACCAL), 0, SI(ifx::YN1), 0, SI(ifx::YN2), 0,
+                       SI(ifx::ACCAH), 0, SI(ifx::ACCAL), 2, SI(ifx::PRED_SCALE), 0x0000, SI(ifx::YN1), 0, SI(ifx::YN2), 0,
                        LRI(AR0), ifx::ACDSAMP, LRI(1), 0x0100,
-                       0x1105, 0x007F, LRR_AX0L_AR0, SRRI_AR1_AX0L, // BLOOPI 5 (end = 0x7F)
+                       0x1105, 0x0081, LRR_AX0L_AR0, SRRI_AR1_AX0L, // BLOOPI 5 (end = 0x81)
+                       LR(AX1L), ifx::ACCAL, SI(ifx::YN2), 0, LR(AX1H), ifx::ACDSAMP, // YN2 write restarts
                        HALT}));
-    // y = ((n << 11) + 1024 + 2048*y1) >> 11: 1, 3, 6, 5; then the loop restarts at nibble 2 -> 6
-    const u16 expect[] = {1, 3, 6, 5, 6};
+    // y = n + ((0x400 + 2048*y1) >> 11): 1, 3, 6, 5; reading ACEA (nibble 5) ends the range:
+    // ACCA = ACSA, ACSOV, and further reads return 0 until YN2 is written
+    const u16 expect[] = {1, 3, 6, 5, 0};
     for (unsigned i = 0; i < 5; ++i) CHECK_EQ(t.dsp.dram()[0x100 + i], expect[i]);
     CHECK_EQ(t.s().ac_m[1], 0x00AAU); // ACSOV handler ran once
+    CHECK_EQ(t.s().ax_l[1], 0x0002U); // ACCA back at ACSA
+    CHECK_EQ(t.s().ax_h[1], 0x0006U); // restarted: nibble 2 again, YN1 still 5, YN2 = 0 -> 1 + ((0x400 + 2048*5) >> 11) = 6
     CHECK_EQ(t.dsp.pending_exceptions(), 0U);
     CHECK(t.s().st[0].empty());
     CHECK(t.s().st[1].empty());
@@ -603,10 +607,12 @@ TEST_CASE(dsp_accelerator_adpcm_matches_reference_over_frames) {
     const auto ref = reference_adpcm(data, coef, 100, -50);
     Rig t;
     for (std::size_t i = 0; i < data.size(); ++i) t.host.aram[0x200 + i] = data[i];
+    t.host.aram[0x230] = 0x35; // header of the (unused) frame after the range
     std::vector<u16> prog = {SI(ifx::FORMAT), 0x0000};
     for (unsigned i = 0; i < 16; ++i) { prog.push_back(SI(static_cast<u16>(0xFFA0U + i))); prog.push_back(static_cast<u16>(coef[i])); }
-    const u16 rest[] = {SI(ifx::ACSAH), 0, SI(ifx::ACSAL), 0x0400, SI(ifx::ACEAH), 0, SI(ifx::ACEAL), 0x045F,
-                        SI(ifx::ACCAH), 0, SI(ifx::ACCAL), 0x0400, SI(ifx::YN1), 100, SI(ifx::YN2), static_cast<u16>(-50),
+    const u16 rest[] = {SI(ifx::ACSAH), 0, SI(ifx::ACSAL), 0x0402, SI(ifx::ACEAH), 0, SI(ifx::ACEAL), 0x045F,
+                        SI(ifx::ACCAH), 0, SI(ifx::ACCAL), 0x0402, SI(ifx::PRED_SCALE), data[0],
+                        SI(ifx::YN1), 100, SI(ifx::YN2), static_cast<u16>(-50),
                         LRI(AR0), ifx::ACDSAMP, LRI(1), 0x0100};
     prog.insert(prog.end(), std::begin(rest), std::end(rest));
     const u16 loop_at = static_cast<u16>(prog.size());
@@ -614,6 +620,8 @@ TEST_CASE(dsp_accelerator_adpcm_matches_reference_over_frames) {
     prog.push_back(static_cast<u16>(loop_at + 3));
     prog.push_back(LRR_AX0L_AR0);
     prog.push_back(SRRI_AR1_AX0L);
+    prog.push_back(LR(AX1L)); prog.push_back(ifx::PRED_SCALE);
+    prog.push_back(LR(AX1H)); prog.push_back(ifx::ACCAL);
     prog.push_back(HALT);
     for (std::size_t i = 0; i < prog.size(); ++i) t.dsp.iram()[i] = prog[i];
     t.dsp.reset(0);
@@ -625,62 +633,166 @@ TEST_CASE(dsp_accelerator_adpcm_matches_reference_over_frames) {
     unsigned bad = 0;
     for (std::size_t i = 0; i < ref.size(); ++i) bad += t.dsp.dram()[0x100 + i] != static_cast<u16>(ref[i]) ? 1U : 0U;
     CHECK_EQ(bad, 0U);
-    // the whole range (0x400-0x45F nibbles) was consumed: ACCA wrapped to ACSA, ACSOV pending (IE clear)
+    // after nibble 0x45F the header at 0x460 is read (step 4), which ends the range: ACCA = ACSA, ACSOV
+    CHECK_EQ(t.s().ax_l[1], 0x0035U);
+    CHECK_EQ(t.s().ax_h[1], 0x0402U);
     CHECK_EQ(t.dsp.pending_exceptions(), 1U << 5);
 }
 
-TEST_CASE(dsp_accelerator_adpcm_clamps) {
+TEST_CASE(dsp_accelerator_adpcm_special_end_cases_and_clamp) {
+    // ACEA & 0xF == 0: reaching ACEA loops to ACSA + 1, without exception or header read
     Rig t;
-    t.host.aram[0] = 0x0F; t.host.aram[1] = 0x78; // scale 2^15, nibbles 7 and -8
-    CHECK(t.run({SI(ifx::FORMAT), 0, SI(ifx::ACEAH), 0, SI(ifx::ACEAL), 0x000F, SI(ifx::ACCAH), 0, SI(ifx::ACCAL), 0,
-                 LR(AX0L), ifx::ACDSAMP, LR(AX0H), ifx::ACDSAMP, LR(AX1L), ifx::PRED_SCALE, LR(AX1H), ifx::YN1,
-                 LR(AC0L), ifx::YN2, LR(AC1L), ifx::ACCAL, HALT}));
-    CHECK_EQ(t.s().ax_l[0], 0x7FFFU);
-    CHECK_EQ(t.s().ax_h[0], 0x8000U);
-    CHECK_EQ(t.s().ax_l[1], 0x000FU); // PRED_SCALE loaded from the frame header
-    CHECK_EQ(t.s().ax_h[1], 0x8000U); // YN1 = last sample
-    CHECK_EQ(t.s().ac_l[0], 0x7FFFU); // YN2 = previous one
-    CHECK_EQ(t.s().ac_l[1], 0x0004U); // header (2 nibbles) + 2 samples
+    t.host.aram[0x08] = 0x00; // would be the header at nibble 0x10
+    CHECK(t.run({SI(ifx::FORMAT), 0, SI(ifx::ACSAH), 0, SI(ifx::ACSAL), 0x0004, SI(ifx::ACEAH), 0, SI(ifx::ACEAL), 0x0010,
+                 SI(ifx::ACCAH), 0, SI(ifx::ACCAL), 0x000F, SI(ifx::PRED_SCALE), 0x0055,
+                 LR(AX0L), ifx::ACDSAMP, LR(AX1L), ifx::ACCAL, LR(AX1H), ifx::PRED_SCALE, HALT}));
+    CHECK_EQ(t.s().ax_l[1], 0x0005U);
+    CHECK_EQ(t.s().ax_h[1], 0x0055U);
+    CHECK_EQ(t.dsp.pending_exceptions(), 0U);
+    // ACEA & 0xF == 1: reaching ACEA - 1 loops to ACSA
+    Rig u;
+    CHECK(u.run({SI(ifx::FORMAT), 0, SI(ifx::ACSAH), 0, SI(ifx::ACSAL), 0x0004, SI(ifx::ACEAH), 0, SI(ifx::ACEAL), 0x0011,
+                 SI(ifx::ACCAH), 0, SI(ifx::ACCAL), 0x000F, LR(AX0L), ifx::ACDSAMP, LR(AX1L), ifx::ACCAL, HALT}));
+    CHECK_EQ(u.s().ax_l[1], 0x0004U);
+    CHECK_EQ(u.dsp.pending_exceptions(), 0U);
+    // saturation with scale 2^15 and nibbles 7 / -8
+    Rig v;
+    v.host.aram[1] = 0x78;
+    CHECK(v.run({SI(ifx::FORMAT), 0, SI(ifx::ACEAH), 0, SI(ifx::ACEAL), 0x000F, SI(ifx::ACCAH), 0, SI(ifx::ACCAL), 2,
+                 SI(ifx::PRED_SCALE), 0x000F,
+                 LR(AX0L), ifx::ACDSAMP, LR(AX0H), ifx::ACDSAMP, LR(AX1H), ifx::YN1, LR(AC0L), ifx::YN2, LR(AC1L), ifx::ACCAL,
+                 HALT}));
+    CHECK_EQ(v.s().ax_l[0], 0x7FFFU);
+    CHECK_EQ(v.s().ax_h[0], 0x8000U);
+    CHECK_EQ(v.s().ax_h[1], 0x8000U); // YN1 = last sample
+    CHECK_EQ(v.s().ac_l[0], 0x7FFFU); // YN2 = previous
+    CHECK_EQ(v.s().ac_l[1], 0x0004U);
+    // PRED_SCALE writes keep 7 bits
+    Rig w;
+    CHECK(w.run({SI(ifx::PRED_SCALE), 0xFFFF, LR(AX0L), ifx::PRED_SCALE, HALT}));
+    CHECK_EQ(w.s().ax_l[0], 0x007FU);
 }
 
-TEST_CASE(dsp_accelerator_raw_16bit_and_overflow) {
+TEST_CASE(dsp_accelerator_pcm_formats) {
+    // FORMAT 0x001A: gain scale 1/1, PCM from ARAM, 16-bit; A1 = A2 = 0, GAIN = 2
+    Rig t;
+    t.host.aram[0x20] = 0x12; t.host.aram[0x21] = 0x34; t.host.aram[0x22] = 0xC0; t.host.aram[0x23] = 0x00;
+    t.host.aram[0x24] = 0x40; t.host.aram[0x25] = 0x00;
+    CHECK(t.run({SI(ifx::FORMAT), 0x001A, SI(ifx::GAIN), 2, SI(ifx::ACEAH), 0, SI(ifx::ACEAL), 0x0100,
+                 SI(ifx::ACCAH), 0, SI(ifx::ACCAL), 0x0010,
+                 LR(AX0L), ifx::ACDSAMP, LR(AX0H), ifx::ACDSAMP, LR(AX1L), ifx::ACDSAMP, LR(AX1H), ifx::ACCAL, HALT}));
+    CHECK_EQ(t.s().ax_l[0], 0x2468U);
+    CHECK_EQ(t.s().ax_h[0], 0x8000U); // -16384 * 2
+    CHECK_EQ(t.s().ax_l[1], 0x8000U); // 16384 * 2 = 32768 truncated to 16 bits (no saturation)
+    CHECK_EQ(t.s().ax_h[1], 0x0013U);
+    // FORMAT 0x000A: gain scale 1/2048; GAIN 4096 (x2), A1 = 0x0400 (0.5): 200, then 200 + 100
+    Rig u;
+    u.host.aram[0x20] = 0x00; u.host.aram[0x21] = 100; u.host.aram[0x22] = 0x00; u.host.aram[0x23] = 100;
+    CHECK(u.run({SI(ifx::FORMAT), 0x000A, SI(ifx::GAIN), 0x1000, SI(0xFFA0), 0x0400, SI(ifx::ACEAH), 0, SI(ifx::ACEAL), 0x0100,
+                 SI(ifx::ACCAH), 0, SI(ifx::ACCAL), 0x0010,
+                 LR(AX0L), ifx::ACDSAMP, LR(AX0H), ifx::ACDSAMP, HALT}));
+    CHECK_EQ(u.s().ax_l[0], 200U);
+    CHECK_EQ(u.s().ax_h[0], 300U);
+    // 8-bit PCM: the raw byte is zero-extended (0xFF -> 255)
+    Rig v;
+    v.host.aram[0x30] = 0xFF;
+    CHECK(v.run({SI(ifx::FORMAT), 0x0019, SI(ifx::GAIN), 1, SI(ifx::ACEAH), 0, SI(ifx::ACEAL), 0x0100,
+                 SI(ifx::ACCAH), 0, SI(ifx::ACCAL), 0x0030, LR(AX0L), ifx::ACDSAMP, HALT}));
+    CHECK_EQ(v.s().ax_l[0], 255U);
+    // PCM from ACIN: decode 1 keeps ACCA, decode 3 increments it
+    Rig w;
+    CHECK(w.run({SI(ifx::FORMAT), 0x0016, SI(ifx::GAIN), 3, SI(ifx::ACIN), 7, SI(ifx::ACEAH), 0, SI(ifx::ACEAL), 0x0100,
+                 SI(ifx::ACCAH), 0, SI(ifx::ACCAL), 0x0040, LR(AX0L), ifx::ACDSAMP, LR(AX0H), ifx::ACCAL,
+                 SI(ifx::FORMAT), 0x001E, LR(AX1L), ifx::ACDSAMP, LR(AX1H), ifx::ACCAL, HALT}));
+    CHECK_EQ(w.s().ax_l[0], 21U);
+    CHECK_EQ(w.s().ax_h[0], 0x0040U);
+    CHECK_EQ(w.s().ax_l[1], 21U);
+    CHECK_EQ(w.s().ax_h[1], 0x0041U);
+    // gain scale 2 is 1/65536: 0x4000 * 0x4000 >> 16 = 0x1000
+    Rig g2;
+    g2.host.aram[0x20] = 0x40; g2.host.aram[0x21] = 0x00;
+    CHECK(g2.run({SI(ifx::FORMAT), 0x002A, SI(ifx::GAIN), 0x4000, SI(ifx::ACEAH), 0, SI(ifx::ACEAL), 0x0100,
+                  SI(ifx::ACCAH), 0, SI(ifx::ACCAL), 0x0010, LR(AX0L), ifx::ACDSAMP, HALT}));
+    CHECK_EQ(g2.s().ax_l[0], 0x1000U);
+    // gain scale 3 is a host stop
+    Rig x;
+    x.load({SI(ifx::FORMAT), 0x003A, LR(AX0L), ifx::ACDSAMP, HALT});
+    x.dsp.reset(0);
+    x.dsp.set_halted(false);
+    x.dsp.run(10);
+    CHECK(x.dsp.failed());
+    CHECK(x.dsp.error().find("gain scale 3") != std::string::npos);
+}
+
+TEST_CASE(dsp_accelerator_raw_reads_writes_and_overflow) {
     Rig t;
     t.load({0x029F, 0x0050}, 0x0006); // ACRROV vector
     t.load({LRI(AC1M), 0x00BB, 0x02FF}, 0x0050);
     CHECK(run_main(t, {SI(ifx::FORMAT), 0x0002, SI(ifx::ACSAH), 0, SI(ifx::ACSAL), 0x0008,
-                 SI(ifx::ACEAH), 0xFFFF, SI(ifx::ACEAL), 0xFFFF,
-                 SI(ifx::ACCAH), 0x8000, SI(ifx::ACCAL), 0x0010, SI(ifx::ACDRAW), 0xBEEF, SI(ifx::ACDRAW), 0x1234,
-                 LR(AX0L), ifx::ACCAL,                                      // 0x0012 after two writes
-                 SI(ifx::ACEAH), 0, SI(ifx::ACEAL), 0x0010,
-                 SI(ifx::ACCAH), 0, SI(ifx::ACCAL), 0x0010, LR(AX0H), ifx::ACDRAW, // reads 0xBEEF, then wraps
-                 LR(AX1L), ifx::ACCAL,
-                 LRI(SR_), SR_IE, NOP,                                      // the pending ACRROV is taken now
-                 HALT}));
+                       SI(ifx::ACEAH), 0xFFFF, SI(ifx::ACEAL), 0xFFFF,
+                       SI(ifx::ACCAH), 0x8000, SI(ifx::ACCAL), 0x0010, SI(ifx::ACDRAW), 0xBEEF, SI(ifx::ACDRAW), 0x1234,
+                       LR(AX0L), ifx::ACCAL,                                      // 0x0012 after two writes
+                       SI(ifx::ACEAH), 0, SI(ifx::ACEAL), 0x0010,
+                       SI(ifx::ACCAH), 0, SI(ifx::ACCAL), 0x0010, LR(AX0H), ifx::ACDRAW, // reads 0xBEEF, then wraps
+                       LR(AX1L), ifx::ACCAL,
+                       LRI(SR_), SR_IE, NOP,                                      // the pending ACRROV is taken now
+                       HALT}));
     CHECK_EQ(t.host.aram[0x20], 0xBEU);
     CHECK_EQ(t.host.aram[0x21], 0xEFU);
     CHECK_EQ(t.host.aram[0x22], 0x12U);
     CHECK_EQ(t.s().ax_l[0], 0x0012U);
     CHECK_EQ(t.s().ax_h[0], 0xBEEFU);
-    CHECK_EQ(t.s().ax_l[1], 0x0008U); // 0x11 > ACEA 0x10 -> reloaded from ACSA
+    CHECK_EQ(t.s().ax_l[1], 0x0008U); // just read ACEA -> reloaded from ACSA
     CHECK_EQ(t.s().ac_m[1], 0x00BBU); // ACRROV handler
-    // ARAM out of range / no ARAM is a host stop
+    // 8-bit and 4-bit raw reads (zero-extended; nibble addresses, high nibble first)
     Rig u;
-    u.host.aram.clear();
-    u.load({SI(ifx::FORMAT), 0, LR(AC0M), ifx::ACDSAMP, HALT});
-    u.dsp.reset(0);
-    u.dsp.set_halted(false);
-    u.dsp.run(10);
-    CHECK(u.dsp.failed());
-    CHECK(u.dsp.error().find("no ARAM") != std::string::npos);
+    u.host.aram[0x40] = 0xA7;
+    CHECK(u.run({SI(ifx::ACEAH), 0, SI(ifx::ACEAL), 0x0FFF, SI(ifx::FORMAT), 0x0001, SI(ifx::ACCAH), 0, SI(ifx::ACCAL), 0x0040,
+                 LR(AX0L), ifx::ACDRAW, SI(ifx::FORMAT), 0x0000, SI(ifx::ACCAL), 0x0080,
+                 LR(AX0H), ifx::ACDRAW, LR(AX1L), ifx::ACDRAW, LR(AX1H), ifx::ACCAL, HALT}));
+    CHECK_EQ(u.s().ax_l[0], 0x00A7U);
+    CHECK_EQ(u.s().ax_h[0], 0x000AU);
+    CHECK_EQ(u.s().ax_l[1], 0x0007U);
+    CHECK_EQ(u.s().ax_h[1], 0x0082U);
+    // raw writes without bit 31 are not accepted: nothing written, ACCA unchanged
+    Rig v;
+    CHECK(v.run({SI(ifx::ACCAH), 0, SI(ifx::ACCAL), 0x0010, SI(ifx::ACDRAW), 0x5555, LR(AX0L), ifx::ACCAL, HALT}));
+    CHECK_EQ(v.host.aram[0x20], 0x00U);
+    CHECK_EQ(v.s().ax_l[0], 0x0010U);
+    // raw write overflow: writing at ACEA reloads ACSA with bit 31 kept (ACRWOV), so writing goes on
+    Rig z;
+    CHECK(z.run({SI(ifx::FORMAT), 0x0002, SI(ifx::ACSAH), 0, SI(ifx::ACSAL), 0x0008, SI(ifx::ACEAH), 0, SI(ifx::ACEAL), 0x0011,
+                 SI(ifx::ACCAH), 0x8000, SI(ifx::ACCAL), 0x0010, SI(ifx::ACDRAW), 0x1111, SI(ifx::ACDRAW), 0x2222,
+                 SI(ifx::ACDRAW), 0x3333, LR(AX0L), ifx::ACCAH, LR(AX0H), ifx::ACCAL, HALT}));
+    CHECK_EQ(z.host.aram[0x22], 0x22U);
+    CHECK_EQ(z.host.aram[0x10], 0x33U); // third write landed at ACSA (word 8)
+    CHECK_EQ(z.s().ax_l[0], 0x8000U);
+    CHECK_EQ(z.s().ax_h[0], 0x0009U);
+    CHECK_EQ(z.dsp.pending_exceptions() & (1U << 4), 1U << 4);
+    // FORMAT size 3 and missing ARAM are host stops
+    Rig w;
+    w.load({SI(ifx::FORMAT), 0x0003, LR(AC0M), ifx::ACDRAW, HALT});
+    w.dsp.reset(0);
+    w.dsp.set_halted(false);
+    w.dsp.run(10);
+    CHECK(w.dsp.failed());
+    CHECK(w.dsp.error().find("size 3") != std::string::npos);
+    Rig y;
+    y.host.aram.clear();
+    y.load({SI(ifx::FORMAT), 0, LR(AC0M), ifx::ACDSAMP, HALT});
+    y.dsp.reset(0);
+    y.dsp.set_halted(false);
+    y.dsp.run(10);
+    CHECK(y.dsp.failed());
+    CHECK(y.dsp.error().find("no ARAM") != std::string::npos);
 }
 
 TEST_CASE(dsp_accelerator_reads_the_system_aram) {
     system::System gc({});
-    gc.dsp().aram()[0x1000] = 0x00;
-    gc.dsp().aram()[0x1001] = 0x70; // nibble 7, scale 1, pair 0 = 0 -> (7*2048 + 1024) >> 11 = 7
+    gc.dsp().aram()[0x1001] = 0x70; // nibble 0x2002 = 7, scale 1, pair 0 = 0 -> 7 + (0x400 >> 11) = 7
     auto& core = gc.dsp().core();
     const u16 prog[] = {SI(ifx::FORMAT), 0, SI(ifx::ACEAH), 0, SI(ifx::ACEAL), 0x2FFF, SI(ifx::ACCAH), 0,
-                        SI(ifx::ACCAL), 0x2000, LR(AC0M), ifx::ACDSAMP, HALT};
+                        SI(ifx::ACCAL), 0x2002, LR(AC0M), ifx::ACDSAMP, HALT};
     for (std::size_t i = 0; i < std::size(prog); ++i) core.iram()[i] = prog[i];
     core.reset(0);
     core.set_halted(false);
@@ -766,9 +878,7 @@ TEST_CASE(dsp_undocumented_behaviour_stops_clearly) {
         {{LR(AC0M), 0x1000, HALT}, "COEF"},
         {{SR(AC0M), 0x1000, HALT}, "read-only"},
         {{LR(AC0M), 0x2000, HALT}, "data memory address 2000"},
-        {{SI(ifx::FORMAT), 0x000A, LR(AC0M), ifx::ACDSAMP, HALT}, "only ADPCM"},
-        {{SI(ifx::FORMAT), 0x0001, LR(AC0M), ifx::ACDRAW, HALT}, "only 16-bit"},
-        {{SI(ifx::ACCAH), 0x0000, SI(ifx::ACDRAW), 0x1234, HALT}, "bit 31 clear"},
+        {{SI(ifx::FORMAT), 0x0003, LR(AC0M), ifx::ACDSAMP, HALT}, "size 3"},
         {{LR(AC0M), 0xFF00, HALT}, "IFX register FF00"},
         {{0x02DF}, "underflow"},
         {{0x1002, 0x0080, 0x0001, HALT}, "2-word"},

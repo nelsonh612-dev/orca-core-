@@ -17,6 +17,9 @@
 #include "orca/hw/mmio_splitter.hpp"
 #include "orca/hw/external_interface.hpp"
 #include "orca/hw/exi_ipl.hpp"
+#include "orca/hw/exi_memcard.hpp"
+
+#include <array>
 #include "orca/hw/dsp_interface.hpp"
 #include "orca/hw/memory_interface.hpp"
 #include "orca/hw/processor_interface.hpp"
@@ -79,6 +82,9 @@ public:
     hw::DspInterface& dsp() noexcept { return *dsp_; }
     // RTC/SRAM/IPL-ROM chip on EXI channel 0, CS1 (ROM image supplied by the user).
     hw::IplRtcSram& ipl() noexcept { return *ipl_; }
+    // Inserts a memory card in slot 0 (A, EXI0) or 1 (B, EXI1); empty image = blank card.
+    bool insert_memory_card(unsigned slot, u32 size_mbit, std::vector<u8> image, std::string& error);
+    hw::MemoryCard* memory_card(unsigned slot) noexcept { return slot < 2U ? cards_[slot].get() : nullptr; }
     // Called at every VI field start (top = false / bottom = true), after the SI hook.
     void set_field_listener(std::function<void(bool)> f) { field_listener_ = std::move(f); }
     void insert_disc(std::unique_ptr<disc::DiscReader> d) { di_->insert(std::move(d)); }
@@ -145,6 +151,7 @@ private:
     std::unique_ptr<hw::AudioInterface> ai_;
     std::unique_ptr<hw::ExternalInterface> exi_;
     std::unique_ptr<hw::IplRtcSram> ipl_;
+    std::array<std::unique_ptr<hw::MemoryCard>, 2> cards_;
     std::unique_ptr<hw::MemoryInterface> mi_;
     std::unique_ptr<hw::DspInterface> dsp_;
     std::function<void(bool)> field_listener_;

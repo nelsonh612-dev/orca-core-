@@ -77,6 +77,14 @@ public:
     virtual void deselect() {}
     virtual bool write(std::span<const u8> bytes, std::string& error) = 0;
     virtual bool read(std::span<u8> bytes, std::string& error) = 0;
+    // DMA transfers default to the immediate path; a device may handle them as a block.
+    virtual bool dma_read(std::span<u8> bytes, std::string& error) { return read(bytes, error); }
+    virtual bool dma_write(std::span<const u8> bytes, std::string& error) { return write(bytes, error); }
+    // CPU cycles until TCINT for a DMA (default: the EXI clock time).
+    virtual u64 dma_cycles(bool is_write, u32 bytes, u64 clock_cycles) const {
+        (void)is_write; (void)bytes;
+        return clock_cycles;
+    }
     // Called when channel 0's CSR.ROMDIS becomes 1.
     virtual void on_romdis() {}
 };

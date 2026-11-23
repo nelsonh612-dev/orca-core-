@@ -14,7 +14,21 @@
 //   0x04/0x06 CPU mailbox (DSP -> CPU), bit 15 of 0x04 = mail present
 //   0x0A CSR: 0 RES, 1 PIINT, 2 HALT, 3 AIDINT, 4 AIDINTMASK, 5 ARINT,
 //             6 ARINTMASK, 7 DSPINT, 8 DSPINTMASK, 9 ARAM DMA busy (RO), 11 ?
-//   0x12 AR_SIZE, 0x16 AR_MODE, 0x1A AR_REFRESH (stored, no modelled effect)
+//   0x12 AR_SIZE (writable bits 0x007F), 0x16 AR_MODE (read-only, reads 1:
+//   controller initialised), 0x1A AR_REFRESH (writable bits 0x07FF, reset 156)
+//   AR_DMA_*_H: writable bits 0x03FF (CNT_H also bit 15, the direction);
+//   *_L: bits 0-4 read 0. An ARAM DMA takes 246 CPU cycles per 32 bytes
+//   ("measured on real hardware" according to Dolphin's DSP.cpp). With
+//   (AR_SIZE & 0xF) == 4, writes below 4 MiB are mirrored at +4 MiB.
+//   AI DMA (Dolphin DSP.cpp, read as information): AIDMA_H writable bits 0x03FF
+//   (Wii 0x1FFF); 0x36 bit 15 enables, bits 0-14 = number of 32-byte blocks.
+//   Enabling latches address and count and raises AIDINT 200 CPU cycles later
+//   (Dolphin's own value, flagged there as a compatibility choice). Every 8
+//   output samples at the AIDFR rate (AICR bit 6: 1 = 32 kHz, 0 = 48 kHz, as
+//   108 MHz / 3372 and 108 MHz / 2248 on GameCube, / 3375 and / 2250 on Wii)
+//   one block is consumed; when the
+//   count runs out the registers are latched again and AIDINT is raised.
+//   0x3A reads the remaining blocks - 1 (0 when none). RES clears the control.
 //   0x20/0x22 AR_DMA_MMADDR, 0x24/0x26 AR_DMA_ARADDR,
 //   0x28/0x2A AR_DMA_CNT (bit 31: 0 = main memory -> ARAM, 1 = ARAM -> main)
 //   0x30/0x32 AI DMA start address, 0x36 AI DMA control (bit 15 play,
@@ -39,6 +53,8 @@
 #include "orca/hw/processor_interface.hpp"
 
 #include <array>
+#include <functional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -61,9 +77,15 @@ inline constexpr u32 kCntToMain = 0x80000000U;
 class DspInterface final : public mem::MmioDevice, private ::orca::dsp::DspHost {
 public:
     // `has_aram` = false on Wii (no ARAM there).
-    DspInterface(mem::Bus& bus, core::Scheduler& scheduler, ProcessorInterface& pi, bool has_aram);
+    DspInterface(mem::Bus& bus, core::Scheduler& scheduler, ProcessorInterface& pi, bool has_aram,
+                 u64 cpu_hz = 486000000ULL);
 
     void set_aram_cycles_per_unit(u64 c) noexcept { aram_cycles_per_unit_ = c; }
+    // AIDFR source (true = 32 kHz) and the consumer of each 32-byte audio block.
+    void set_aid_rate_source(std::function<bool()> is_32khz) { aid_32khz_ = std::move(is_32khz); }
+    void set_audio_sink(std::function<void(std::span<const u8>)> sink) { audio_sink_ = std::move(sink); }
+    u64 audio_blocks_played() const noexcept { return audio_blocks_; }
+    u64 aid_block_cycles() const;
     std::vector<u8>& aram() noexcept { return aram_; }
     bool aram_busy() const noexcept { return (csr_ & dsp::CSR_DMABUSY) != 0U; }
     u16 csr() const noexcept { return csr_; }
@@ -84,6 +106,7 @@ private:
     bool write16(u32 offset, u16 v);
     bool start_aram_dma();
     void complete_aram_dma();
+    void audio_block();
     void update_interrupt();
     bool fail(std::string why) { last_error_ = std::move(why); return false; }
     void dsp_reset(bool boot_from_ram);
@@ -101,10 +124,18 @@ private:
     core::Scheduler& scheduler_;
     ProcessorInterface& pi_;
     std::vector<u8> aram_;
-    u64 aram_cycles_per_unit_{0};
+    u64 aram_cycles_per_unit_{246};
+    u64 cpu_hz_;
+    bool wii_;
+    std::function<bool()> aid_32khz_;
+    std::function<void(std::span<const u8>)> audio_sink_;
+    u32 aid_cur_{0};
+    u16 aid_remaining_{0};
+    u64 audio_blocks_{0};
+    u64 aid_generation_{0}; // invalidates scheduled block events after a stop
     ::orca::dsp::DspCore core_{*this};
     bool slice_pending_{false};
-    u16 csr_{dsp::CSR_HALT}, ar_size_{0}, ar_mode_{0}, ar_refresh_{0};
+    u16 csr_{dsp::CSR_HALT}, ar_size_{0}, ar_refresh_{156};
     u32 mmaddr_{0}, araddr_{0}, cnt_{0};
     u16 aidma_h_{0}, aidma_l_{0}, aidma_ctrl_{0};
     std::string last_error_;

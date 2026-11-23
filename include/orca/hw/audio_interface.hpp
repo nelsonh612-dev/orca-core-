@@ -26,6 +26,8 @@ public:
     AudioInterface(core::Scheduler& scheduler, ProcessorInterface& pi, u64 cpu_hz);
     u32 sample_count() const;
     u32 rate() const noexcept { return (aicr_ & ai::AFR) != 0U ? 32000U : 48000U; }
+    // AIDFR (bit 6): rate of the AI DMA fed by the DSP; 1 = 32 kHz (Dolphin AudioInterface.cpp)
+    bool dma_rate_32khz() const noexcept { return (aicr_ & ai::DSPRATE) != 0U; }
 
     bool mmio_read(u32 offset, unsigned size, u64& value) override;
     bool mmio_write(u32 offset, unsigned size, u64 value) override;

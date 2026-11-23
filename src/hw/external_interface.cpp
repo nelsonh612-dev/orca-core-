@@ -194,15 +194,16 @@ bool ExternalInterface::start(u32 channel) {
         std::vector<u8> data(bytes);
         if (rw == exi::RW_WRITE) {
             (void)bus_.dma_read(c.mar, data);
-            if (!dev->write(data, error)) return fail(dev->exi_name() + (": " + error));
+            if (!dev->dma_write(data, error)) return fail(dev->exi_name() + (": " + error));
         } else {
-            if (!dev->read(data, error)) return fail(dev->exi_name() + (": " + error));
+            if (!dev->dma_read(data, error)) return fail(dev->exi_name() + (": " + error));
             c.pending_dma = std::move(data);
         }
     }
     const u64 clk = exi::clock_hz((c.csr & exi::CSR_CLK_MASK) >> 4);
     const u64 bits = static_cast<u64>(bytes) * 8ULL;
-    const u64 cycles = (bits * cpu_hz_ + clk - 1ULL) / clk;
+    u64 cycles = (bits * cpu_hz_ + clk - 1ULL) / clk;
+    if (dma) cycles = dev->dma_cycles(rw == exi::RW_WRITE, bytes, cycles);
     scheduler_.schedule_in(cycles, "EXI transfer", [this, channel](u64, u64) { complete(channel); });
     return true;
 }

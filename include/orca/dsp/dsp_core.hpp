@@ -10,9 +10,11 @@
 //   * stack overflow/underflow (STOVF): host stop;
 //   * address arithmetic when the matching $wrN != 0xFFFF (wrapping is not
 //     described): host stop;
-//   * accelerator: ADPCM sample reads (FORMAT 0x0000: ADPCM from ARAM, 4-bit)
-//     and 16-bit raw reads/writes are implemented; PCM formats and 8/4-bit raw
-//     reads (formula / extension not documented) are host stops;
+//   * accelerator: behaviour from the manual plus the hardware observations
+//     recorded in Dolphin's DSPAccelerator.cpp (read as information only):
+//     ADPCM/PCM sample decoding, 4/8/16-bit raw reads, raw writes, end-of-range
+//     rules and their special cases. FORMAT size 3 and gain scale 3 are host
+//     stops (the hardware returns garbage);
 //   * IROM (0x8000-0x8FFF) and COEF (0x1000-0x17FF) need user dumps; reading or
 //     executing them without one is a host stop;
 //   * unknown opcodes, undocumented memory addresses and IFX registers: host
@@ -137,12 +139,11 @@ private:
     bool acc_read_sample(u16& v);
     bool acc_read_raw(u16& v);
     bool acc_write_raw(u16 v);
-    u32 acc_ca() const noexcept { return (static_cast<u32>(accah_) << 16) | accal_; }
-    u32 acc_sa() const noexcept { return (static_cast<u32>(acsah_) << 16) | acsal_; }
-    u32 acc_ea() const noexcept { return (static_cast<u32>(aceah_) << 16) | aceal_; }
-    void acc_set_ca(u32 v) noexcept { accah_ = static_cast<u16>(v >> 16); accal_ = static_cast<u16>(v); }
-    // Increments ACCA; past ACEA it reloads ACSA and raises exception `level`.
-    void acc_advance(u32 amount, unsigned level);
+    u32 acc_ca() const noexcept { return ((static_cast<u32>(accah_) << 16) | accal_) & 0xBFFFFFFFU; }
+    u32 acc_sa() const noexcept { return ((static_cast<u32>(acsah_) << 16) | acsal_) & 0x3FFFFFFFU; }
+    u32 acc_ea() const noexcept { return ((static_cast<u32>(aceah_) << 16) | aceal_) & 0x3FFFFFFFU; }
+    void acc_set_ca(u32 v) noexcept { v &= 0xBFFFFFFFU; accah_ = static_cast<u16>(v >> 16); accal_ = static_cast<u16>(v); }
+    bool acc_current_sample(u16& v); // raw value at ACCA for the FORMAT size
 
     // registers
     bool reg_read(unsigned r, u16& v, bool saturate);
@@ -223,6 +224,7 @@ private:
     u32 cmb_{0}, dmb_{0};
     bool int_pending_{false};
     u8 exc_pending_{0};
+    bool acc_stopped_{false}; // after the end of a sample range: ACDSAMP reads 0 until YN2 is written
 
     bool halted_{true};
     bool failed_{false};

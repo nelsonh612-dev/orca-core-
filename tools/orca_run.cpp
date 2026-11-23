@@ -1,10 +1,13 @@
 // orca_run: headless runner. Loads a DOL/ELF, boots it (HLE) and runs for a
 // number of cycles, then prints why it stopped and the CPU state.
-// Usage: orca_run [--ipl-rom=FILE] [--rtc=SECONDS] [--dsp-irom=FILE] [--dsp-coef=FILE] [--list-files] file.(dol|elf|iso|gcm) [cycles] [gc|wii]
+// Usage: orca_run [--ipl-rom=FILE] [--rtc=SECONDS] [--dsp-irom=FILE] [--dsp-coef=FILE] [--card-a=FILE] [--card-b=FILE] [--list-files] file.(dol|elf|iso|gcm) [cycles] [gc|wii]
 //   --ipl-rom: IPL ROM image (descrambled, as the CPU reads it) for EXI0/CS1
 //   --rtc:     initial RTC counter value (seconds); default 0
 //   --list-files: print the disc FST (.iso/.gcm) and exit
 //   --dsp-irom / --dsp-coef: DSP ROM dumps (8 KiB / 4 KiB, big-endian words)
+//   --card-a / --card-b: raw memory card image for slot A/B (4-128 Mbit). A
+//                        missing file creates a blank 16 Mbit card; the image is
+//                        written back after the run if the game changed it.
 // .iso/.gcm images are booted through the HLE IPL + apploader path.
 #include "orca/disc/fst.hpp"
 #include "orca/system/system.hpp"
@@ -22,12 +25,15 @@ int main(int argc_in, char** argv_in) {
     unsigned long rtc = 0;
     bool list_files = false;
     std::string irom_path, coef_path;
+    std::string card_path[2];
     for (int i = 0; i < argc_in; ++i) {
         if (std::strncmp(argv_in[i], "--ipl-rom=", 10) == 0) ipl_path = argv_in[i] + 10;
         else if (std::strncmp(argv_in[i], "--rtc=", 6) == 0) rtc = std::strtoul(argv_in[i] + 6, nullptr, 0);
         else if (std::strcmp(argv_in[i], "--list-files") == 0) list_files = true;
         else if (std::strncmp(argv_in[i], "--dsp-irom=", 11) == 0) irom_path = argv_in[i] + 11;
         else if (std::strncmp(argv_in[i], "--dsp-coef=", 11) == 0) coef_path = argv_in[i] + 11;
+        else if (std::strncmp(argv_in[i], "--card-a=", 9) == 0) card_path[0] = argv_in[i] + 9;
+        else if (std::strncmp(argv_in[i], "--card-b=", 9) == 0) card_path[1] = argv_in[i] + 9;
         else args.push_back(argv_in[i]);
     }
     const int argc = static_cast<int>(args.size());
@@ -61,6 +67,20 @@ int main(int argc_in, char** argv_in) {
         std::fprintf(stderr, "cannot use DSP COEF %s (must be 4096 bytes)\n", coef_path.c_str());
         return 1;
     }
+    for (unsigned slot = 0; slot < 2; ++slot) {
+        if (card_path[slot].empty()) continue;
+        std::vector<orca::u8> img;
+        orca::u32 mbit = 16;
+        std::ifstream cin_(card_path[slot], std::ios::binary);
+        if (cin_) {
+            img.assign(std::istreambuf_iterator<char>(cin_), std::istreambuf_iterator<char>());
+            mbit = static_cast<orca::u32>(img.size() / orca::hw::memcard::kBytesPerMbit);
+        }
+        if (!sys.insert_memory_card(slot, mbit, std::move(img), error)) {
+            std::fprintf(stderr, "cannot use memory card %s: %s\n", card_path[slot].c_str(), error.c_str());
+            return 1;
+        }
+    }
     const std::string path = argv[1];
     const auto ends_with = [&](const char* ext) { const std::size_t n = std::strlen(ext); return path.size() >= n && path.compare(path.size() - n, n, ext) == 0; };
     if (ends_with(".iso") || ends_with(".gcm") || ends_with(".ISO") || ends_with(".GCM")) {
@@ -89,6 +109,14 @@ int main(int argc_in, char** argv_in) {
         if (!sys.load_executable(file, error)) { std::fprintf(stderr, "load failed: %s\n", error.c_str()); return 1; }
     }
     const auto r = sys.run(cycles);
+    for (unsigned slot = 0; slot < 2; ++slot) {
+        const auto* card = sys.memory_card(slot);
+        if (card == nullptr || !card->dirty()) continue;
+        std::ofstream out(card_path[slot], std::ios::binary | std::ios::trunc);
+        out.write(reinterpret_cast<const char*>(card->image().data()), static_cast<std::streamsize>(card->image().size()));
+        if (!out) std::fprintf(stderr, "cannot save memory card %s\n", card_path[slot].c_str());
+        else std::printf("memory card %c saved: %s\n", slot == 0 ? 'A' : 'B', card_path[slot].c_str());
+    }
     const auto& s = sys.cpu().state();
     std::printf("stop: %s after %llu cycles, %llu instructions\n", orca::ppc::to_string(r.stop),
                 static_cast<unsigned long long>(r.cycles), static_cast<unsigned long long>(r.instructions));

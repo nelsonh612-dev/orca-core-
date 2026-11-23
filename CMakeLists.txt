@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(orca_core VERSION 0.9.0 LANGUAGES C CXX)
+project(orca_core VERSION 0.12.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -29,6 +29,7 @@ add_library(orca_core
     src/hw/dsp_interface.cpp
     src/hw/memory_interface.cpp
     src/hw/exi_ipl.cpp
+    src/hw/exi_memcard.cpp
     src/hw/external_interface.cpp
     src/hw/serial_interface.cpp
     src/hw/video_interface.cpp

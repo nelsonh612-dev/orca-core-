@@ -29,6 +29,7 @@ void DspCore::reset(u16 pc) {
     rep_count_ = 0;
     int_pending_ = false;
     exc_pending_ = 0;
+    acc_stopped_ = false;
     failed_ = false;
     error_.clear();
 }
@@ -350,9 +351,9 @@ bool DspCore::ifx_write(u16 a, u16 v) {
     case ifx::ACEAL: aceal_ = v; return true;
     case ifx::ACCAH: accah_ = v; return true;
     case ifx::ACCAL: accal_ = v; return true;
-    case ifx::PRED_SCALE: pred_scale_ = v; return true;
+    case ifx::PRED_SCALE: pred_scale_ = static_cast<u16>(v & 0x7FU); return true;
     case ifx::YN1: yn1_ = v; return true;
-    case ifx::YN2: yn2_ = v; return true;
+    case ifx::YN2: yn2_ = v; acc_stopped_ = false; return true; // "writing this value starts the accelerator"
     case ifx::GAIN: gain_ = v; return true;
     case ifx::ACIN: acin_ = v; return true;
     case ifx::AMDM_A: amdm_a_ = v; return true;
@@ -409,74 +410,108 @@ bool DspCore::dsp_dma(u16 bytes) {
 }
 
 // ------------------------------------------------------------------ accelerator
-// DSP manual "Accelerator": after a read ACCA is incremented; when it grows past
-// ACEA it is reloaded from ACSA and ACRROV / ACRWOV / ACSOV is raised.
-void DspCore::acc_advance(u32 amount, unsigned level) {
-    const u32 ca = acc_ca() + amount;
-    if (ca > acc_ea()) {
-        acc_set_ca(acc_sa());
-        exc_pending_ = static_cast<u8>(exc_pending_ | (1U << level));
-    } else {
-        acc_set_ca(ca);
+// Sources: DSP manual "Accelerator" (registers, ACSA/ACEA/ACCA, exceptions) and
+// the hardware observations documented in Dolphin's DSPAccelerator.cpp, used
+// only as information: address units follow the FORMAT size (nibbles, bytes,
+// words); raw reads are zero-extended; a range ends when the address just read
+// is ACEA; ADPCM reads the next frame header right after the last nibble of a
+// frame; after a sample range ends ACDSAMP returns 0 until YN2 is written.
+bool DspCore::acc_current_sample(u16& v) {
+    const u32 ca = acc_ca();
+    u8 b0 = 0, b1 = 0;
+    switch (format_ & 3U) {
+    case 0: // 4-bit: high nibble first
+        if (!host_.dsp_aram_read8(ca >> 1, b0)) break;
+        v = (ca & 1U) != 0U ? static_cast<u16>(b0 & 0xFU) : static_cast<u16>(b0 >> 4);
+        return true;
+    case 1: // 8-bit (zero-extended)
+        if (!host_.dsp_aram_read8(ca, b0)) break;
+        v = b0;
+        return true;
+    case 2: // 16-bit, word addresses
+        if (!host_.dsp_aram_read8(ca * 2U, b0) || !host_.dsp_aram_read8(ca * 2U + 1U, b1)) break;
+        v = static_cast<u16>((static_cast<u16>(b0) << 8) | b1);
+        return true;
+    default:
+        return fail("accelerator FORMAT size 3 (the hardware returns garbage)");
     }
-}
-
-bool DspCore::acc_read_sample(u16& v) {
-    // Implemented: FORMAT = ADPCM from ARAM, 4-bit (dd = 0, ss = 0). Addresses
-    // are nibbles and include the frame headers (Nintendo DSPADPCM spec); each
-    // 8-byte frame starts with a predictor/scale byte (DSP file format docs).
-    const unsigned size = format_ & 3U, src = (format_ >> 2) & 3U;
-    if (src != 0U || size != 0U) {
-        char buf[96];
-        std::snprintf(buf, sizeof buf, "accelerator FORMAT %04X: only ADPCM (0x0000) is implemented (PCM formula undocumented)", format_);
-        return fail(buf);
-    }
-    u8 byte = 0;
-    u32 ca = acc_ca();
-    if ((ca & 15U) == 0U) { // frame header: predictor (bits 6-4) and scale (bits 3-0)
-        if (!host_.dsp_aram_read8(ca >> 1, byte)) return fail("accelerator ARAM read failed (no ARAM or out of range)");
-        pred_scale_ = static_cast<u16>(byte & 0x7FU);
-        ca += 2U;
-        acc_set_ca(ca);
-    }
-    if (!host_.dsp_aram_read8(ca >> 1, byte)) return fail("accelerator ARAM read failed (no ARAM or out of range)");
-    const unsigned raw = (ca & 1U) != 0U ? (byte & 0xFU) : (byte >> 4U); // high nibble first
-    const s32 nibble = raw >= 8U ? static_cast<s32>(raw) - 16 : static_cast<s32>(raw);
-    const s32 scale = 1 << (pred_scale_ & 0xFU);
-    const unsigned idx = (pred_scale_ >> 4) & 7U;
-    const s32 c1 = static_cast<s16>(adpcm_coef_[2U * idx]), c2 = static_cast<s16>(adpcm_coef_[2U * idx + 1U]);
-    s32 val = ((nibble * scale) * 2048 + 1024 + c1 * static_cast<s16>(yn1_) + c2 * static_cast<s16>(yn2_)) >> 11;
-    if (val > 32767) val = 32767;
-    if (val < -32768) val = -32768;
-    yn2_ = yn1_;
-    yn1_ = static_cast<u16>(val);
-    v = static_cast<u16>(val);
-    acc_advance(1, 5); // ACSOV
-    return true;
+    return fail("accelerator ARAM read failed (no ARAM or out of range)");
 }
 
 bool DspCore::acc_read_raw(u16& v) {
-    // "Reads respect the FORMAT size": implemented for 16-bit (word addresses).
-    if ((format_ & 3U) != 2U) {
-        char buf[96];
-        std::snprintf(buf, sizeof buf, "accelerator raw read with FORMAT size %u: only 16-bit is implemented", format_ & 3U);
-        return fail(buf);
+    if (!acc_current_sample(v)) return false;
+    const u32 next = acc_ca() + 1U;
+    if (next - 1U == acc_ea()) { // just read the end address: back to the start (ACRROV)
+        acc_set_ca(acc_sa());
+        exc_pending_ = static_cast<u8>(exc_pending_ | (1U << 3));
+    } else {
+        acc_set_ca(next);
     }
-    const u32 byte_addr = (acc_ca() & 0x7FFFFFFFU) << 1;
-    u8 hi = 0, lo = 0;
-    if (!host_.dsp_aram_read8(byte_addr, hi) || !host_.dsp_aram_read8(byte_addr + 1U, lo))
-        return fail("accelerator ARAM read failed (no ARAM or out of range)");
-    v = static_cast<u16>((static_cast<u16>(hi) << 8) | lo);
-    acc_advance(1, 3); // ACRROV
     return true;
 }
 
 bool DspCore::acc_write_raw(u16 v) {
-    // "Writes are always 16-bit ... require that the uppermost bit of the current address is set."
+    // "Writes require that the uppermost bit of the current address is set";
+    // without it the write is not accepted (no data written, ACCA unchanged).
     const u32 ca = acc_ca();
-    if ((ca & 0x80000000U) == 0U) return fail("accelerator raw write with ACCA bit 31 clear (behaviour undocumented)");
-    if (!host_.dsp_aram_write16((ca & 0x7FFFFFFFU) << 1, v)) return fail("accelerator ARAM write failed (no ARAM or out of range)");
-    acc_advance(1, 4); // ACRWOV
+    if ((ca & 0x80000000U) == 0U) return true;
+    if (!host_.dsp_aram_write16(ca * 2U, v)) return fail("accelerator ARAM write failed (no ARAM or out of range)");
+    if ((ca & 0x3FFFFFFFU) == acc_ea()) { // model: same end rule as raw reads (ACRWOV)
+        acc_set_ca(acc_sa() | 0x80000000U);
+        exc_pending_ = static_cast<u8>(exc_pending_ | (1U << 4));
+    } else {
+        acc_set_ca(ca + 1U);
+    }
+    return true;
+}
+
+bool DspCore::acc_read_sample(u16& v) {
+    if (acc_stopped_) { v = 0; return true; }
+    const unsigned decode = (format_ >> 2) & 3U, gain_scale = (format_ >> 4) & 3U;
+    u16 raw = 0;
+    if (decode == 1U || decode == 3U) raw = acin_; // PCM from ACIN
+    else if (!acc_current_sample(raw)) return false;
+    const unsigned idx = (pred_scale_ >> 4) & 7U;
+    const s32 c1 = static_cast<s16>(adpcm_coef_[2U * idx]), c2 = static_cast<s16>(adpcm_coef_[2U * idx + 1U]);
+    const s32 y1 = static_cast<s16>(yn1_), y2 = static_cast<s16>(yn2_);
+    u32 ca = acc_ca();
+    const u32 ea = acc_ea();
+    u32 step = 2;
+    s32 out = 0;
+    if (decode == 0U) { // ADPCM (only the low 4 bits of the raw value are used)
+        s32 n = raw & 0xFU;
+        if (n >= 8) n -= 16;
+        s32 val = (1 << (pred_scale_ & 0xFU)) * n + ((0x400 + c1 * y1 + c2 * y2) >> 11);
+        out = val > 32767 ? 32767 : (val < -32768 ? -32768 : val);
+        ca += 1U;
+        // hardware special cases: no exception, no header read
+        if ((ea & 0xFU) == 0x0U && ca == ea) {
+            ca = acc_sa() + 1U;
+        } else if ((ea & 0xFU) == 0x1U && ca == ea - 1U) {
+            ca = acc_sa();
+        } else if ((ca & 15U) == 0U) { // next frame header
+            u8 hdr = 0;
+            if (!host_.dsp_aram_read8((ca & ~15U) >> 1, hdr)) return fail("accelerator ARAM read failed (no ARAM or out of range)");
+            pred_scale_ = hdr;
+            ca += 2U;
+            step += 2U;
+        }
+    } else { // PCM: (GAIN * x >> g) + (A1*YN1 >> g) + (A2*YN2 >> g), truncated to 16 bits
+        if (gain_scale == 3U) return fail("accelerator gain scale 3 is not a valid setting");
+        const unsigned g = gain_scale == 0U ? 11U : (gain_scale == 1U ? 0U : 16U);
+        const s32 x = static_cast<s16>(raw);
+        out = static_cast<s16>(static_cast<u16>(static_cast<u32>(((static_cast<s16>(gain_) * x) >> g) + ((c1 * y1) >> g) + ((c2 * y2) >> g))));
+        if (decode != 1U) ca += 1U;
+    }
+    yn2_ = yn1_;
+    yn1_ = static_cast<u16>(out);
+    v = static_cast<u16>(out);
+    if (ca == ea + step - 1U) { // the end address was just read
+        ca = acc_sa();
+        acc_stopped_ = true;
+        exc_pending_ = static_cast<u8>(exc_pending_ | (1U << 5));
+    }
+    acc_set_ca(ca);
     return true;
 }
 

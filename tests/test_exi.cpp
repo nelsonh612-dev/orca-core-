@@ -1,5 +1,6 @@
 // External Interface (EXI) and the RTC/SRAM/IPL-ROM device on EXI0/CS1.
 #include "orca/hw/exi_ipl.hpp"
+#include "orca/hw/exi_memcard.hpp"
 #include "orca/hw/external_interface.hpp"
 #include "orca/system/system.hpp"
 #include "test_framework.hpp"
@@ -444,6 +445,194 @@ TEST_CASE(exi_immediate_write_order_and_lengths) {
     CHECK(t.w(0x38, 0));
     CHECK_EQ(t.imm_read(3, 2), 0x40414243U);
     CHECK_EQ(t.imm_read(1, 2), 0x44454243U);
+}
+
+
+// ------------------------------------------------------------ memory card (M012)
+namespace {
+struct CardRig : Rig {
+    std::unique_ptr<MemoryCard> card;
+    int irqs = 0;
+    explicit CardRig(u32 mbit = 16) {
+        std::vector<u8> img(static_cast<std::size_t>(mbit) * memcard::kBytesPerMbit);
+        for (std::size_t i = 0; i < img.size(); ++i) img[i] = static_cast<u8>(i * 31U + (i >> 9));
+        std::string err;
+        card = MemoryCard::create(sched, kCpuHz, mbit, img, err);
+        CHECK(card != nullptr);
+        CHECK(exi.attach(0, 0, *card));
+        card->set_interrupt_callback([this] { exi.set_device_interrupt(0); ++irqs; });
+    }
+    void sel() { CHECK(w(0x00, 0x0B0U)); } // CS0, 8 MHz
+    void desel() { CHECK(w(0x00, 0x030U)); }
+    // immediate write of n (1-4) bytes, MSB first
+    void put(u32 word, u32 n) { CHECK(w(0x10, word)); CHECK(w(0x0C, ((n - 1U) << 4) | 0x05U)); finish(); }
+    u32 get(u32 n) { CHECK(w(0x0C, ((n - 1U) << 4) | 0x01U)); finish(); return r(0x10); }
+    u8 at(u32 a) const { return card->image()[a]; }
+    void cmd_addr(u8 cmd, u32 a) { // command + AD1 AD2 AD3 BA
+        put((static_cast<u32>(cmd) << 24) | ((a >> 17) & 0xFFU) << 16 | ((a >> 9) & 0xFFU) << 8 | ((a >> 7) & 3U), 4);
+        put((a & 0x7FU) << 24, 1);
+    }
+};
+} // namespace
+
+TEST_CASE(memcard_id_status_and_ext) {
+    CardRig t;
+    CHECK_EQ(t.r(0x00) & exi::CSR_EXT, exi::CSR_EXT); // card present in slot A
+    t.sel();
+    t.put(0x00000000U, 2);           // EXI ID command + one byte (answers 0x80)
+    CHECK_EQ(t.get(4), 0x00000010U); // 16 Mbit
+    t.desel();
+    t.sel();
+    t.put(0x83000000U, 1);
+    CHECK_EQ(t.get(1) >> 24, 0xC1U);  // BUSY | UNLOCKED | READY at power-on
+    t.desel();
+    CardRig small(4);
+    small.sel();
+    small.put(0x00000000U, 2);
+    CHECK_EQ(small.get(4), 0x00000004U);
+}
+
+TEST_CASE(memcard_read_array_immediate_and_sector_wrap) {
+    CardRig t;
+    const u32 a = 0x12345; // AD1 0x00, AD2 0x91, AD3 2, BA 0x45
+    t.sel();
+    t.cmd_addr(0x52, a);
+    t.put(0, 4);                       // positions 5-8: dummy bytes
+    const u32 v = t.get(4);            // positions 9-12: data, address advancing
+    CHECK_EQ(v, (static_cast<u32>(t.at(a)) << 24) | (static_cast<u32>(t.at(a + 1)) << 16) |
+                    (static_cast<u32>(t.at(a + 2)) << 8) | t.at(a + 3));
+    t.desel();
+    // inside a 512-byte sector the address wraps
+    t.sel();
+    t.cmd_addr(0x52, 0x21FE);
+    t.put(0, 4);
+    const u32 w3 = t.get(3);
+    CHECK_EQ(w3 >> 8, (static_cast<u32>(t.at(0x21FE)) << 16) | (static_cast<u32>(t.at(0x21FF)) << 8) | t.at(0x2000));
+    t.desel();
+}
+
+TEST_CASE(memcard_dma_read_and_timing) {
+    CardRig t;
+    t.sel();
+    t.cmd_addr(0x52, 0x4200);
+    t.put(0, 4);
+    CHECK(t.w(0x04, 0x8000U));
+    CHECK(t.w(0x08, 512U));
+    CHECK(t.w(0x0C, 0x03U)); // DMA read
+    CHECK_EQ(t.finish(), 512U * (kCpuHz / 524288U)); // Dolphin's read rate: 474112 cycles
+    t.desel();
+    unsigned bad = 0;
+    for (u32 i = 0; i < 512; ++i) {
+        u8 b = 0;
+        CHECK(t.bus.read8(0x8000 + i, b) == mem::BusStatus::Ok);
+        bad += b != t.at(0x4200 + i) ? 1U : 0U;
+    }
+    CHECK_EQ(bad, 0U);
+}
+
+TEST_CASE(memcard_program_erase_status_and_interrupt) {
+    CardRig t;
+    t.sel(); t.put(0x81010000U, 2); t.desel();      // enable the card interrupt
+    t.sel(); t.put(0x89000000U, 1); t.desel();      // clear status
+    // page program, immediate data
+    t.sel();
+    t.cmd_addr(0xF2, 0x0400);
+    t.put(0xA1B2C300U, 3);
+    CHECK_EQ(t.at(0x400), static_cast<u8>(0x400 * 31U + 2U)); // not written before CS release
+    t.desel();
+    CHECK_EQ(t.at(0x400), 0xA1U);
+    CHECK_EQ(t.at(0x402), 0xC3U);
+    CHECK(t.card->dirty());
+    CHECK_EQ(t.irqs, 0);
+    t.sched.advance_to(t.sched.now() + memcard::kCommandDoneCycles);
+    CHECK_EQ(t.irqs, 1);
+    CHECK_EQ(t.r(0x00) & exi::CSR_EXIINT, exi::CSR_EXIINT);
+    CHECK_EQ(t.card->status() & memcard::STATUS_BUSY, 0U);
+    // page program by DMA (128 bytes)
+    for (u32 i = 0; i < 128; ++i) CHECK(t.bus.write8(0x9000 + i, static_cast<u8>(0x55 ^ i)) == mem::BusStatus::Ok);
+    t.sel();
+    t.cmd_addr(0xF2, 0x0600);
+    CHECK(t.w(0x04, 0x9000U));
+    CHECK(t.w(0x08, 128U));
+    CHECK(t.w(0x0C, 0x07U)); // DMA write
+    CHECK_EQ(t.finish(), 128U * (kCpuHz / 98432U));
+    t.desel();
+    CHECK_EQ(t.at(0x600), 0x55U);
+    CHECK_EQ(t.at(0x67F), static_cast<u8>(0x55 ^ 127));
+    // sector erase: the 8 KiB block becomes 0xFF; BUSY until the command completes
+    t.sel();
+    t.put(0xF1000400U, 3); // AD1 0, AD2 4 -> address 0x800 inside block 0
+    t.desel();
+    CHECK_EQ(t.at(0x0000), 0xFFU);
+    CHECK_EQ(t.at(0x1FFF), 0xFFU);
+    CHECK_EQ(t.at(0x2000), static_cast<u8>(0x2000U * 31U + (0x2000U >> 9))); // next block untouched (0x10)
+    CHECK_EQ(t.card->status() & (memcard::STATUS_BUSY | memcard::STATUS_READY), memcard::STATUS_BUSY);
+    t.sched.advance_to(t.sched.now() + memcard::kCommandDoneCycles);
+    CHECK_EQ(t.card->status() & (memcard::STATUS_BUSY | memcard::STATUS_READY), memcard::STATUS_READY);
+}
+
+TEST_CASE(memcard_id_byte_buffer_wrap_and_interrupt_switch) {
+    CardRig t;
+    t.sel();
+    t.put(0x00000000U, 1);
+    CHECK_EQ(t.get(1) >> 24, 0x80U); // first answer of the ID command
+    t.desel();
+    // interrupt switch off (power-on): a finished command does not interrupt
+    t.sel(); t.cmd_addr(0xF2, 0x0800); t.put(0x77000000U, 1); t.desel();
+    t.sched.advance_to(t.sched.now() + memcard::kCommandDoneCycles);
+    CHECK_EQ(t.irqs, 0);
+    CHECK_EQ(t.card->status() & memcard::STATUS_READY, memcard::STATUS_READY);
+    // a program with no data bytes still completes (BUSY cleared, READY) and interrupts once enabled
+    t.sel(); t.put(0x81010000U, 2); t.desel();
+    t.sel(); t.cmd_addr(0xF2, 0x0A00); t.desel();
+    CHECK_EQ(t.at(0x0A00), static_cast<u8>(0x0A00U * 31U + 5U)); // nothing written
+    t.sched.advance_to(t.sched.now() + memcard::kCommandDoneCycles);
+    CHECK_EQ(t.irqs, 1);
+    // 128 immediate data bytes fill the whole page buffer
+    t.sel();
+    t.cmd_addr(0xF2, 0x0C00);
+    for (u32 i = 0; i < 128; i += 4) t.put((i << 24) | ((i + 1U) << 16) | ((i + 2U) << 8) | (i + 3U), 4);
+    t.desel();
+    unsigned bad = 0;
+    for (u32 i = 0; i < 128; ++i) bad += t.at(0x0C00 + i) != i ? 1U : 0U;
+    CHECK_EQ(bad, 0U);
+}
+
+TEST_CASE(memcard_errors_are_reported) {
+    CardRig t;
+    t.sel();
+    CHECK(t.w(0x10, 0x85000000U));
+    CHECK(!t.w(0x0C, 0x05U)); // read ID 0x85: not implemented
+    CHECK(t.exi.mmio_error().find("command 85 is not implemented") != std::string::npos);
+    t.desel();
+    t.sel();
+    CHECK(!t.w(0x0C, 0x01U)); // read before a command
+    CHECK(t.exi.mmio_error().find("before a command") != std::string::npos);
+    t.desel();
+    std::string err;
+    core::Scheduler s2;
+    CHECK(MemoryCard::create(s2, kCpuHz, 12, {}, err) == nullptr);
+    CHECK(err.find("4, 8, 16") != std::string::npos);
+    CHECK(MemoryCard::create(s2, kCpuHz, 4, std::vector<u8>(100), err) == nullptr);
+    CHECK(err.find("needs") != std::string::npos);
+    auto blank = MemoryCard::create(s2, kCpuHz, 4, {}, err);
+    CHECK(blank != nullptr);
+    if (blank) CHECK_EQ(blank->image()[12345], 0xFFU);
+}
+
+TEST_CASE(system_memory_card_slots) {
+    system::System sys({});
+    std::string err;
+    CHECK(sys.insert_memory_card(0, 16, {}, err));
+    CHECK(!sys.insert_memory_card(0, 16, {}, err));
+    CHECK(!sys.insert_memory_card(2, 16, {}, err));
+    CHECK(sys.memory_card(0) != nullptr);
+    CHECK(sys.memory_card(1) == nullptr);
+    u32 v = 0;
+    CHECK(sys.bus().read32(0x0C006800U, v) == mem::BusStatus::Ok);
+    CHECK_EQ(v & (exi::CSR_EXT | exi::CSR_EXTINT), exi::CSR_EXT | exi::CSR_EXTINT);
+    CHECK(sys.bus().read32(0x0C006814U, v) == mem::BusStatus::Ok);
+    CHECK_EQ(v & exi::CSR_EXT, 0U); // slot B empty
 }
 
 // ------------------------------------------------------------ system integration

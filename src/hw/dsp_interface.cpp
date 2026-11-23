@@ -5,8 +5,9 @@
 
 namespace orca::hw {
 
-DspInterface::DspInterface(mem::Bus& bus, core::Scheduler& scheduler, ProcessorInterface& pi, bool has_aram)
-    : bus_(bus), scheduler_(scheduler), pi_(pi) {
+DspInterface::DspInterface(mem::Bus& bus, core::Scheduler& scheduler, ProcessorInterface& pi, bool has_aram,
+                           u64 cpu_hz)
+    : bus_(bus), scheduler_(scheduler), pi_(pi), cpu_hz_(cpu_hz), wii_(!has_aram) {
     if (has_aram) aram_.assign(dsp::kAramSize, 0U);
 }
 
@@ -70,7 +71,7 @@ bool DspInterface::read16(u32 offset, u16& v) {
     case dsp::CPUMBL: v = core_.cpu_read_dmb_low(); return true;   // reading the low half consumes the mail
     case dsp::CSR: v = csr_; return true;
     case dsp::AR_SIZE: v = ar_size_; return true;
-    case dsp::AR_MODE: v = ar_mode_; return true;
+    case dsp::AR_MODE: v = 1; return true; // read-only: ARAM controller initialised
     case dsp::AR_REFRESH: v = ar_refresh_; return true;
     case dsp::MMADDR_H: v = static_cast<u16>(mmaddr_ >> 16); return true;
     case dsp::MMADDR_L: v = static_cast<u16>(mmaddr_); return true;
@@ -81,7 +82,7 @@ bool DspInterface::read16(u32 offset, u16& v) {
     case dsp::AIDMA_H: v = aidma_h_; return true;
     case dsp::AIDMA_L: v = aidma_l_; return true;
     case dsp::AIDMA_CTRL: v = aidma_ctrl_; return true;
-    case dsp::AIDMA_LEFT: v = 0; return true; // playback never starts (see header)
+    case dsp::AIDMA_LEFT: v = aid_remaining_ > 0U ? static_cast<u16>(aid_remaining_ - 1U) : 0U; return true;
     default: return fail("DSP: register not implemented");
     }
 }
@@ -96,36 +97,81 @@ bool DspInterface::write16(u32 offset, u16 v) {
         const u16 w1c = dsp::CSR_AIDINT | dsp::CSR_ARINT | dsp::CSR_DSPINT;
         csr_ = static_cast<u16>((csr_ & ~rw) | (v & rw));
         csr_ = static_cast<u16>(csr_ & ~(v & w1c));
-        if ((v & dsp::CSR_RES) != 0U) dsp_reset((v & dsp::CSR_BIT11) != 0U); // completes at once (model)
+        if ((v & dsp::CSR_RES) != 0U) {
+            dsp_reset((v & dsp::CSR_BIT11) != 0U); // completes at once (model)
+            aidma_ctrl_ = 0;                        // Dolphin: RES clears the AI DMA control
+            ++aid_generation_;
+        }
         if ((v & dsp::CSR_PIINT) != 0U) core_.request_external_interrupt();
         core_.set_halted((csr_ & dsp::CSR_HALT) != 0U);
         update_interrupt();
         kick_dsp();
         return true;
     }
-    case dsp::AR_SIZE: ar_size_ = v; return true;
-    case dsp::AR_MODE: ar_mode_ = v; return true;
-    case dsp::AR_REFRESH: ar_refresh_ = v; return true;
+    case dsp::AR_SIZE: ar_size_ = static_cast<u16>(v & 0x007FU); return true;
+    case dsp::AR_MODE: return true; // read-only register: the write has no effect
+    case dsp::AR_REFRESH: ar_refresh_ = static_cast<u16>(v & 0x07FFU); return true;
     case dsp::MMADDR_H: case dsp::MMADDR_L: case dsp::ARADDR_H: case dsp::ARADDR_L: case dsp::CNT_H:
         if (aram_busy()) return fail("DSP: ARAM DMA registers written during a transfer");
-        if (offset == dsp::MMADDR_H) mmaddr_ = (mmaddr_ & 0xFFFFU) | (static_cast<u32>(v) << 16);
+        if (offset == dsp::MMADDR_H) mmaddr_ = (mmaddr_ & 0xFFFFU) | (static_cast<u32>(v & 0x03FFU) << 16);
         else if (offset == dsp::MMADDR_L) mmaddr_ = (mmaddr_ & 0xFFFF0000U) | (v & 0xFFE0U);
-        else if (offset == dsp::ARADDR_H) araddr_ = (araddr_ & 0xFFFFU) | (static_cast<u32>(v) << 16);
+        else if (offset == dsp::ARADDR_H) araddr_ = (araddr_ & 0xFFFFU) | (static_cast<u32>(v & 0x03FFU) << 16);
         else if (offset == dsp::ARADDR_L) araddr_ = (araddr_ & 0xFFFF0000U) | (v & 0xFFE0U);
-        else cnt_ = (cnt_ & 0xFFFFU) | (static_cast<u32>(v) << 16);
+        else cnt_ = (cnt_ & 0xFFFFU) | (static_cast<u32>(v & 0x83FFU) << 16);
         return true;
     case dsp::CNT_L:
         if (aram_busy()) return fail("DSP: ARAM DMA registers written during a transfer");
         cnt_ = (cnt_ & 0xFFFF0000U) | (v & 0xFFE0U);
         return start_aram_dma();
-    case dsp::AIDMA_H: aidma_h_ = v; return true;
+    case dsp::AIDMA_H: aidma_h_ = static_cast<u16>(v & (wii_ ? 0x1FFFU : 0x03FFU)); return true;
     case dsp::AIDMA_L: aidma_l_ = static_cast<u16>(v & 0xFFE0U); return true;
-    case dsp::AIDMA_CTRL:
-        if ((v & 0x8000U) != 0U) return fail("DSP: AI DMA playback is not implemented (its timing is not confirmed)");
+    case dsp::AIDMA_CTRL: {
+        const bool was = (aidma_ctrl_ & 0x8000U) != 0U;
         aidma_ctrl_ = v;
+        if (!was && (v & 0x8000U) != 0U) {
+            aid_cur_ = (static_cast<u32>(aidma_h_) << 16) | aidma_l_;
+            aid_remaining_ = static_cast<u16>(v & 0x7FFFU);
+            const u64 gen = ++aid_generation_;
+            scheduler_.schedule_in(200, "AI DMA start", [this](u64, u64) { csr_ |= dsp::CSR_AIDINT; update_interrupt(); });
+            scheduler_.schedule_in(aid_block_cycles(), "AI DMA block", [this, gen](u64, u64) {
+                if (gen == aid_generation_) audio_block();
+            });
+        } // clearing the enable stops the chain: audio_block() returns without rescheduling
         return true;
+    }
     default: return fail("DSP: register not implemented");
     }
+}
+
+u64 DspInterface::aid_block_cycles() const {
+    // 8 stereo samples per 32-byte block; sample period = divisor / 108 MHz
+    // (Dolphin AudioInterface.cpp: 48 kHz divisor 2248 on GameCube, 2250 on Wii; 32 kHz = 3/2 of it)
+    const bool is32 = aid_32khz_ ? aid_32khz_() : true;
+    const u64 d48 = wii_ ? 2250U : 2248U;
+    const u64 divisor = is32 ? d48 * 3U / 2U : d48;
+    return 8U * cpu_hz_ * divisor / 108000000ULL;
+}
+
+void DspInterface::audio_block() {
+    if ((aidma_ctrl_ & 0x8000U) == 0U) return;
+    std::array<u8, 32> block{};
+    if (bus_.is_ram(aid_cur_, 32U)) (void)bus_.dma_read(aid_cur_, block);
+    if (audio_sink_) audio_sink_(block);
+    ++audio_blocks_;
+    if (aid_remaining_ != 0U) {
+        --aid_remaining_;
+        aid_cur_ += 32U;
+    }
+    if (aid_remaining_ == 0U) { // relatch and interrupt
+        aid_cur_ = (static_cast<u32>(aidma_h_) << 16) | aidma_l_;
+        aid_remaining_ = static_cast<u16>(aidma_ctrl_ & 0x7FFFU);
+        csr_ |= dsp::CSR_AIDINT;
+        update_interrupt();
+    }
+    const u64 gen = aid_generation_;
+    scheduler_.schedule_in(aid_block_cycles(), "AI DMA block", [this, gen](u64, u64) {
+        if (gen == aid_generation_) audio_block();
+    });
 }
 
 bool DspInterface::start_aram_dma() {
@@ -150,8 +196,17 @@ void DspInterface::complete_aram_dma() {
     const u32 len = cnt_ & 0x7FFFFFE0U;
     if ((cnt_ & dsp::kCntToMain) != 0U)
         (void)bus_.dma_write(mmaddr_, std::span<const u8>(aram_.data() + araddr_, len));
-    else
+    else {
         (void)bus_.dma_read(mmaddr_, std::span<u8>(aram_.data() + araddr_, len));
+        // (AR_SIZE & 0xF) == 4: writes below 4 MiB also land 4 MiB higher (Dolphin DSP.cpp)
+        if ((ar_size_ & 0xFU) == 4U) {
+            for (u32 off = 0; off < len; off += 32U) {
+                const u32 a = araddr_ + off;
+                if (a < 0x400000U)
+                    for (u32 i = 0; i < 32U; ++i) aram_[(a + 0x400000U + i) & (dsp::kAramSize - 1U)] = aram_[a + i];
+            }
+        }
+    }
     mmaddr_ += len;
     araddr_ += len;
     cnt_ &= dsp::kCntToMain; // count reaches 0; the direction bit is kept (model)

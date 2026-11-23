@@ -1,6 +1,6 @@
-# Registro de pruebas — Milestone 011
+# Registro de pruebas — Milestone 012
 
-Todos los resultados son de ejecuciones reales del 2026-11-14 en este entorno, sobre una copia limpia de los fuentes entregados.
+Todos los resultados son de ejecuciones reales del 2026-11-15 en este entorno, sobre una copia limpia de los fuentes entregados.
 
 **Entorno:** Linux x86-64 (Intel Xeon @ 2.10 GHz, 2 núcleos) · GCC 13.3.0 · Clang 18.1.3 · CMake 3.28.3 · Ninja · LLVM `llvm-mc` 18.1.3.
 
@@ -8,9 +8,9 @@ Todos los resultados son de ejecuciones reales del 2026-11-14 en este entorno, s
 
 | Configuración | Compilación | Advertencias (`-Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion -Wshadow -Werror`) | CTest |
 |---|---|---|---|
-| GCC Release | OK | 0 | 15/15 pasan (3,9 s) |
-| Clang Release | OK | 0 | 15/15 pasan (3,2 s) |
-| GCC Debug + ASan + UBSan (`-fno-sanitize-recover=all`) | OK | 0 | 15/15 pasan (74,4 s) |
+| GCC Release (`-DORCA_WERROR=ON`) | OK | 0 | 15/15 pasan (4,3 s) |
+| Clang Release (`-DORCA_WERROR=ON`) | OK | 0 | 15/15 pasan (3,5 s) |
+| GCC Debug + ASan + UBSan (`-fno-sanitize-recover=all`, `-DORCA_WERROR=ON`) | OK | 0 | 15/15 pasan (79,5 s) |
 | Clang + ASan/UBSan | **NO EJECUTADO**: falta `compiler-rt` en el entorno | — | — |
 | Android NDK arm64-v8a | **NO EJECUTADO**: no hay NDK ni sysroot AArch64 | — | — |
 
@@ -25,14 +25,38 @@ Todos los resultados son de ejecuciones reales del 2026-11-14 en este entorno, s
 | reference (diferencial de enteros) | 6 | 152.001 | 0 |
 | **fpu_engine** (M004) | 9 | 101.990 | 0 |
 | **cpu_fpu** (M004) | 28 | 30.751 | 0 |
-| **system** (M005) | 13 | 108 | 0 |
+| **system** (M005) | 13 | 109 | 0 |
 | **programs** (M005) | 3 | 34 | 0 |
 | **disc** (M006) | 12 | 145 | 0 |
 | **av** (M007) | 12 | 292 | 0 |
-| **exi** (M008) | 16 | 481 | 0 |
-| **dsp_mi** (M009, actualizada en M010) | 13 | 385 | 0 |
-| **dsp_core** (M010 + M011) | 28 | 491 | 0 |
+| **exi** (M008 + tarjeta de memoria M012) | 23 | 1.445 | 0 |
+| **dsp_mi** (M009, actualizada en M010 y M012) | 15 | 458 | 0 |
+| **dsp_core** (M010 + M011 + M012) | 29 | 534 | 0 |
 | encodings (vs `llvm-mc`) | 189 instrucciones | 181 ensambladas + 8 desensambladas | 0 diferencias |
+
+### Acelerador, DMA de audio y tarjeta de memoria (M012)
+
+Fuentes de comportamiento: los archivos de Dolphin aportados por el usuario (solo como información; ver README). Todos los valores esperados se calcularon a mano.
+
+Acelerador (reescrito):
+- ADPCM con la fórmula de Dolphin: trama a mano (muestras y reinicio en ACSA), 84 muestras contra un decodificador de referencia aparte (0 diferencias), los dos casos especiales de fin (ACEA & 0xF = 0 y 1), saturación, ACDSAMP = 0 tras el fin y vuelta a funcionar al escribir YN2.
+- PCM: 16 bits con escala 1/1 (0x1234·2 = 0x2468, truncado sin saturar 16384·2 = 0x8000), escala 1/2048 con A1 = 0,5 (200 y 300), **escala 1/65536 (0x4000·0x4000 >> 16 = 0x1000)**, 8 bits extendido con ceros, PCM desde ACIN (decode 1 no avanza ACCA, decode 3 sí), escala 3 → parada.
+- Crudas: 16 bits con escritura (bit 31), lectura y ACRROV; 8 y 4 bits (nibble alto primero, direcciones en nibbles); escritura sin bit 31 ignorada; **desbordamiento de escritura: la tercera escritura cae en ACSA con el bit 31 conservado y ACRWOV pendiente**; tamaño 3 y ARAM ausente → parada.
+
+DMA de audio y ARAM:
+- Ritmo: 121 392 ciclos por bloque a 32 kHz y 80 928 a 48 kHz (8 · 486 MHz · 3372 o 2248 / 108 MHz); AIDINT a los 200 ciclos; 3 bloques leídos en orden, recarga y AIDINT al agotar la cuenta, AIDMA_LEFT; desactivar y RES detienen; máscara 0x1FFF en Wii; el bit 6 del AICR del `System` cambia el ritmo.
+- ARAM: AR_MODE = 1 de solo lectura, AR_REFRESH = 156 con máscara 0x7FF, AR_SIZE 0x7F, máscaras de los registros altos, 246 ciclos por unidad y el espejo de 4 MiB.
+
+Tarjeta de memoria (a través de los registros EXI reales):
+- Identificación: primer byte 0x80 y luego 0x00000010 (16 Mbit) / 0x00000004 (4 Mbit); estado inicial 0xC1; bit EXT con la tarjeta puesta.
+- Lectura 0x52 en 0x12345 (bytes de dirección 0x00 0x91 0x02 0x45) con 4 bytes de espera, y vuelta dentro del sector (0x21FE, 0x21FF, 0x2000).
+- DMA de 512 bytes desde 0x4200: 0 diferencias y **474 112 ciclos** (512 × 926).
+- Programa de página: los datos solo se escriben al liberar CS; DMA de 128 bytes en **631 936 ciclos** (128 × 4937); 128 bytes inmediatos llenan el búfer entero; programa sin datos termina igual.
+- Borrado: el bloque de 8 KiB queda a 0xFF y el siguiente intacto; BUSY hasta 5000 ciclos después, luego READY.
+- Interrupción: sin 0x81 no hay interrupción; con 0x81 = 1 llega EXIINT al terminar.
+- Errores: comando 0x85 → "command 85 is not implemented"; leer antes del comando; tamaño 12 Mbit; imagen de 100 bytes; tarjeta en blanco = 0xFF.
+- `System`: ranura ocupada, ranura 2 inexistente, EXT/EXTINT en el canal 0 y ranura B vacía.
+- `orca_run --card-a=/tmp/c.raw` con un archivo inexistente arranca con una tarjeta en blanco y no la guarda (no cambió); una imagen de 1000 bytes da "memory card size must be 4, 8, 16, 32, 64 or 128 Mbit". **No probado:** guardar una imagen modificada desde `orca_run` (ningún programa de prueba escribe en la tarjeta).
 
 ### Acelerador del DSP (M011)
 
@@ -205,6 +229,25 @@ I5 (liberar CS no reinicia la secuencia) sobrevivió y es **equivalente**: cada 
 **Acelerador (M011), 16 de 16 detectadas tras completar las pruebas:** A1 fin con >= · A2 sin recarga desde ACSA · A3 cabecera cada 8 nibbles · A4 cabecera de 1 nibble · A5 nibble bajo primero · A6 nibble sin signo · A7 sin el +1024 de redondeo · A8 sin saturación positiva · A9 historia actualizada en orden inverso · A10 índice de coeficientes desde la escala · A11 excepción equivocada · A12 escritura cruda sin exigir el bit 31 · A13 bytes de la palabra cruda invertidos · A14 excepciones sin IE · **A15 vector desplazado: no se detectaba al principio**, porque los vectores vacíos contenían ceros (NOP) y la ejecución resbalaba hasta el manejador correcto → ahora las pruebas llenan los vectores no usados con HALT · A16 PRED_SCALE mal extraído.
 
 **Total: 158 mutaciones detectadas.**
+
+
+### Mutaciones de M012 (39)
+
+Cada mutación se aplicó al fuente, se recompiló y se ejecutó la suite correspondiente (`/tmp/mut/run9.py` y `run10.py`).
+
+| Grupo | Mutaciones | Detectadas al principio | Tras añadir pruebas |
+|---|---|---|---|
+| Tarjeta de memoria (M1-M18) | 18 | 14 | 17 detectadas + 1 eliminada (M16: el campo `interrupt_set_` nunca se leía; se borró el código muerto) |
+| DMA de audio y ARAM (A1-A8) | 8 | 7 | 7 detectadas + 1 equivalente (A8: quitar el aumento de generación al desactivar no cambia nada porque `audio_block()` ya sale sin reprogramarse; se borró la línea redundante) |
+| Acelerador (C1-C13) | 13 | 11 | 13 detectadas |
+
+Supervivientes iniciales y prueba añadida: M3 (programa sin datos), M4 (búfer de 128 bytes), M5 (primer byte 0x80 de la identificación), M10 (interruptor de interrupción apagado), C5 (escala de ganancia 2), C9 (bit 31 tras el desbordamiento de escritura). **Total acumulado: 195 mutaciones detectadas.**
+
+## Errores encontrados durante M012
+
+- **Error real en mi script (no llegó a ningún milestone):** al insertar la DMA de audio, el reemplazo borró los casos de lectura de AIDMA_CTRL y AIDMA_LEFT de `read16`. Las pruebas lo detectaron; se restauraron las lecturas y la escritura se movió a `write16`.
+- **Advertencia solo en Debug:** `-Wconversion` en el operador ternario de la respuesta de identificación de la tarjeta (0x80 es `int`). Mi primera verificación no pasó `-DORCA_WERROR=ON` y la build terminó con 1 advertencia; se corrigió el código y se repitieron las tres configuraciones con `-Werror`: 0 advertencias.
+- **Errores en mis pruebas:** una comprobación sin sentido del bloque siguiente al borrado (usaba un `CHECK_NE` que no existe y una expresión siempre cierta); se cambió por el valor calculado (0x10). Las pruebas de M009 que esperaban el DMA de audio rechazado y AR_SIZE de 16 bits se sustituyeron por pruebas del nuevo comportamiento (cambio intencional).
 
 ## Errores encontrados durante M011
 

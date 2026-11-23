@@ -37,8 +37,9 @@ System::System(SystemConfig config) : config_(config), clocks_(clocks_for(config
     bus_.map_mmio("VI", hw::vi::kBase, 0x1000, *vi_);
     mi_ = std::make_unique<hw::MemoryInterface>(*pi_);
     bus_.map_mmio("MI", hw::mi::kBase, 0x1000, *mi_);
-    dsp_ = std::make_unique<hw::DspInterface>(bus_, scheduler_, *pi_, config_.console == Console::GameCube);
+    dsp_ = std::make_unique<hw::DspInterface>(bus_, scheduler_, *pi_, config_.console == Console::GameCube, clocks_.cpu_hz);
     bus_.map_mmio("DSP", hw::dsp::kBase, 0x1000, *dsp_);
+    dsp_->set_aid_rate_source([this] { return ai_->dma_rate_32khz(); });
 }
 
 System::~System() = default;
@@ -188,6 +189,18 @@ RunResult System::run(u64 max_cycles) {
     r.cycles = scheduler_.now() - start;
     r.instructions = cpu_->instructions_retired() - retired0;
     return r;
+}
+
+bool System::insert_memory_card(unsigned slot, u32 size_mbit, std::vector<u8> image, std::string& error) {
+    if (slot > 1U) { error = "memory card slot must be 0 (A) or 1 (B)"; return false; }
+    if (cards_[slot]) { error = "that slot already has a card"; return false; }
+    auto card = hw::MemoryCard::create(scheduler_, clocks_.cpu_hz, size_mbit, std::move(image), error);
+    if (!card) return false;
+    card->set_interrupt_callback([this, slot] { exi_->set_device_interrupt(slot); });
+    if (!exi_->attach(slot, 0, *card)) { error = "EXI slot is occupied"; return false; }
+    cards_[slot] = std::move(card);
+    exi_->notify_slot_change(slot); // EXTINT
+    return true;
 }
 
 } // namespace orca::system

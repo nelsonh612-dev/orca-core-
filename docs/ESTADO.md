@@ -1,4 +1,4 @@
-# Estado del proyecto — Milestone 011
+# Estado del proyecto — Milestone 012
 
 ## Funciones implementadas (todas con pruebas)
 
@@ -75,10 +75,30 @@
 - ACDRAW con tamaño de 16 bits: lectura de una palabra (dirección en palabras); escritura de 16 bits que exige el bit 31 de ACCA, como dice el manual.
 - Tras cada acceso, ACCA + 1; si pasa de ACEA se recarga ACSA y queda pendiente ACRROV, ACRWOV o ACSOV (niveles 3, 4 y 5; vectores 0x0006, 0x0008 y 0x000A).
 - `DspHost` da acceso a la ARAM de la consola; en Wii no hay ARAM y el acelerador se detiene con el motivo.
+- (M012 reemplazó las reglas de fin de rango y añadió PCM y lecturas de 8/4 bits: ver abajo.)
+
+**Acelerador del DSP, segunda versión (M012)** — fuente de comportamiento: `DSPAccelerator.cpp` de Dolphin, usado solo como información (el código se escribió desde cero; ver "Fuentes"):
+- Las direcciones van en unidades del tamaño de FORMAT: nibbles (4 bits, el alto primero), bytes (8 bits) o palabras (16 bits). ACCA se guarda con la máscara 0xBFFFFFFF; ACSA y ACEA con 0x3FFFFFFF.
+- ACDRAW lee el valor crudo extendido con ceros; si la dirección leída era ACEA, ACCA ← ACSA y queda pendiente ACRROV. Una escritura sin el bit 31 no se acepta; al escribir en ACEA, ACCA ← ACSA con el bit 31 y queda ACRWOV.
+- ACDSAMP ADPCM: muestra = sat16(2^escala · n + ((0x400 + A1·YN1 + A2·YN2) >> 11)); cabecera leída justo después del último nibble de la trama (ACCA + 2); los dos casos especiales de fin (ACEA & 0xF = 0 o 1) vuelven a ACSA sin excepción ni cabecera.
+- ACDSAMP PCM (FORMAT bits 3-2 = 1, 2 o 3): (GAIN·x >> g) + (A1·YN1 >> g) + (A2·YN2 >> g), truncado a 16 bits, con g = 11, 0 o 16 según la escala de ganancia; decode 1 y 3 toman el valor de ACIN y decode 1 no avanza ACCA.
+- Fin de rango de muestras: ACCA ← ACSA, ACSOV pendiente y ACDSAMP devuelve 0 hasta que se escribe YN2. PRED_SCALE se guarda con la máscara 0x7F.
+- Paradas claras: tamaño 3 de FORMAT y escala de ganancia 3.
+
+**DMA de audio y ARAM (M012)** — fuentes: `AudioInterface.cpp` y `DSP.cpp` de Dolphin, como información:
+- AIDMA_H con máscara 0x03FF en GameCube y 0x1FFF en Wii; AIDMA_L 0xFFE0. Al activar el bit 15 de AIDMA_CTRL se cargan la dirección y la cuenta de bloques de 32 bytes, AIDINT se activa 200 ciclos después y cada bloque se lee cada 8·f_CPU·divisor/108 MHz (divisor 2248/3372 en GC, 2250/3375 en Wii, según el bit 6 del AICR). Al llegar la cuenta a 0 se recargan y se activa AIDINT. AIDMA_LEFT = restantes − 1. Desactivar el bit o RES detiene la DMA. Los bloques se entregan a `set_audio_sink` (todavía no hay salida de sonido).
+- AR_MODE se lee como 1 y no se puede escribir; AR_REFRESH empieza en 156 (máscara 0x7FF); AR_SIZE máscara 0x7F; registros altos de DMA con máscara 0x03FF (CNT_H 0x83FF). Tiempo del DMA de ARAM: 246 ciclos por unidad de 32 bytes. Con (AR_SIZE & 0xF) = 4 las escrituras por debajo de 4 MiB se repiten 4 MiB más arriba.
+
+**Tarjeta de memoria (M012)** — fuentes: `EXI_DeviceMemoryCard.cpp` de Dolphin y gc-memcard-adapter (MIT); solo los comandos en los que coinciden:
+- `hw::MemoryCard` en EXI0/CS0 (ranura A) y EXI1/CS0 (ranura B) con `System::insert_memory_card`: imagen cruda de 4, 8, 16, 32, 64 o 128 Mbit (128 KiB por Mbit); una tarjeta nueva está llena de 0xFF. Activa EXT y EXTINT del canal.
+- Comandos: 0x00 identificación (0x80 y luego el tamaño en Mbit como u32), 0x52 lectura (dirección en 4 bytes: >> 17, >> 9, (>> 7) & 3, & 0x7F; datos desde el byte 9 con vuelta dentro del sector de 512 bytes), 0xF1 borrado de bloque de 8 KiB, 0xF2 programa de página (búfer de 128 bytes escrito al liberar CS), 0x83 estado, 0x89 borrar estado, 0x81 interruptor de interrupción.
+- Estado inicial 0xC1 (BUSY, UNLOCKED, READY); borrado y programa ponen BUSY y terminan 5000 ciclos después (READY, interrupción EXI si está activada).
+- DMA: lectura o escritura en la dirección actual, con 512 KiB/s de lectura y 96,1 KiB/s de escritura (f_CPU/524288 y f_CPU/98432 ciclos por byte).
+- Cualquier otro comando, y leer antes del byte de comando, detienen la emulación con el código. `orca_run --card-a=` / `--card-b=` cargan la imagen (o crean una de 16 Mbit) y la guardan si cambió.
 
 ## Funciones pendientes (en orden)
 
-1. **M012 — tarjeta de memoria, PCM del acelerador y DMA de audio:** la fórmula exacta de los formatos PCM (GAIN y su escala, combinación con YN1/YN2) y de las lecturas crudas de 8/4 bits no está documentada; hace falta una fuente más. La reproducción por DMA de audio necesita su ritmo confirmado; después, la tarjeta de memoria en EXI0/CS0 y EXI1/CS0. No se implementó porque las fuentes accesibles no fijan dos datos: el número de bytes de espera de la lectura 0x52 (depende del reloj EXI) y el formato de la respuesta de identificación (tamaño de la tarjeta). Una fuente (gc-memcard-adapter, licencia MIT, capturas de un bus real), todavía sin contrastar con otra, da los códigos 0x52 lectura, 0xF2 escritura, 0xF1 borrado de sector, 0x83 estado, 0x89 borrar estado, 0x81 interrupciones y 0x87 despertar, con la dirección empaquetada en 4 bytes (>> 17, >> 9, (>> 7) & 3, & 0x7F). Los juegos oficiales desbloquean la tarjeta con un microcódigo del DSP; ahora que el núcleo existe, ese camino se puede probar. También quedan el puerto serie 1 (EXI0/CS2), el AD16 (EXI2/CS0), el mapeo de la ROM en el vector de reset 0xFFF00000, la aplicación de la protección del MI y los comandos restantes de la DI.
+1. **Restos de M012 (sin hacer):** los demás comandos de la tarjeta que Dolphin nombra (ReadID, ReadErrorBuffer, WakeUp, Sleep, ArrayToBuffer, WriteBuffer, ExtraByteProgram, ChipErase; sus códigos numéricos están en una cabecera que no tengo, salvo 0x87 = despertar según gc-memcard-adapter) y el ID del flash en la SRAM; la salida de audio (los bloques del DMA de audio ya se leen pero nadie los reproduce); la mezcla de streaming del AI. También quedan el puerto serie 1 (EXI0/CS2), el AD16 (EXI2/CS0), el mapeo de la ROM en el vector de reset 0xFFF00000, la aplicación de la protección del MI y los comandos restantes de la DI.
 2. **M013 — GPU (CP/XF/BP/TEV) y M014 — JIT ARM64:** emisor ARM64 verificado con el desensamblador de LLVM, bloques básicos, asignación de registros, caché de bloques conectada a la invalidación del bus, y pruebas diferenciales intérprete vs JIT, que tienen que correr en un dispositivo ARM64.
 3. **Después:** GPU (CP/FIFO, XF, BP, TEV, EFB/XFB → Vulkan para Mali), DSP y audio, DI y discos, SI y controles, EXI, AI y los componentes de Wii (Hollywood, IOS, Bluetooth).
 
@@ -126,10 +146,13 @@ Son comportamientos que el PEM deja indefinidos o que el manual del 750CL no det
 | MI: valor del registro de tipo tras el reset | 0xFF (todos los canales lectura/escritura) |
 | DSP: RES | El reset termina al instante: se vacían los buzones y RES se lee como 0 |
 | DSP: leer la mitad baja del buzón hacia la CPU | Consume el mensaje (borra el bit 15) |
-| DSP: AR_SIZE, AR_MODE, AR_REFRESH | Se guardan y se leen tal cual, sin efecto |
-| ARAM: tiempo del DMA | `aram_cycles_per_unit` por unidad de 32 bytes (por defecto 0: termina en el siguiente paso del planificador) |
+| DSP: AR_SIZE, AR_MODE, AR_REFRESH | Valores y máscaras de Dolphin (AR_MODE = 1, AR_REFRESH = 156); solo el modo espejo de AR_SIZE tiene efecto |
+| ARAM: tiempo del DMA | 246 ciclos de CPU por unidad de 32 bytes (Dolphin); no se midió |
 | ARAM: bit de dirección tras el DMA | Se conserva; la cuenta queda en 0 |
-| DMA de audio: bytes restantes | 0 (la reproducción nunca se inicia) |
+| DMA de audio: momento de AIDINT al activar | 200 ciclos después (Dolphin); desactivar antes no lo cancela |
+| DMA de audio: ritmo | 8 muestras estéreo por bloque al ritmo del AI; el divisor de 48 kHz da 48 043 Hz según Dolphin |
+| AI: sentido del bit AISFR | **Contradicción entre fuentes:** Dolphin dice que está invertido respecto a YAGCD. El AI de M007 sigue a YAGCD; no se cambió |
+| AI: valor de AIDFR tras el reset | Dolphin lo inicia a 1 (32 kHz); Orca deja el AICR a 0 (48 kHz) |
 | DSP: tiempo | 1 instrucción = 1 ciclo de DSP; 6 ciclos de CPU por ciclo de DSP en GC y en Wii |
 | DSP: valores tras el reset | Registros a 0, $wr0-3 = 0xFFFF, $config = 0xFF ("usualmente" según el manual), PC = 0 (con bit 11) o 0x8000 |
 | DSP: HALT | El PC queda después de HALT (el manual no lo dice) |
@@ -142,11 +165,14 @@ Son comportamientos que el PEM deja indefinidos o que el manual del 750CL no det
 | DSP: DMA del DSP | Termina al instante; DSCR.t nunca se ve a 1 |
 | DSP: arranque con el bit 11 | HLE de lo que describe el manual (copia de 1024 bytes); el código real del IROM no se ejecuta |
 | DSP: IFcc falso seguido de una instrucción de 2 palabras, LOOP sobre una de 2 palabras o que cambia el flujo | Parada clara (no documentado) |
-| Acelerador: fórmula ADPCM | La del formato de archivo DSP-ADPCM (tres fuentes coinciden); no se midió en hardware que el decodificador de la consola redondee igual |
-| Acelerador: lectura de la cabecera de trama | Cuando ACCA es múltiplo de 16 nibbles; deducido de que las direcciones incluyen las cabeceras (DSPADPCM) |
-| Acelerador: excepciones ACRROV/ACRWOV/ACSOV | Se toman con $sr.IE = 1 (no durante LOOP); con IE = 0 quedan pendientes |
-| Acelerador: "cuando no quedan datos devuelve 0" | No se modela: ACCA siempre se recarga desde ACSA |
-| Acelerador: PCM, lecturas crudas de 8/4 bits, ARAM en Wii | Parada clara (no documentado) |
+| Acelerador: fórmula ADPCM | La de Dolphin (redondeo 0x400 sobre la predicción y escala sin redondeo); coincide con el formato DSP-ADPCM |
+| Acelerador: reglas de fin de rango, casos ACEA & 0xF = 0/1, ACDSAMP = 0 tras el fin | Las observaciones documentadas en Dolphin; no se midieron aquí |
+| Acelerador: escritura cruda en ACEA (ACRWOV) | **Elección propia:** la misma regla que la lectura; Dolphin no la documenta |
+| Acelerador: excepciones ACRROV/ACRWOV/ACSOV | Se toman con $sr.IE = 1 (no durante LOOP), primero el nivel más bajo; con IE = 0 quedan pendientes |
+| Acelerador: ARAM en Wii | Parada clara |
+| Tarjeta: interrupción | Flanco: cada comando terminado activa EXIINT una vez. Dolphin consulta un nivel que 0x89 borra; no se modela |
+| Tarjeta: desbloqueo de los juegos oficiales | No se emula: la tarjeta informa UNLOCKED desde el principio, como en Dolphin |
+| Tarjeta: tiempos de borrado/programa y de DMA | 5000 ciclos y las tasas de Dolphin; no se midieron |
 | DSP: accesos genéricos a $st0-$st3, desbordamiento de pilas (STOVF), aritmética de direcciones con $wrN ≠ 0xFFFF | Parada clara (no documentado) |
 
 ## Problemas conocidos
@@ -164,7 +190,7 @@ Son comportamientos que el PEM deja indefinidos o que el manual del 750CL no det
 | 9 | `lmw/stmw`, instrucciones de cadena y `lwarx/stwcx.` no pasan por la caché bloqueada | Bajo |
 | 10 | El DMA de la caché bloqueada y las ráfagas del gather pipe terminan al instante | Falta conectarlos al planificador con tiempos reales |
 | 11 | Coste fijo de 1 ciclo por instrucción: no hay modelo de pipeline ni de caché | El tiempo es determinista, no exacto al ciclo |
-| 12 | Existen PI, gather pipe, DI, VI, SI, AI, EXI (con RTC/SRAM/ROM), MI, la interfaz del DSP con ARAM y el núcleo del DSP; CP/PE (GPU) dan `MemoryFault` al tocarse | Un juego comercial se detiene al acceder a la tarjeta de memoria, cuando su microcódigo usa PCM en el acelerador o lee el IROM/COEF sin volcados, al iniciar el audio por DMA o al usar la GPU, siempre con una parada que explica el motivo |
+| 12 | Existen PI, gather pipe, DI, VI, SI, AI (con DMA de audio), EXI (con RTC/SRAM/ROM y tarjetas de memoria), MI, la interfaz del DSP con ARAM, el núcleo del DSP y su acelerador completo; CP/PE (GPU) dan `MemoryFault` al tocarse | Un juego comercial se detiene al usar la GPU, cuando su microcódigo lee el IROM/COEF sin volcados o al usar un comando de tarjeta no implementado, siempre con una parada que explica el motivo |
 | No hay salida de video (no se convierte el XFB a imagen) ni de audio | Sin frontend todavía |
 | DI: solo existe la lectura 0xA8 por DMA; los discos Wii, el audio streaming y los formatos comprimidos no están implementados | Parada clara con el comando |
 | 13 | Rendimiento en el anfitrión x86: unos 20 M instr/s en enteros y unos 4 M instr/s en FP. El motor FP cambia el modo de redondeo del anfitrión en cada operación | Esperado: el intérprete es la referencia de precisión; la velocidad vendrá del JIT |
