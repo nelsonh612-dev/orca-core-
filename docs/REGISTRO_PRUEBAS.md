@@ -1,4 +1,4 @@
-# Registro de pruebas — Milestone 009
+# Registro de pruebas — Milestone 010
 
 Todos los resultados son de ejecuciones reales del 2026-11-14 en este entorno, sobre una copia limpia de los fuentes entregados.
 
@@ -8,9 +8,9 @@ Todos los resultados son de ejecuciones reales del 2026-11-14 en este entorno, s
 
 | Configuración | Compilación | Advertencias (`-Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion -Wshadow -Werror`) | CTest |
 |---|---|---|---|
-| GCC Release | OK | 0 | 14/14 pasan (4,0 s) |
-| Clang Release | OK | 0 | 14/14 pasan (3,4 s) |
-| GCC Debug + ASan + UBSan (`-fno-sanitize-recover=all`) | OK | 0 | 14/14 pasan (78,4 s) |
+| GCC Release | OK | 0 | 15/15 pasan (4,1 s) |
+| Clang Release | OK | 0 | 15/15 pasan (3,3 s) |
+| GCC Debug + ASan + UBSan (`-fno-sanitize-recover=all`) | OK | 0 | 15/15 pasan (75,6 s) |
 | Clang + ASan/UBSan | **NO EJECUTADO**: falta `compiler-rt` en el entorno | — | — |
 | Android NDK arm64-v8a | **NO EJECUTADO**: no hay NDK ni sysroot AArch64 | — | — |
 
@@ -30,8 +30,30 @@ Todos los resultados son de ejecuciones reales del 2026-11-14 en este entorno, s
 | **disc** (M006) | 12 | 145 | 0 |
 | **av** (M007) | 12 | 292 | 0 |
 | **exi** (M008) | 16 | 481 | 0 |
-| **dsp_mi** (M009) | 14 | 398 | 0 |
+| **dsp_mi** (M009, actualizada en M010) | 13 | 385 | 0 |
+| **dsp_core** (M010) | 23 | 453 | 0 |
 | encodings (vs `llvm-mc`) | 189 instrucciones | 181 ensambladas + 8 desensambladas | 0 diferencias |
+
+### Núcleo del DSP (M010)
+
+Todas las codificaciones salen de los campos de bits del manual del DSP y todos los valores esperados se calcularon a mano con sus fórmulas:
+- Anchos de registro, modo 40 bits (extensión de signo y saturación a 0x7fff/0x8000), banderas de ADD/SUB con desbordamiento y acarreo según el manual, OS persistente, CLR, inmediatos, NEG (acarreo solo con 0), ABS, CMPIS.
+- Lógica sobre $acX.m (ANDI/ORI/XORI/NOT/ANDF/ANDCF, XORR/ORR/XORC/ANDC/ORC), desplazamientos inmediatos y por registro (lógicos frente a aritméticos en 40 bits), ASR16/LSL16/LSR16, CLRL.
+- Multiplicador: con/sin signo, ×2 con AM = 0, CLRP con los valores exactos, MUL/MULAC/MULMV/MULMVZ, MULX*, MULC*, MADD/MSUB, MADDX/MSUBX, MADDC/MSUBC, MULAXH, MOVP/MOVNP/MOVPZ, ADDPAXZ, ADDP/SUBP.
+- Control: BLOOPI/LOOPI/BLOOP/LOOP (incluido contador 0), CALL/RET, Jcc, IFcc, CALLR/JMPR, RETcc/RTIcc no tomados, las 16 condiciones con 24 combinaciones de $sr, interrupción externa con RTI y enmascarada sin EIE.
+- Direccionamiento: ILRR/ILRRD/ILRRI/ILRRN, LRR/LRRD/LRRI/LRRN, SRR/SRRD/SRRI/SRRN, LRS/SRS/SRSH con $config, LRIS, SBSET/SBCLR, ADDARN/SUBARN/DAR/IAR.
+- Los 22 tipos de opcode extendido, cada uno con sus registros, memoria y punteros; los dos ejemplos del manual (0x6113 intercambia, 0x7660 hace OR).
+- IFX: buzones en ambos sentidos con el bit M, DIRQ, DMA del DSP en ambos sentidos.
+- 15 paradas claras con el motivo esperado (opcode desconocido, $st genérico, $wr, IROM/COEF sin volcado, COEF de solo lectura, direcciones no documentadas, acelerador, subdesbordamiento y desbordamiento de pila, LOOP sobre 2 palabras, longitud de DMA impar).
+- Integración: la interfaz del DSP arranca un microcódigo con el valor del SDK 0x08AD, intercambia mensajes y el DSP termina con HALT; un fallo del DSP detiene `System::run` con `device_stop`.
+
+Programa `dsp_suite` (clang, 750): copia un microcódigo a 0x01000000, escribe 0x08AD y luego 0 en el CSR, recibe el primer mensaje, envía uno y recibe la respuesta.
+
+| Valor | Esperado | Obtenido |
+|---|---|---|
+| Primer mensaje (bits 30-16 / 15-0) | 0x5CD1 / 0x0000 | 0x5CD1 / 0x0000 |
+| Respuesta a 0x92345678 (alto sin el bit 15, bajo + 1) | 0x1234 / 0x5679 | 0x1234 / 0x5679 |
+| DSPINT tras DIRQ / HALT tras la instrucción HALT | 0x80 / 0x4 | 0x80 / 0x4 |
 
 ### MI, interfaz del DSP, ARAM y FST (M009)
 
@@ -169,7 +191,15 @@ I5 (liberar CS no reinicia la secuencia) sobrevivió y es **equivalente**: cada 
 
 **MI, DSP/ARAM y FST (M009), 21 de 21 detectadas tras completar las pruebas:** M1 la causa no se limpia escribiendo 1 · M2 el tipo 2 no genera aviso · M3 máscara sin limitar a 5 bits · M4 la dirección de fallo se puede escribir · **D1 escribir el CSR borra todas las interrupciones y D2 ARINT ignora su máscara: no se detectaban al principio** → se añadió `dsp_acking_one_interrupt_keeps_the_others` · D3 leer el buzón no consume el mensaje · D4 se aceptan mensajes con el DSP en marcha · D5 dirección del DMA invertida · D6 MMADDR no avanza · D7 la cuenta no vuelve a 0 · D8 sin bit de ocupado · D9 ARADDR sin alinear · D10 tiempo por unidad de 16 bytes · D11 el bit de ocupado se puede escribir · D12 no se comprueba el final del DMA dentro de la ARAM · F1 cierre de directorios con error de uno · F2 un subdirectorio puede pasarse del final de su padre · **F3 solo se comprueba el inicio de los archivos y F4 offsets de nombre de 16 bits: no se detectaban al principio** → se añadieron un archivo que empieza dentro del disco y termina fuera, y `fst_name_offsets_use_24_bits` · F5 nombres sin terminar.
 
-**Total: 110 mutaciones detectadas.**
+**Núcleo del DSP (M010), 32 de 32 detectadas tras completar las pruebas:** Q1 acarreo de la resta con > · Q2 sin desbordamiento · **Q3 OS deja de ser persistente: no se detectaba al principio** → se añadió `dsp_os_is_sticky_and_orc_keeps_flags` · Q4 TB sobre los bits 39/38 · Q5 AM invertido · Q6 siempre con signo · Q7 extensión de signo también en modo 16 bits · Q8 sin saturación · Q9 $acX.h sin extensión de signo · Q10 condición G sin Z · Q11 condición xA con AND · Q12 sin la regla OR · Q13 LS/SL intercambiados · Q14 N/M intercambiados · Q15 mitades de 'LDAX intercambiadas · Q16 el nibble 3 sin extensión · Q17 extensión de 8 bits en el nibble 3 · Q18 LOOP con una iteración menos · Q19 fin de BLOOP comparado con el PC siguiente · Q20 leer CMBL no borra M · Q21 escribir DMBL no activa M · Q22 bits de DSCR intercambiados · Q23 CLRL sin redondeo a par · Q24 CLRP a ceros · Q25 LSR aritmético · Q26 sin comprobar $wr · Q27 interrupción sin EIE · Q28 el bit 8 de $sr se puede escribir · Q29 campos de CMPAXH intercambiados · **Q30 ORC actualiza banderas: no se detectaba al principio** → misma prueba nueva · Q31 $prod sin m2 · Q32 RES ignora el bit 11. Tres mutaciones se reescribieron porque no compilaban con `-Werror` y tres porque no encontraban el texto; se reportan con su versión final.
+
+**Total: 142 mutaciones detectadas.**
+
+## Errores encontrados durante M010
+
+- No apareció ningún error en el núcleo del DSP durante las pruebas (todas las fallas fueron de las pruebas).
+- **Errores en mis pruebas, corregidos antes de entregar:** siete codificaciones mal escritas a mano (ASR $ac1 escrito como LSR; DEC $ac1, INC $ac1 ×2 y MOVP $ac1 ×2 escritos como la versión de $ac0 más una extensión; CALLR con $ar1 en lugar de $ar0); una expectativa de CLRL que seguía la nota del manual en vez de su operación; esperar que DMBH conservara el bit 15 (el bit 15 es la bandera de mensaje pendiente); y pedir una interrupción antes de un reset que la borra.
+- La prueba de buzones de M009 se reescribió porque ahora los buzones van al núcleo real en vez de detenerse con "DSP core not emulated".
 
 ## Errores encontrados durante M009
 

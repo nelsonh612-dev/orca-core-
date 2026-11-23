@@ -54,6 +54,8 @@ struct RunResult {
     u64 cycles{0};
     u64 instructions{0};
     bool reached_stop_pc{false}; // run_until / call_guest only
+    bool device_stop{false};     // a device (the DSP core) hit a host stop
+    std::string device_error;
 };
 
 class System {

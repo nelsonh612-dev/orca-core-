@@ -17,17 +17,45 @@ void DspInterface::update_interrupt() {
     if (a || r || d) pi_.raise(pi::CAUSE_DSP); else pi_.lower(pi::CAUSE_DSP);
 }
 
-void DspInterface::dsp_send_mail(u32 mail) { mail_to_cpu_ = mail | 0x80000000U; }
+bool DspInterface::dsp_dma_read(u32 pa, std::span<u8> out) {
+    return bus_.is_ram(pa, static_cast<u32>(out.size())) && bus_.dma_read(pa, out) == mem::BusStatus::Ok;
+}
+bool DspInterface::dsp_dma_write(u32 pa, std::span<const u8> in) {
+    return bus_.is_ram(pa, static_cast<u32>(in.size())) && bus_.dma_write(pa, in) == mem::BusStatus::Ok;
+}
+
+void DspInterface::dsp_reset(bool boot_from_ram) {
+    core_.clear_mailboxes();
+    if (boot_from_ram) {
+        // DSP manual "Initialization": 1024 bytes from main memory 0x01000000 to IMEM 0.
+        std::array<u8, 1024> boot{};
+        if (bus_.is_ram(0x01000000U, 1024U)) (void)bus_.dma_read(0x01000000U, boot);
+        for (unsigned i = 0; i < 512; ++i)
+            core_.iram()[i] = static_cast<u16>((static_cast<u16>(boot[2 * i]) << 8) | boot[2 * i + 1]);
+        core_.reset(0x0000);
+    } else {
+        core_.reset(::orca::dsp::kIromBase);
+    }
+}
+
+void DspInterface::kick_dsp() {
+    if (slice_pending_ || core_.halted() || core_.failed()) return;
+    slice_pending_ = true;
+    scheduler_.schedule_in(kSliceInstructions * kCpuCyclesPerDspCycle, "DSP slice", [this](u64, u64) { run_slice(); });
+}
+
+void DspInterface::run_slice() {
+    slice_pending_ = false;
+    (void)core_.run(kSliceInstructions);
+    kick_dsp();
+}
 
 bool DspInterface::read16(u32 offset, u16& v) {
     switch (offset) {
-    case dsp::DSPMBH: v = static_cast<u16>(mail_to_dsp_ >> 16); return true;
-    case dsp::DSPMBL: v = static_cast<u16>(mail_to_dsp_); return true;
-    case dsp::CPUMBH: v = static_cast<u16>(mail_to_cpu_ >> 16); return true;
-    case dsp::CPUMBL:
-        v = static_cast<u16>(mail_to_cpu_);
-        mail_to_cpu_ &= 0x7FFFFFFFU; // reading the low half consumes the mail
-        return true;
+    case dsp::DSPMBH: v = core_.cpu_read_cmb_high(); return true; // bit 15: not yet read by the DSP
+    case dsp::DSPMBL: v = core_.cpu_read_cmb_low(); return true;
+    case dsp::CPUMBH: v = core_.cpu_read_dmb_high(); return true;
+    case dsp::CPUMBL: v = core_.cpu_read_dmb_low(); return true;   // reading the low half consumes the mail
     case dsp::CSR: v = csr_; return true;
     case dsp::AR_SIZE: v = ar_size_; return true;
     case dsp::AR_MODE: v = ar_mode_; return true;
@@ -48,29 +76,19 @@ bool DspInterface::read16(u32 offset, u16& v) {
 
 bool DspInterface::write16(u32 offset, u16 v) {
     switch (offset) {
-    case dsp::DSPMBH: mail_to_dsp_ = (mail_to_dsp_ & 0x0000FFFFU) | (static_cast<u32>(v) << 16); return true;
-    case dsp::DSPMBL: {
-        mail_to_dsp_ = (mail_to_dsp_ & 0xFFFF0000U) | v;
-        if ((csr_ & dsp::CSR_HALT) == 0U) {
-            char buf[128];
-            std::snprintf(buf, sizeof buf, "DSP: mail 0x%08X sent to a running DSP, but the DSP core is not emulated",
-                          mail_to_dsp_);
-            return fail(buf);
-        }
-        return true; // a halted DSP leaves the mail pending
-    }
+    case dsp::DSPMBH: core_.cpu_write_cmb_high(v); return true;
+    case dsp::DSPMBL: core_.cpu_write_cmb_low(v); return true; // mail ready for the DSP
     case dsp::CPUMBH: case dsp::CPUMBL: return fail("DSP: the CPU mailbox is read-only");
     case dsp::CSR: {
-        if ((v & dsp::CSR_PIINT) != 0U) return fail("DSP: PIINT (interrupt to the DSP) needs the DSP core, not emulated");
         const u16 rw = dsp::CSR_HALT | dsp::CSR_AIDINTMASK | dsp::CSR_ARINTMASK | dsp::CSR_DSPINTMASK | dsp::CSR_BIT11;
         const u16 w1c = dsp::CSR_AIDINT | dsp::CSR_ARINT | dsp::CSR_DSPINT;
         csr_ = static_cast<u16>((csr_ & ~rw) | (v & rw));
         csr_ = static_cast<u16>(csr_ & ~(v & w1c));
-        if ((v & dsp::CSR_RES) != 0U) { // reset completes at once (model)
-            mail_to_dsp_ = 0;
-            mail_to_cpu_ = 0;
-        }
+        if ((v & dsp::CSR_RES) != 0U) dsp_reset((v & dsp::CSR_BIT11) != 0U); // completes at once (model)
+        if ((v & dsp::CSR_PIINT) != 0U) core_.request_external_interrupt();
+        core_.set_halted((csr_ & dsp::CSR_HALT) != 0U);
         update_interrupt();
+        kick_dsp();
         return true;
     }
     case dsp::AR_SIZE: ar_size_ = v; return true;

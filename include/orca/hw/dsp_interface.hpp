@@ -21,15 +21,21 @@
 //             bits 0-14 length / 32), 0x3A AI DMA bytes left
 // PI DSP cause = (AIDINT & AIDINTMASK) | (ARINT & ARINTMASK) | (DSPINT & DSPINTMASK).
 //
-// There is no DSP core yet. Clear device errors instead of invented
-// behaviour: delivering a mail to a DSP that is not halted, PIINT (interrupt
-// to the DSP), starting AI DMA playback (its timing is not confirmed), ARAM
+// The DSP core (orca/dsp/dsp_core.hpp) runs in slices driven by the
+// scheduler, 1 DSP instruction per 6 CPU cycles (81 MHz DSP on a 486 MHz
+// GameCube; the same ratio is used on Wii). Mailboxes connect to the core.
+// RES resets the core; with bit 11 also set, the 1024 bytes at main memory
+// 0x01000000 are copied to IRAM 0 and the DSP starts at 0 (DSP manual,
+// "Initialization", from libogc __dsp_bootstrap). Without bit 11 the reset
+// starts at IROM 0x8000 (needs an IROM dump). HALT in CSR stops the core; the
+// HALT instruction sets it. PIINT requests the DSP external interrupt.
+// Clear device errors: starting AI DMA playback (timing not confirmed), ARAM
 // DMA with length 0, outside RAM or outside ARAM, and undocumented offsets.
-// Model choices (docs/ESTADO.md): RES completes at once (DSP state cleared,
-// RES reads 0); an ARAM DMA takes `aram_cycles_per_unit` per 32-byte unit
-// (default 0 = finishes at the next scheduler step, still asynchronous).
+// Model choices (docs/ESTADO.md): RES completes at once (RES reads 0); an
+// ARAM DMA takes `aram_cycles_per_unit` per 32-byte unit (default 0).
 #pragma once
 #include "orca/core/scheduler.hpp"
+#include "orca/dsp/dsp_core.hpp"
 #include "orca/hw/processor_interface.hpp"
 
 #include <array>
@@ -52,7 +58,7 @@ inline constexpr u16 CSR_RES = 1U << 0, CSR_PIINT = 1U << 1, CSR_HALT = 1U << 2,
 inline constexpr u32 kCntToMain = 0x80000000U;
 } // namespace dsp
 
-class DspInterface final : public mem::MmioDevice {
+class DspInterface final : public mem::MmioDevice, private ::orca::dsp::DspHost {
 public:
     // `has_aram` = false on Wii (no ARAM there).
     DspInterface(mem::Bus& bus, core::Scheduler& scheduler, ProcessorInterface& pi, bool has_aram);
@@ -61,10 +67,12 @@ public:
     std::vector<u8>& aram() noexcept { return aram_; }
     bool aram_busy() const noexcept { return (csr_ & dsp::CSR_DMABUSY) != 0U; }
     u16 csr() const noexcept { return csr_; }
-    // Mail from the DSP side (for a future DSP core / HLE and for tests).
-    void dsp_send_mail(u32 mail);
-    u32 pending_mail_to_dsp() const noexcept { return mail_to_dsp_; }
+    ::orca::dsp::DspCore& core() noexcept { return core_; }
+    bool dsp_failed() const noexcept { return core_.failed(); }
+    const std::string& dsp_error() const noexcept { return core_.error(); }
     void raise_dspint() { csr_ |= dsp::CSR_DSPINT; update_interrupt(); }
+    static constexpr u64 kCpuCyclesPerDspCycle = 6;
+    static constexpr u64 kSliceInstructions = 100;
 
     bool mmio_read(u32 offset, unsigned size, u64& value) override;
     bool mmio_write(u32 offset, unsigned size, u64 value) override;
@@ -78,14 +86,23 @@ private:
     void complete_aram_dma();
     void update_interrupt();
     bool fail(std::string why) { last_error_ = std::move(why); return false; }
+    void dsp_reset(bool boot_from_ram);
+    void kick_dsp();
+    void run_slice();
+    // DspHost
+    bool dsp_dma_read(u32 physical, std::span<u8> out) override;
+    bool dsp_dma_write(u32 physical, std::span<const u8> in) override;
+    void dsp_interrupt_cpu() override { raise_dspint(); }
+    void dsp_halted() override { csr_ |= dsp::CSR_HALT; }
 
     mem::Bus& bus_;
     core::Scheduler& scheduler_;
     ProcessorInterface& pi_;
     std::vector<u8> aram_;
     u64 aram_cycles_per_unit_{0};
-    u32 mail_to_dsp_{0}, mail_to_cpu_{0};
-    u16 csr_{0}, ar_size_{0}, ar_mode_{0}, ar_refresh_{0};
+    ::orca::dsp::DspCore core_{*this};
+    bool slice_pending_{false};
+    u16 csr_{dsp::CSR_HALT}, ar_size_{0}, ar_mode_{0}, ar_refresh_{0};
     u32 mmaddr_{0}, araddr_{0}, cnt_{0};
     u16 aidma_h_{0}, aidma_l_{0}, aidma_ctrl_{0};
     std::string last_error_;

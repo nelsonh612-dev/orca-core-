@@ -81,130 +81,120 @@ TEST_CASE(mi_protection_is_reported_as_not_enforced) {
 // ------------------------------------------------------------ DSP CSR / mailboxes
 TEST_CASE(dsp_csr_masks_w1c_and_pi_cause) {
     Rig t;
-    CHECK_EQ(t.dr(dsp::CSR), 0U);
-    CHECK(t.dw(dsp::CSR, dsp::CSR_HALT | dsp::CSR_AIDINTMASK | dsp::CSR_ARINTMASK | dsp::CSR_DSPINTMASK | dsp::CSR_DMABUSY));
-    CHECK_EQ(t.dr(dsp::CSR), dsp::CSR_HALT | dsp::CSR_AIDINTMASK | dsp::CSR_ARINTMASK | dsp::CSR_DSPINTMASK); // busy is RO
+    CHECK_EQ(t.dr(hw::dsp::CSR), hw::dsp::CSR_HALT); // the DSP starts halted (model)
+    CHECK(t.dw(hw::dsp::CSR, hw::dsp::CSR_HALT | hw::dsp::CSR_AIDINTMASK | hw::dsp::CSR_ARINTMASK | hw::dsp::CSR_DSPINTMASK | hw::dsp::CSR_DMABUSY));
+    CHECK_EQ(t.dr(hw::dsp::CSR), hw::dsp::CSR_HALT | hw::dsp::CSR_AIDINTMASK | hw::dsp::CSR_ARINTMASK | hw::dsp::CSR_DSPINTMASK); // busy is RO
     t.dsp.raise_dspint();
     CHECK(t.cause(pi::CAUSE_DSP));
-    CHECK(t.dw(dsp::CSR, dsp::CSR_HALT | dsp::CSR_DSPINT)); // w1c, masks cleared
+    CHECK(t.dw(hw::dsp::CSR, hw::dsp::CSR_HALT | hw::dsp::CSR_DSPINT)); // w1c, masks cleared
     CHECK(!t.cause(pi::CAUSE_DSP));
-    CHECK_EQ(t.dr(dsp::CSR), dsp::CSR_HALT);
+    CHECK_EQ(t.dr(hw::dsp::CSR), hw::dsp::CSR_HALT);
     t.dsp.raise_dspint();
     CHECK(!t.cause(pi::CAUSE_DSP)); // masked: status latched, no PI cause
-    CHECK_EQ(t.dr(dsp::CSR) & dsp::CSR_DSPINT, dsp::CSR_DSPINT);
-    CHECK(!t.dw(dsp::CSR, dsp::CSR_PIINT));
-    CHECK(t.dsp.mmio_error().find("PIINT") != std::string::npos);
+    CHECK_EQ(t.dr(hw::dsp::CSR) & hw::dsp::CSR_DSPINT, hw::dsp::CSR_DSPINT);
 }
 
-TEST_CASE(dsp_mailboxes_without_a_dsp_core) {
+TEST_CASE(dsp_mailboxes_connect_to_the_core) {
     Rig t;
-    // halted DSP: the mail stays pending (bit 31)
-    CHECK(t.dw(dsp::CSR, dsp::CSR_HALT));
-    CHECK(t.dw(dsp::DSPMBH, 0x8012));
-    CHECK(t.dw(dsp::DSPMBL, 0x3456));
-    CHECK_EQ(t.dsp.pending_mail_to_dsp(), 0x80123456U);
-    CHECK_EQ(t.dr(dsp::DSPMBH) & 0x8000U, 0x8000U);
-    // running DSP: delivery needs the core -> clear stop
-    CHECK(t.dw(dsp::CSR, 0));
-    CHECK(t.dw(dsp::DSPMBH, 0x8000));
-    CHECK(!t.dw(dsp::DSPMBL, 0x0001));
-    CHECK(t.dsp.mmio_error().find("not emulated") != std::string::npos);
-    // CPU mailbox: empty, then a mail from the DSP side; reading the low half consumes it
-    CHECK_EQ(t.dr(dsp::CPUMBH), 0U);
-    t.dsp.dsp_send_mail(0x0071FEEDU);
-    CHECK_EQ(t.dr(dsp::CPUMBH), 0x8071U);
-    CHECK_EQ(t.dr(dsp::CPUMBL), 0xFEEDU);
-    CHECK_EQ(t.dr(dsp::CPUMBH), 0x0071U);
-    CHECK(!t.dw(dsp::CPUMBH, 0));
-    // RES clears the mailboxes and reads back 0
-    t.dsp.dsp_send_mail(1);
-    CHECK(t.dw(dsp::CSR, dsp::CSR_RES | dsp::CSR_HALT));
-    CHECK_EQ(t.dr(dsp::CSR) & dsp::CSR_RES, 0U);
-    CHECK_EQ(t.dr(dsp::CPUMBH), 0U);
-    CHECK_EQ(t.dsp.pending_mail_to_dsp(), 0U);
-}
-
-TEST_CASE(dsp_acking_one_interrupt_keeps_the_others) {
-    Rig t;
-    CHECK(t.dw(dsp::CSR, dsp::CSR_HALT)); // ARINTMASK off
-    CHECK(t.dw32(dsp::MMADDR_H, 0x1000U));
-    CHECK(t.dw32(dsp::ARADDR_H, 0));
-    CHECK(t.dw32(dsp::CNT_H, 0x20U));
+    // CPU -> DSP: the pending bit (31) shows until the DSP reads CMBL
+    CHECK(t.dw(hw::dsp::DSPMBH, 0x8012));
+    CHECK(t.dw(hw::dsp::DSPMBL, 0x3456));
+    CHECK_EQ(t.dr(hw::dsp::DSPMBH), 0x8012U);
+    CHECK_EQ(t.dr(hw::dsp::DSPMBL), 0x3456U);
+    CHECK_EQ(t.dsp.core().cpu_read_cmb_high(), 0x8012U);
+    // DSP -> CPU: empty, then written by DSP code; reading the low half consumes it
+    CHECK_EQ(t.dr(hw::dsp::CPUMBH), 0U);
+    t.dsp.core().iram()[0] = 0x16FC; t.dsp.core().iram()[1] = 0x0071; // SI @DMBH
+    t.dsp.core().iram()[2] = 0x16FD; t.dsp.core().iram()[3] = 0xFEED; // SI @DMBL
+    t.dsp.core().iram()[4] = 0x0021;                                  // HALT
+    CHECK(t.dw(hw::dsp::CSR, hw::dsp::CSR_RES | hw::dsp::CSR_BIT11 | hw::dsp::CSR_HALT)); // boot copies main 0x01000000
+    CHECK_EQ(t.dsp.core().iram()[0], 0U); // the boot DMA replaced IRAM with main memory (zeros here)
+    t.dsp.core().iram()[0] = 0x16FC; t.dsp.core().iram()[1] = 0x0071;
+    t.dsp.core().iram()[2] = 0x16FD; t.dsp.core().iram()[3] = 0xFEED;
+    t.dsp.core().iram()[4] = 0x0021;
+    CHECK(t.dw(hw::dsp::CSR, 0)); // release HALT
     t.settle();
-    t.dsp.raise_dspint();
-    CHECK_EQ(t.dr(dsp::CSR) & (dsp::CSR_ARINT | dsp::CSR_DSPINT), dsp::CSR_ARINT | dsp::CSR_DSPINT);
-    CHECK(!t.cause(pi::CAUSE_DSP)); // ARINT and DSPINT both masked
-    CHECK(t.dw(dsp::CSR, dsp::CSR_HALT | dsp::CSR_ARINTMASK));
-    CHECK(t.cause(pi::CAUSE_DSP)); // only ARINT's mask is on
-    CHECK(t.dw(dsp::CSR, dsp::CSR_HALT | dsp::CSR_ARINTMASK | dsp::CSR_ARINT)); // ack ARINT only
-    CHECK_EQ(t.dr(dsp::CSR) & (dsp::CSR_ARINT | dsp::CSR_DSPINT), dsp::CSR_DSPINT);
-    CHECK(!t.cause(pi::CAUSE_DSP));
+    CHECK_EQ(t.dr(hw::dsp::CPUMBH), 0x8071U);
+    CHECK_EQ(t.dr(hw::dsp::CPUMBL), 0xFEEDU);
+    CHECK_EQ(t.dr(hw::dsp::CPUMBH), 0x0071U);
+    CHECK(!t.dw(hw::dsp::CPUMBH, 0));
+    CHECK_EQ(t.dr(hw::dsp::CSR) & hw::dsp::CSR_HALT, hw::dsp::CSR_HALT); // set by the HALT instruction
+    CHECK_EQ(t.dr(hw::dsp::CSR) & hw::dsp::CSR_RES, 0U);
+    // RES clears the mailboxes
+    CHECK(t.dw(hw::dsp::DSPMBH, 0x8000));
+    CHECK(t.dw(hw::dsp::DSPMBL, 0x0001));
+    CHECK(t.dw(hw::dsp::CSR, hw::dsp::CSR_RES | hw::dsp::CSR_HALT));
+    CHECK_EQ(t.dr(hw::dsp::DSPMBH), 0U);
+    // PIINT requests the DSP external interrupt
+    CHECK(!t.dsp.core().external_interrupt_pending());
+    CHECK(t.dw(hw::dsp::CSR, hw::dsp::CSR_PIINT | hw::dsp::CSR_HALT));
+    CHECK(t.dsp.core().external_interrupt_pending());
 }
 
 // ------------------------------------------------------------ ARAM DMA
 TEST_CASE(aram_dma_both_directions_with_register_updates) {
     Rig t;
     for (u32 i = 0; i < 0x100; i += 4) CHECK(t.bus.write32(0x1000 + i, 0xA0000000U + i) == mem::BusStatus::Ok);
-    CHECK(t.dw(dsp::CSR, dsp::CSR_ARINTMASK));
+    CHECK(t.dw(hw::dsp::CSR, hw::dsp::CSR_ARINTMASK));
     // main -> ARAM, 0x100 bytes, using 32-bit register writes like Linux gcn-aram
-    CHECK(t.dw32(dsp::MMADDR_H, 0x00001000U));
-    CHECK(t.dw32(dsp::ARADDR_H, 0x00400000U));
-    CHECK(t.dw32(dsp::CNT_H, 0x00000100U)); // the write of CNT_L starts the DMA
+    CHECK(t.dw32(hw::dsp::MMADDR_H, 0x00001000U));
+    CHECK(t.dw32(hw::dsp::ARADDR_H, 0x00400000U));
+    CHECK(t.dw32(hw::dsp::CNT_H, 0x00000100U)); // the write of CNT_L starts the DMA
     CHECK(t.dsp.aram_busy());
-    CHECK_EQ(t.dr(dsp::CSR) & dsp::CSR_DMABUSY, dsp::CSR_DMABUSY);
+    CHECK_EQ(t.dr(hw::dsp::CSR) & hw::dsp::CSR_DMABUSY, hw::dsp::CSR_DMABUSY);
     CHECK(!t.cause(pi::CAUSE_DSP));
-    CHECK(!t.dw(dsp::MMADDR_L, 0)); // registers locked while busy
+    CHECK(!t.dw(hw::dsp::MMADDR_L, 0)); // registers locked while busy
     t.settle();
     CHECK(!t.dsp.aram_busy());
     CHECK(t.cause(pi::CAUSE_DSP));
-    CHECK_EQ(t.dr(dsp::CSR) & dsp::CSR_ARINT, dsp::CSR_ARINT);
+    CHECK_EQ(t.dr(hw::dsp::CSR) & hw::dsp::CSR_ARINT, hw::dsp::CSR_ARINT);
     CHECK_EQ(t.dsp.aram()[0x400000], 0xA0U);
     CHECK_EQ(t.dsp.aram()[0x4000FF], 0xFCU);
     // WiiBrew: count drops to 0, both addresses advanced by the length
-    CHECK_EQ(t.dr(dsp::MMADDR_L), 0x1100U);
-    CHECK_EQ(t.dr(dsp::ARADDR_L), 0x0100U);
-    CHECK_EQ(t.dr(dsp::ARADDR_H), 0x0040U);
-    CHECK_EQ(t.dr(dsp::CNT_L), 0U);
-    CHECK(t.dw(dsp::CSR, dsp::CSR_ARINT)); // ack
+    CHECK_EQ(t.dr(hw::dsp::MMADDR_L), 0x1100U);
+    CHECK_EQ(t.dr(hw::dsp::ARADDR_L), 0x0100U);
+    CHECK_EQ(t.dr(hw::dsp::ARADDR_H), 0x0040U);
+    CHECK_EQ(t.dr(hw::dsp::CNT_L), 0U);
+    CHECK(t.dw(hw::dsp::CSR, hw::dsp::CSR_ARINT)); // ack
     CHECK(!t.cause(pi::CAUSE_DSP));
     // ARAM -> main into a different buffer
-    CHECK(t.dw32(dsp::MMADDR_H, 0x00002000U));
-    CHECK(t.dw32(dsp::ARADDR_H, 0x00400020U));
-    CHECK(t.dw32(dsp::CNT_H, 0x80000040U));
+    CHECK(t.dw32(hw::dsp::MMADDR_H, 0x00002000U));
+    CHECK(t.dw32(hw::dsp::ARADDR_H, 0x00400020U));
+    CHECK(t.dw32(hw::dsp::CNT_H, 0x80000040U));
     t.settle();
     u32 w = 0;
     CHECK(t.bus.read32(0x2000, w) == mem::BusStatus::Ok);
     CHECK_EQ(w, 0xA0000020U);
     CHECK(t.bus.read32(0x203C, w) == mem::BusStatus::Ok);
     CHECK_EQ(w, 0xA000005CU);
-    CHECK_EQ(t.dr(dsp::CNT_H), 0x8000U); // direction kept (model)
+    CHECK_EQ(t.dr(hw::dsp::CNT_H), 0x8000U); // direction kept (model)
 }
 
 TEST_CASE(aram_dma_alignment_timing_and_errors) {
     Rig t;
     // low five bits of the addresses and length are hard-wired to 0
-    CHECK(t.dw(dsp::MMADDR_L, 0x123F));
-    CHECK_EQ(t.dr(dsp::MMADDR_L), 0x1220U);
-    CHECK(t.dw(dsp::ARADDR_L, 0x001F));
-    CHECK_EQ(t.dr(dsp::ARADDR_L), 0U);
+    CHECK(t.dw(hw::dsp::MMADDR_L, 0x123F));
+    CHECK_EQ(t.dr(hw::dsp::MMADDR_L), 0x1220U);
+    CHECK(t.dw(hw::dsp::ARADDR_L, 0x001F));
+    CHECK_EQ(t.dr(hw::dsp::ARADDR_L), 0U);
     // length 0
-    CHECK(t.dw(dsp::CNT_H, 0));
-    CHECK(!t.dw(dsp::CNT_L, 0x001F));
+    CHECK(t.dw(hw::dsp::CNT_H, 0));
+    CHECK(!t.dw(hw::dsp::CNT_L, 0x001F));
     CHECK(t.dsp.mmio_error().find("length 0") != std::string::npos);
     CHECK(!t.dsp.aram_busy());
     // outside ARAM / outside RAM
-    CHECK(t.dw32(dsp::ARADDR_H, 0x00FFFFE0U));
-    CHECK(!t.dw(dsp::CNT_L, 0x40));
+    CHECK(t.dw32(hw::dsp::ARADDR_H, 0x00FFFFE0U));
+    CHECK(!t.dw(hw::dsp::CNT_L, 0x40));
     CHECK(t.dsp.mmio_error().find("outside the 16 MiB ARAM") != std::string::npos);
-    CHECK(t.dw32(dsp::ARADDR_H, 0));
-    CHECK(t.dw32(dsp::MMADDR_H, 0x017FFFE0U));
-    CHECK(!t.dw(dsp::CNT_L, 0x40));
+    CHECK(t.dw32(hw::dsp::ARADDR_H, 0));
+    CHECK(t.dw32(hw::dsp::MMADDR_H, 0x017FFFE0U));
+    CHECK(!t.dw(hw::dsp::CNT_L, 0x40));
     CHECK(t.dsp.mmio_error().find("not RAM") != std::string::npos);
     // timing model: cycles per 32-byte unit
     t.dsp.set_aram_cycles_per_unit(100);
-    CHECK(t.dw32(dsp::MMADDR_H, 0x3000U));
+    CHECK(t.dw32(hw::dsp::MMADDR_H, 0x3000U));
     const u64 t0 = t.sched.now();
-    CHECK(t.dw(dsp::CNT_L, 0x80)); // 4 units
+    CHECK(t.dw(hw::dsp::CNT_L, 0x80)); // 4 units
     CHECK_EQ(*t.sched.next_event_time() - t0, 400U);
     t.settle();
     // no ARAM on Wii
@@ -213,26 +203,26 @@ TEST_CASE(aram_dma_alignment_timing_and_errors) {
     ProcessorInterface pi2{bus2, nullptr};
     DspInterface wii{bus2, s2, pi2, false};
     CHECK(wii.aram().empty());
-    CHECK(wii.mmio_write(dsp::CNT_H, 2, 0));
-    CHECK(!wii.mmio_write(dsp::CNT_L, 2, 0x20));
+    CHECK(wii.mmio_write(hw::dsp::CNT_H, 2, 0));
+    CHECK(!wii.mmio_write(hw::dsp::CNT_L, 2, 0x20));
     CHECK(wii.mmio_error().find("Wii") != std::string::npos);
 }
 
 TEST_CASE(ai_dma_registers_store_and_playback_is_refused) {
     Rig t;
-    CHECK(t.dw32(dsp::AIDMA_H, 0x0012345FU));
-    CHECK_EQ(t.dr(dsp::AIDMA_H), 0x0012U);
-    CHECK_EQ(t.dr(dsp::AIDMA_L), 0x3440U);
-    CHECK(t.dw(dsp::AIDMA_CTRL, 0x0010));
-    CHECK_EQ(t.dr(dsp::AIDMA_CTRL), 0x0010U);
-    CHECK(!t.dw(dsp::AIDMA_CTRL, 0x8010));
+    CHECK(t.dw32(hw::dsp::AIDMA_H, 0x0012345FU));
+    CHECK_EQ(t.dr(hw::dsp::AIDMA_H), 0x0012U);
+    CHECK_EQ(t.dr(hw::dsp::AIDMA_L), 0x3440U);
+    CHECK(t.dw(hw::dsp::AIDMA_CTRL, 0x0010));
+    CHECK_EQ(t.dr(hw::dsp::AIDMA_CTRL), 0x0010U);
+    CHECK(!t.dw(hw::dsp::AIDMA_CTRL, 0x8010));
     CHECK(t.dsp.mmio_error().find("AI DMA playback") != std::string::npos);
-    CHECK_EQ(t.dr(dsp::AIDMA_LEFT), 0U);
+    CHECK_EQ(t.dr(hw::dsp::AIDMA_LEFT), 0U);
     // AR_SIZE / AR_MODE / AR_REFRESH are stored
-    CHECK(t.dw(dsp::AR_SIZE, 0x0143));
-    CHECK(t.dw(dsp::AR_REFRESH, 0x009C));
-    CHECK_EQ(t.dr(dsp::AR_SIZE), 0x0143U);
-    CHECK_EQ(t.dr(dsp::AR_REFRESH), 0x009CU);
+    CHECK(t.dw(hw::dsp::AR_SIZE, 0x0143));
+    CHECK(t.dw(hw::dsp::AR_REFRESH, 0x009C));
+    CHECK_EQ(t.dr(hw::dsp::AR_SIZE), 0x0143U);
+    CHECK_EQ(t.dr(hw::dsp::AR_REFRESH), 0x009CU);
     u64 v = 0;
     CHECK(!t.dsp.mmio_read(0x40, 2, v));
     CHECK(!t.dsp.mmio_read(0x00, 1, v));
@@ -240,13 +230,13 @@ TEST_CASE(ai_dma_registers_store_and_playback_is_refused) {
 
 TEST_CASE(system_maps_mi_and_dsp) {
     system::System gc({});
-    CHECK(gc.bus().write16(0x0C00500AU, dsp::CSR_HALT) == mem::BusStatus::Ok);
+    CHECK(gc.bus().write16(0x0C00500AU, hw::dsp::CSR_HALT) == mem::BusStatus::Ok);
     u16 v = 0;
     CHECK(gc.bus().read16(0x0C00500AU, v) == mem::BusStatus::Ok);
-    CHECK_EQ(v, dsp::CSR_HALT);
+    CHECK_EQ(v, hw::dsp::CSR_HALT);
     CHECK(gc.bus().read16(0x0C004010U, v) == mem::BusStatus::Ok);
     CHECK_EQ(v, 0xFFU);
-    CHECK_EQ(gc.dsp().aram().size(), static_cast<std::size_t>(dsp::kAramSize));
+    CHECK_EQ(gc.dsp().aram().size(), static_cast<std::size_t>(hw::dsp::kAramSize));
     system::System wii({system::Console::Wii, 0, 1});
     CHECK(wii.dsp().aram().empty());
 }

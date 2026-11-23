@@ -167,6 +167,7 @@ RunResult System::run(u64 max_cycles) {
     const u64 retired0 = cpu_->instructions_retired();
     const u64 cpi = config_.cycles_per_instruction;
     while (scheduler_.now() < end) {
+        if (dsp_->dsp_failed()) { r.device_stop = true; r.device_error = dsp_->dsp_error(); break; }
         if (stop_pc_ && cpu_->state().pc == *stop_pc_) { r.reached_stop_pc = true; break; }
         const ppc::StepResult s = cpu_->step();
         if (s == ppc::StepResult::Executed || s == ppc::StepResult::ExceptionTaken) {
