@@ -22,6 +22,7 @@
 // bit 31 of what the high half reads afterwards.
 #pragma once
 #include "orca/core/bits.hpp"
+#include "orca/dsp/dsp_core.hpp"
 
 #include <deque>
 #include <memory>
@@ -41,6 +42,8 @@ public:
     virtual bool ram_write(u32 physical, std::span<const u8> in) = 0;
     virtual void interrupt_cpu(u64 cycles_from_now) = 0; // DSPINT
     virtual std::vector<u8>& aram() = 0;                // empty on Wii
+    // The DSP core, whose accelerator (and COEF ROM, when dumped) the ucodes use.
+    virtual DspCore& core() = 0;
 };
 
 class Dsp;
@@ -52,17 +55,21 @@ public:
     virtual const char* name() const noexcept = 0;
     virtual void start() = 0;           // just switched to
     virtual void mail(u32 m) = 0;       // a mail from the CPU
-    virtual void update() {}            // every millisecond of emulated time
+    virtual void update() { send_resume_if_needed(); } // every millisecond of emulated time
     u32 hash() const noexcept { return hash_; }
 
 protected:
-    // Task switch: true while the mail was consumed as a "new ucode" parameter.
-    bool task_switch_mail(u32 m);
+    // Task switch ("new ucode" received): the next ten mails describe the ucode to
+    // load; this one is kept and, when the CPU switches back to it, it sends
+    // DSP_RESUME from its next update.
+    void begin_task_switch() noexcept { switching_ = true; param_step_ = 0; }
+    bool task_switching() const noexcept { return switching_; }
+    void task_switch_param(u32 m);
     void send_resume_if_needed();
     Dsp& dsp_;
     u32 hash_;
 private:
-    bool expecting_params_{false};
+    bool switching_{false};
     unsigned param_step_{0};
     u32 params_[10]{};
     bool needs_resume_{false};
@@ -91,8 +98,12 @@ public:
     Host& host() noexcept { return host_; }
     bool wii() const noexcept { return wii_; }
     void push_mail(u32 mail, bool interrupt, u64 cycles = 0);
-    void switch_to(u32 hash);        // by hash (unknown -> stop)
+    // By hash (unknown -> stop). The ucode being left is kept: switching back to
+    // its hash resumes it instead of starting a new one.
+    void switch_to(u32 hash);
     void fail(std::string why) { if (error_.empty()) error_ = std::move(why); }
+    void warn(std::string w);        // approximations in use (each reported once)
+    const std::vector<std::string>& warnings() const noexcept { return warnings_; }
     bool has_pending_mail() const noexcept { return !mails_.empty(); }
 
 private:
@@ -103,8 +114,10 @@ private:
     std::deque<std::pair<u32, bool>> mails_; // mail, raise an interrupt when the next becomes first
     u32 last_mail_{0};
     std::unique_ptr<Ucode> ucode_;
-    std::unique_ptr<Ucode> retired_;          // kept alive while it switches to another
+    std::unique_ptr<Ucode> last_;             // the ucode left by a task switch
+    std::vector<std::unique_ptr<Ucode>> retired_; // kept alive while their code may still run
     std::string error_;
+    std::vector<std::string> warnings_;
 };
 
 // Known ucodes (hash -> implementation); nullptr when Orca has none.

@@ -44,6 +44,7 @@ add_library(orca_core
     src/disc/wii_disc.cpp
     src/dsp/dsp_core.cpp
     src/dsp/hle.cpp
+    src/dsp/hle_ax.cpp
     src/hw/audio_interface.cpp
     src/hw/disc_interface.cpp
     src/hw/dsp_interface.cpp
@@ -107,7 +108,7 @@ endif()
 
 if(ORCA_BUILD_TESTS)
     enable_testing()
-    foreach(suite memory cpu_integer cpu_system mmu reference fpu_engine cpu_fpu system crypto wii_disc audio)
+    foreach(suite memory cpu_integer cpu_system mmu reference fpu_engine cpu_fpu system crypto wii_disc audio dsp_hle)
         add_executable(orca_test_${suite} tests/test_${suite}.cpp)
         target_link_libraries(orca_test_${suite} PRIVATE orca_core)
         target_include_directories(orca_test_${suite} PRIVATE tests)

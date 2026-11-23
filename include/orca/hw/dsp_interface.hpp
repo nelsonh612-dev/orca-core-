@@ -90,7 +90,7 @@ public:
     std::vector<u8>& aram() noexcept override { return aram_; } // also hle::Host
     bool aram_busy() const noexcept { return (csr_ & dsp::CSR_DMABUSY) != 0U; }
     u16 csr() const noexcept { return csr_; }
-    ::orca::dsp::DspCore& core() noexcept { return core_; }
+    ::orca::dsp::DspCore& core() noexcept override { return core_; } // also hle::Host
     // High-level emulation instead of the DSP core (orca/dsp/hle.hpp): mailboxes and
     // CSR RES/HALT go to it, and it is updated every millisecond of emulated time.
     void use_hle(bool on);

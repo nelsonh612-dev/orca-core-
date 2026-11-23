@@ -15,30 +15,25 @@ u32 ucode_hash(std::span<const u8> data) noexcept {
 }
 
 // ---------------------------------------------------------------- task switch
-bool Ucode::task_switch_mail(u32 m) {
-    if (!expecting_params_) {
-        if (m != kCpuNewUcode) return false;
-        expecting_params_ = true;
-        param_step_ = 0;
-        return true;
-    }
+void Ucode::task_switch_param(u32 m) {
     params_[param_step_++] = m;
-    if (param_step_ < 10U) return true;
-    expecting_params_ = false;
-    // params: 0 MRAM dest (DRAM save), 1 its size, 2 DRAM source, 3 IMEM image address in
-    // main memory, 4 its size, 5 IMEM destination, 6 start PC, 7 DRAM image address, 8 its size, 9 dest
-    const u32 iram_addr = params_[3] & 0x7FFFFFFFU, iram_size = params_[4] & 0xFFFFU;
+    if (param_step_ < 10U) return;
+    switching_ = false;
+    // 0 MRAM destination of a DRAM save, 1 its size, 2 DRAM source, 3 IMEM image address
+    // in main memory, 4 its size, 5 IMEM destination, 6 start PC, 7 DRAM image address,
+    // 8 its size, 9 DRAM destination
+    const u32 iram_addr = params_[3], iram_size = params_[4] & 0xFFFFU;
     if ((params_[1] & 0xFFFFU) != 0U || (params_[8] & 0xFFFFU) != 0U) {
         dsp_.fail("DSP HLE: task switch with a DRAM save or load is not implemented");
-        return true;
+        return;
     }
     std::vector<u8> image(iram_size);
     if (!dsp_.host().ram_read(iram_addr & 0x1FFFFFFFU, image)) {
         dsp_.fail("DSP HLE: the new ucode is outside RAM");
-        return true;
+        return;
     }
+    needs_resume_ = true;
     dsp_.switch_to(ucode_hash(image));
-    return true;
 }
 
 // ---------------------------------------------------------------- boot ROM
@@ -98,7 +93,8 @@ Dsp::~Dsp() = default;
 void Dsp::reset(bool init_ucode) {
     mails_.clear();
     error_.clear();
-    retired_.reset();
+    last_.reset();
+    if (ucode_) retired_.push_back(std::move(ucode_));
     if (init_ucode) ucode_ = std::make_unique<InitUcode>(*this, kHashInit);
     else ucode_ = std::make_unique<RomUcode>(*this, kHashRom);
     ucode_->start();
@@ -116,6 +112,7 @@ void Dsp::cpu_write_low(u16 v) {
     cpu_mail_ = (cpu_mail_ & 0xFFFF0000U) | v;
     const u32 m = cpu_mail_;
     cpu_mail_ &= 0x7FFFFFFFU; // taken by the DSP at once
+    retired_.clear();         // no ucode code is running here
     if (ucode_ && !failed()) ucode_->mail(m);
 }
 
@@ -137,10 +134,18 @@ u16 Dsp::cpu_mailbox_low() {
 }
 
 void Dsp::update() {
+    retired_.clear();
     if (ucode_ && !failed() && !halted_) ucode_->update();
 }
 
 void Dsp::switch_to(u32 hash) {
+    if (last_ && last_->hash() == hash) { // back to the ucode that was left
+        mails_.clear();
+        auto back = std::move(last_);
+        last_ = std::move(ucode_);
+        ucode_ = std::move(back);
+        return;
+    }
     auto next = make_ucode(*this, hash);
     if (!next) {
         char buf[160];
@@ -149,13 +154,21 @@ void Dsp::switch_to(u32 hash) {
         return;
     }
     mails_.clear();
-    retired_ = std::move(ucode_); // the caller may still be running inside it
+    if (!last_) last_ = std::move(ucode_);
+    else retired_.push_back(std::move(ucode_)); // the caller may still be running inside it
     ucode_ = std::move(next);
     ucode_->start();
 }
 
-std::unique_ptr<Ucode> make_ucode(Dsp&, u32) {
-    return nullptr; // AX and other ucodes are added in the following steps
+void Dsp::warn(std::string w) {
+    for (const auto& x : warnings_) if (x == w) return;
+    warnings_.push_back(std::move(w));
+}
+
+std::unique_ptr<Ucode> make_ax_ucode(Dsp& dsp, u32 hash); // hle_ax.cpp (nullptr if not AX)
+
+std::unique_ptr<Ucode> make_ucode(Dsp& dsp, u32 hash) {
+    return make_ax_ucode(dsp, hash);
 }
 
 } // namespace orca::dsp::hle

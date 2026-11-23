@@ -60,6 +60,9 @@ struct SystemConfig {
     // interpreter remains the reference: results, timing and interrupts are the same
     // (see System::run and ppc/jit.hpp). Ignored on other hosts.
     bool use_jit{false};
+    // DSP: high-level emulation of the known ucodes (orca/dsp/hle.hpp) instead of
+    // running DSP code, which needs the user's DSP ROM dumps.
+    bool dsp_hle{false};
 };
 
 struct RunResult {

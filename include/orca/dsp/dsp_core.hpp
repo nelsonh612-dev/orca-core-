@@ -112,6 +112,12 @@ public:
     bool external_interrupt_pending() const noexcept { return int_pending_; }
     // Pending accelerator exceptions: bit 3 ACRROV, bit 4 ACRWOV, bit 5 ACSOV.
     u8 pending_exceptions() const noexcept { return exc_pending_; }
+    void clear_pending_exceptions() noexcept { exc_pending_ = 0; }
+    // Accelerator registers (IFX 0xFFA0-0xFFAF coefficients, 0xFFD1-0xFFDF), used
+    // directly by the HLE ucodes so both emulations share the same accelerator.
+    bool accelerator_read(u16 reg, u16& v) { return ifx_read(reg, v); }
+    bool accelerator_write(u16 reg, u16 v) { return ifx_write(reg, v); }
+    std::span<const u16> coef_rom() const noexcept { return coef_; } // empty without a dump
 
     // 40-bit helpers (public for tests)
     s64 acc(unsigned d) const noexcept;

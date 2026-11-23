@@ -53,6 +53,7 @@ System::System(SystemConfig config) : config_(config), clocks_(clocks_for(config
     dsp_ = std::make_unique<hw::DspInterface>(bus_, scheduler_, *pi_, config_.console == Console::GameCube, clocks_.cpu_hz);
     bus_.map_mmio("DSP", hw::dsp::kBase, 0x1000, *dsp_);
     dsp_->set_aid_rate_source([this] { return ai_->dma_rate_32khz(); });
+    if (config_.dsp_hle) dsp_->use_hle(true);
     // audio output: AI DMA (DSP) + streaming audio (drive) -> mixer
     mixer_ = std::make_unique<audio::Mixer>(clocks_.cpu_hz);
     dsp_->set_audio_sink([this](std::span<const u8> block) { mixer_->push_dma_block(block, ai_->dma_divisor()); });
