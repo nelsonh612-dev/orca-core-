@@ -270,4 +270,14 @@ TEST_CASE(wiimote_speaker_adpcm) {
     CHECK(w.error().find("format") != std::string::npos);
 }
 
+TEST_CASE(wiimote_pointer_mapping) {
+    auto p = pointer_points(0.0F, 0.0F);
+    CHECK(p[0].x == 432 && p[1].x == 592 && p[0].y == 384 && p[1].y == 384 && p[0].size == 3);
+    CHECK(!p[2].visible() && !p[3].visible());
+    p = pointer_points(0.5F, -0.5F); // pointing right and down: the dots move left and up in the image
+    CHECK(p[0].x == 176 && p[1].x == 336 && p[0].y == 192);
+    p = pointer_points(1.0F, 0.0F); // the left dot leaves the image
+    CHECK(!p[0].visible() && p[1].visible() && p[1].x == 80);
+}
+
 int main() { return orca::test::run_all("wiimote"); }

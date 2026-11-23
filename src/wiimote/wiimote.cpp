@@ -47,6 +47,17 @@ std::array<u8, 0x100> nunchuk_registers() {
     return r;
 }
 
+std::array<CameraPoint, 4> pointer_points(float x, float y) {
+    std::array<CameraPoint, 4> pts{};
+    const float cx = 512.0F - x * 512.0F, cy = 384.0F + y * 384.0F; // the camera sees the bar move the other way
+    for (int i = 0; i < 2; ++i) {
+        const float px = cx + (i == 0 ? -80.0F : 80.0F);
+        if (px < 0.0F || px >= 1024.0F || cy < 0.0F || cy >= 768.0F) continue;
+        pts[static_cast<std::size_t>(i)] = {static_cast<u16>(px), static_cast<u16>(cy), 3};
+    }
+    return pts;
+}
+
 Wiimote::Wiimote() {
     // Calibration (representative factory values; a real remote has its own):
     // IR corners and accelerometer 0 g / 1 g, each block written twice.

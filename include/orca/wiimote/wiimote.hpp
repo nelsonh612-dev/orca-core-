@@ -129,6 +129,13 @@ private:
     std::string error_;
 };
 
+// Frontend helper (an input mapping, not hardware behaviour): the two sensor
+// bar dots the camera sees when the remote points at (x, y) on the screen,
+// both in [-1, 1] (right and up positive). The dots sit 160 pixels apart
+// (about 2 m from the bar), size 3, mirrored as the camera sees them; dots that
+// leave the 1024x768 image are not seen.
+std::array<CameraPoint, 4> pointer_points(float x, float y);
+
 // Nunchuk register block (identifier, calibration) as after power-on.
 std::array<u8, 0x100> nunchuk_registers();
 
