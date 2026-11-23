@@ -42,6 +42,23 @@ TEST_CASE(frontend_rejects_what_it_cannot_load) {
     std::filesystem::remove_all(dir);
 }
 
+TEST_CASE(frontend_dsp_rom_dumps_are_checked) {
+    const auto dir = std::filesystem::temp_directory_path();
+    const auto irom = dir / "orca_test_irom.bin", coef = dir / "orca_test_coef.bin";
+    { std::ofstream(irom, std::ios::binary).write(std::string(100, '\0').data(), 100); }
+    { std::ofstream(coef, std::ios::binary).write(std::string(4096, '\0').data(), 4096); }
+    frontend::Settings s;
+    s.jit = false;
+    s.dsp_irom_file = irom.string();
+    s.dsp_coef_file = coef.string();
+    frontend::Emulator emu(s);
+    std::string error;
+    CHECK(!emu.load_executable(std::vector<u8>(16, 0), false, error));
+    CHECK(error.find("8192") != std::string::npos);
+    std::filesystem::remove(irom);
+    std::filesystem::remove(coef);
+}
+
 #ifdef ORCA_PROGRAMS_DIR
 TEST_CASE(frontend_runs_gpu_draw_and_shows_its_frame) {
     frontend::Settings s;

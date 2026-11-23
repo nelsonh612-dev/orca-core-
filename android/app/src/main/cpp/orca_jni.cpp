@@ -230,12 +230,15 @@ Session* session(jlong h) { return reinterpret_cast<Session*>(h); }
 extern "C" {
 
 JNIEXPORT jlong JNICALL Java_org_orca_emu_NativeLib_create(JNIEnv* env, jclass, jstring nand_dir, jstring key_file,
-                                                           jboolean jit, jint region, jboolean gles) {
+                                                           jboolean jit, jint region, jboolean gles,
+                                                           jstring dsp_rom, jstring dsp_coef) {
     orca::frontend::Settings s;
     s.jit = jit != JNI_FALSE;
     s.dsp_hle = true;
     s.nand_dir = str(env, nand_dir);
     s.wii_key_file = str(env, key_file);
+    s.dsp_irom_file = str(env, dsp_rom);
+    s.dsp_coef_file = str(env, dsp_coef);
     switch (region) {
     case 1: s.new_nand.region = orca::ios::WiiRegion::Europe; s.new_nand.country = 110; break;
     case 2: s.new_nand.region = orca::ios::WiiRegion::Japan; s.new_nand.language = 0; s.new_nand.country = 1; break;

@@ -3,6 +3,8 @@
 #include "orca/video/xfb.hpp"
 
 #include <algorithm>
+#include <fstream>
+#include <iterator>
 #include <cstdio>
 
 namespace orca::frontend {
@@ -22,7 +24,23 @@ bool Emulator::make_system(bool wii, std::string& error) {
     cfg.console = wii ? system::Console::Wii : system::Console::GameCube;
     cfg.pvr = wii ? kBroadwayPvr : kGekkoPvr;
     cfg.use_jit = settings_.jit;
-    cfg.dsp_hle = settings_.dsp_hle;
+    // DSP ROM dumps (big-endian 16-bit words)
+    std::vector<u16> irom, coef;
+    const auto words = [](const std::string& path, std::size_t n, std::vector<u16>& out) {
+        if (path.empty()) return false;
+        std::ifstream in(path, std::ios::binary);
+        const std::vector<u8> b((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        if (b.size() != n * 2U) return false;
+        out.resize(n);
+        for (std::size_t i = 0; i < n; ++i) out[i] = static_cast<u16>(b[2 * i] << 8 | b[2 * i + 1]);
+        return true;
+    };
+    const bool roms = words(settings_.dsp_irom_file, dsp::kIromWords, irom) && words(settings_.dsp_coef_file, dsp::kCoefWords, coef);
+    if (!roms && (!settings_.dsp_irom_file.empty() || !settings_.dsp_coef_file.empty())) {
+        error = "DSP: the ROM dumps must be 8192 (IROM) and 4096 (COEF) bytes";
+        return false;
+    }
+    cfg.dsp_hle = roms ? false : settings_.dsp_hle;
     if (wii) {
         if (settings_.nand_dir.empty()) { error = "Wii: no NAND directory configured"; return false; }
         ios::NandFs nand(settings_.nand_dir);
@@ -35,6 +53,11 @@ bool Emulator::make_system(bool wii, std::string& error) {
         if (!disc::load_wii_key_file(settings_.wii_key_file, cfg.wii_keys, 0, error)) return false;
     }
     sys_ = std::make_unique<system::System>(cfg);
+    if (roms && !(sys_->dsp().core().load_irom(irom) && sys_->dsp().core().load_coef(coef))) {
+        error = "DSP: the ROM dumps were rejected";
+        sys_.reset();
+        return false;
+    }
     if (wii && !sys_->nand_error().empty()) { error = "NAND: " + sys_->nand_error(); sys_.reset(); return false; }
     wii_ = wii;
     for (unsigned p = 0; p < 4; ++p) pads_[p] = std::make_shared<hw::StandardController>();

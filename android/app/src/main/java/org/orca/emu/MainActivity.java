@@ -23,6 +23,8 @@ import java.io.OutputStream;
 public final class MainActivity extends Activity {
     private static final int PICK_GAME = 1;
     private static final int PICK_KEY = 2;
+    private static final int PICK_DSP_ROM = 3;
+    private static final int PICK_DSP_COEF = 4;
     static final String PREFS = "orca";
 
     private TextView keyState;
@@ -52,6 +54,15 @@ public final class MainActivity extends Activity {
         keyState = new TextView(this);
         root.addView(keyState);
         updateKeyState();
+
+        Button rom = new Button(this);
+        rom.setText("Optional: DSP ROM dump (dsp_rom.bin, 8 KiB)");
+        rom.setOnClickListener(v -> pick(PICK_DSP_ROM));
+        root.addView(rom);
+        Button coefButton = new Button(this);
+        coefButton.setText("Optional: DSP COEF dump (dsp_coef.bin, 4 KiB)");
+        coefButton.setOnClickListener(v -> pick(PICK_DSP_COEF));
+        root.addView(coefButton);
 
         TextView regionLabel = new TextView(this);
         regionLabel.setText("Region of a new Wii NAND:");
@@ -98,8 +109,29 @@ public final class MainActivity extends Activity {
         return new File(a.getFilesDir(), "wii_common_key.bin");
     }
 
+    static File dspRom(Activity a) {
+        return new File(a.getFilesDir(), "dsp_rom.bin");
+    }
+
+    static File dspCoef(Activity a) {
+        return new File(a.getFilesDir(), "dsp_coef.bin");
+    }
+
     private void updateKeyState() {
-        keyState.setText(keyFile(this).exists() ? "Wii key: present" : "Wii key: not set");
+        keyState.setText((keyFile(this).exists() ? "Wii key: present" : "Wii key: not set") + " — DSP: "
+                + (dspRom(this).exists() && dspCoef(this).exists() ? "ROM dumps (low-level DSP)" : "high-level DSP"));
+    }
+
+    private void copy(Uri uri, File to) {
+        try (InputStream in = getContentResolver().openInputStream(uri);
+             OutputStream out = new FileOutputStream(to)) {
+            byte[] buf = new byte[4096];
+            int n;
+            while (in != null && (n = in.read(buf)) > 0) out.write(buf, 0, n);
+        } catch (Exception e) {
+            Toast.makeText(this, "Cannot copy the file: " + e.getMessage(), Toast.LENGTH_LONG).show();
+        }
+        updateKeyState();
     }
 
     @Override
@@ -107,18 +139,9 @@ public final class MainActivity extends Activity {
         super.onActivityResult(request, result, data);
         if (result != RESULT_OK || data == null || data.getData() == null) return;
         Uri uri = data.getData();
-        if (request == PICK_KEY) {
-            try (InputStream in = getContentResolver().openInputStream(uri);
-                 OutputStream out = new FileOutputStream(keyFile(this))) {
-                byte[] buf = new byte[4096];
-                int n;
-                while (in != null && (n = in.read(buf)) > 0) out.write(buf, 0, n);
-            } catch (Exception e) {
-                Toast.makeText(this, "Cannot copy the key file: " + e.getMessage(), Toast.LENGTH_LONG).show();
-            }
-            updateKeyState();
-            return;
-        }
+        if (request == PICK_KEY) { copy(uri, keyFile(this)); return; }
+        if (request == PICK_DSP_ROM) { copy(uri, dspRom(this)); return; }
+        if (request == PICK_DSP_COEF) { copy(uri, dspCoef(this)); return; }
         try {
             getContentResolver().takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
         } catch (SecurityException ignored) {

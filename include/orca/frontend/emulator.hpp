@@ -30,7 +30,11 @@ namespace orca::frontend {
 
 struct Settings {
     bool jit{true};
+    // DSP: with both ROM dumps (the user's dsp_rom.bin 8 KiB, dsp_coef.bin 4 KiB)
+    // the DSP runs its real code (every ucode); otherwise the known ucodes run
+    // at a high level and an unknown one stops with its hash.
     bool dsp_hle{true};
+    std::string dsp_irom_file, dsp_coef_file;
     std::string nand_dir;      // Wii
     std::string wii_key_file;  // Wii: 16-byte common key or BootMii keys.bin
     ios::NandSetup new_nand;   // used when the NAND has no SYSCONF yet

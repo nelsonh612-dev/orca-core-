@@ -11,7 +11,8 @@ final class NativeLib {
     private NativeLib() {}
 
     /** region: 0 USA, 1 Europe, 2 Japan, 3 Korea (used when the NAND is created). */
-    static native long create(String nandDir, String keyFile, boolean jit, int region, boolean gles);
+    static native long create(String nandDir, String keyFile, boolean jit, int region, boolean gles, String dspRom,
+                              String dspCoef);
     /** Returns null on success, otherwise the reason. The descriptor is owned by the core afterwards. */
     static native String loadDisc(long handle, int fd);
     static native boolean isWii(long handle);
