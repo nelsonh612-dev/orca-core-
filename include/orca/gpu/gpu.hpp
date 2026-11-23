@@ -78,6 +78,20 @@ public:
         download_ = std::move(download);
         upload_ = std::move(upload);
     }
+    // CPU access to one EFB pixel (24-bit colour / depth values), from the software EFB
+    // or the GPU backend that draws.
+    bool efb_peek(u32 x, u32 y, u32& color, u32& depth, std::string& error) {
+        if (renderer_.sink() != nullptr) return renderer_.sink()->peek_pixel(x, y, color, depth, error);
+        color = renderer_.efb().color24(x, y);
+        depth = renderer_.efb().depth24(x, y);
+        return true;
+    }
+    bool efb_poke(u32 x, u32 y, bool depth, u32 value, std::string& error) {
+        if (renderer_.sink() != nullptr) return renderer_.sink()->poke_pixel(x, y, depth, value, error);
+        if (depth) renderer_.efb().set_depth24(x, y, value);
+        else renderer_.efb().set_color24(x, y, value);
+        return true;
+    }
     // Result of the last BP 0x52 (EFB copy / clear) and how many there were.
     const sw::CopyResult& last_copy() const noexcept { return last_copy_; }
     u64 copies() const noexcept { return copies_; }

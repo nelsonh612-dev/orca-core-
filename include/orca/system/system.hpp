@@ -9,6 +9,7 @@
 // This keeps time monotonic and deterministic; it is not cycle accurate.
 #pragma once
 #include "orca/core/scheduler.hpp"
+#include "orca/gpu/efb_access.hpp"
 #include "orca/disc/disc_image.hpp"
 #include "orca/hw/audio_interface.hpp"
 #include "orca/hw/disc_interface.hpp"
@@ -152,6 +153,7 @@ private:
     std::unique_ptr<hw::GatherPipe> gather_pipe_;
     std::unique_ptr<hw::PixelEngine> pe_;
     std::unique_ptr<gpu::Gpu> gpu_;
+    std::unique_ptr<gpu::EfbAccess> efb_access_;
     std::unique_ptr<hw::CommandProcessor> cp_;
     std::unique_ptr<hw::MmioSplitter> page_0c006_;
     std::unique_ptr<hw::DiscInterface> di_;

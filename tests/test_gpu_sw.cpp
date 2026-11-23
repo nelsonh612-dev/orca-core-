@@ -1,6 +1,7 @@
 // Software GPU reference (M014): vertex decoding and XF transform. Expected
 // values worked out by hand from the rules in vertex.hpp.
 #include "orca/gpu/sw/vertex.hpp"
+#include "orca/gpu/efb_access.hpp"
 #include "orca/gpu/gpu.hpp"
 #include "orca/hw/pixel_engine.hpp"
 #include "test_framework.hpp"
@@ -511,6 +512,70 @@ TEST_CASE(sw_bounding_box_and_quad_counters) {
     CHECK_EQ(quads(gpu::PixelStats::ZcompLocInput), 10U);
     CHECK_EQ(quads(gpu::PixelStats::ZcompLocOutput), 10U);
     CHECK_EQ(quads(gpu::PixelStats::BlendInput), 10U);
+}
+
+// CPU access to the EFB (physical 0x08000000; Dolphin MMU.cpp / EFBInterface.cpp as information)
+TEST_CASE(sw_efb_cpu_access) {
+    // Z16 compression, by hand from the bit layout
+    CHECK_EQ(compress_z16(0xABCDEFU, 0), 0xABCDU);      // linear
+    CHECK_EQ(compress_z16(0x123456U, 1), 0x091AU);      // near: no leading ones, bits 22..9
+    CHECK_EQ(compress_z16(0xFFFFFFU, 1), 0xFFFFU);      // near: 3 ones (clamped), bits 20..7
+    CHECK_EQ(compress_z16(0xF0F000U, 3), 0x41E0U);      // far: 4 ones, implied 0, bits 18..7
+    CHECK_EQ(compress_z16(0x000000U, 2), 0x0000U);
+
+    Scene s;
+    EfbAccess acc(s.gpu, s.pe);
+    auto addr = [](u32 x, u32 y, bool z) { return (y << 12) | (x << 2) | (z ? 0x400000U : 0U); };
+    auto rd = [&](u32 a) { u64 v = 0; CHECK(acc.mmio_read(a, 4, v)); return static_cast<u32>(v); };
+    auto alpha_mode = [&](u16 m) { CHECK(s.pe.mmio_write(hw::pe::ALPHAREAD, 2, m)); };
+    // RGB8_Z24: colour and depth pokes and peeks, alpha read modes
+    CHECK(acc.mmio_write(addr(10, 20, false), 4, 0x11223344U));
+    CHECK_EQ(s.c24(10, 20), 0x223344U);
+    alpha_mode(2); CHECK_EQ(rd(addr(10, 20, false)), 0xFF223344U);
+    alpha_mode(0); CHECK_EQ(rd(addr(10, 20, false)), 0x00223344U);
+    alpha_mode(1); CHECK_EQ(rd(addr(10, 20, false)), 0xFF223344U);
+    CHECK(acc.mmio_write(addr(5, 6, true), 4, 0x12ABCDEFU));
+    CHECK_EQ(s.z24(5, 6), 0xABCDEFU);
+    CHECK_EQ(rd(addr(5, 6, true)), 0xABCDEFU);
+    // a drawn pixel is visible to the CPU
+    s.prim(0x90, {{0, 0, -0.5f, 0x204080FFU}, {8, 0, -0.5f, 0x204080FFU}, {0, 8, -0.5f, 0x204080FFU}});
+    CHECK(s.flush());
+    CHECK_EQ(rd(addr(1, 1, false)), 0xFF204080U);
+    // RGB565_Z16: colour quantised to 5/6/5, depth compressed with the Z format
+    s.bpw(bp::ZCOMPARE, 2U | (0U << 3));
+    CHECK(s.flush());
+    alpha_mode(2);
+    CHECK_EQ(rd(addr(10, 20, false)), 0xFF213042U);
+    CHECK_EQ(rd(addr(5, 6, true)), 0xABCDU);
+    s.bpw(bp::ZCOMPARE, 2U | (3U << 3));
+    CHECK(s.flush());
+    CHECK(acc.mmio_write(addr(5, 6, true), 4, 0xF0F000U));
+    CHECK_EQ(rd(addr(5, 6, true)), 0x41E0U);
+    // RGBA6_Z24: 6 bits per channel including alpha
+    s.bpw(bp::ZCOMPARE, 1U);
+    CHECK(s.flush());
+    CHECK(acc.mmio_write(addr(30, 40, false), 4, 0x80FF4020U));
+    CHECK_EQ(s.c24(30, 40), (0x3FU << 18) | (0x10U << 12) | (0x08U << 6) | 0x20U);
+    CHECK_EQ(rd(addr(30, 40, false)), 0x82FF4120U);
+    alpha_mode(0); CHECK_EQ(rd(addr(30, 40, false)), 0x00FF4120U);
+    // outside 640x528: reads 0, writes ignored
+    // (700, 3) would alias the stored pixel (60, 4) if it were not rejected
+    CHECK(acc.mmio_write(addr(60, 4, false), 4, 0x00ABCDEFU));
+    CHECK_EQ(rd(addr(700, 3, false)), 0U);
+    CHECK(acc.mmio_write(addr(700, 3, false), 4, 0x00123456U));
+    CHECK_EQ(s.c24(60, 4), (0x2AU << 18) | (0x33U << 12) | (0x3BU << 6)); // RGBA6 store of AB CD EF, alpha 0
+    CHECK(acc.mmio_write(addr(3, 600, false), 4, 0xFFFFFFFFU));
+    // clear stops
+    u64 v = 0;
+    CHECK(!acc.mmio_read(addr(1, 1, false) | 0x800000U, 4, v));
+    CHECK(acc.mmio_error().find("Z+colour") != std::string::npos);
+    CHECK(!acc.mmio_read(addr(1, 1, false), 2, v));
+    alpha_mode(3);
+    CHECK(!acc.mmio_read(addr(1, 1, false), 4, v));
+    s.bpw(bp::ZCOMPARE, 4U);
+    CHECK(s.flush());
+    CHECK(!acc.mmio_read(addr(1, 1, false), 4, v));
+    CHECK(!acc.mmio_write(addr(1, 1, false), 4, 0));
 }
 
 TEST_CASE(sw_raster_fill_rule) {

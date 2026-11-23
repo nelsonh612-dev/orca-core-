@@ -520,6 +520,29 @@ bool Backend::sync_stats(bool bbox, std::string& error) {
     return true;
 }
 
+bool Backend::peek_pixel(u32 x, u32 y, u32& color, u32& depth, std::string& error) {
+    Impl& g = *impl_;
+    GLuint px[4] = {0, 0, 0, 0};
+    glBindFramebuffer(GL_FRAMEBUFFER, g.fbo);
+    glReadBuffer(GL_COLOR_ATTACHMENT0);
+    glReadPixels(static_cast<GLint>(x), static_cast<GLint>(y), 1, 1, GL_RGBA_INTEGER, GL_UNSIGNED_INT, px);
+    color = px[0] & 0xFFFFFFU;
+    glReadBuffer(GL_COLOR_ATTACHMENT1);
+    glReadPixels(static_cast<GLint>(x), static_cast<GLint>(y), 1, 1, GL_RGBA_INTEGER, GL_UNSIGNED_INT, px);
+    depth = px[0] & 0xFFFFFFU;
+    if (glGetError() != GL_NO_ERROR) { error = "GL error while reading an EFB pixel"; return false; }
+    return true;
+}
+
+bool Backend::poke_pixel(u32 x, u32 y, bool depth, u32 value, std::string& error) {
+    Impl& g = *impl_;
+    const GLuint v = value & 0xFFFFFFU;
+    glBindTexture(GL_TEXTURE_2D, g.efb[depth ? 1 : 0]);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, static_cast<GLint>(x), static_cast<GLint>(y), 1, 1, GL_RED_INTEGER, GL_UNSIGNED_INT, &v);
+    if (glGetError() != GL_NO_ERROR) { error = "GL error while writing an EFB pixel"; return false; }
+    return true;
+}
+
 void Backend::download(sw::Efb& efb) {
     Impl& g = *impl_;
     std::vector<GLuint> px(static_cast<std::size_t>(kW) * kH * 4U);

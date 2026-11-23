@@ -110,6 +110,12 @@
 - **Contadores de rendimiento:** quads que entran/pasan la Z temprana, entran/pasan la Z tardía (solo con la prueba Z activa) y entran a la mezcla (siempre), en PE 0x18-0x2A como mitades baja/alta; BP 0x57 los borra. Un quad 2x2 cuenta una vez por triángulo si al menos uno de sus píxeles llega a la etapa. Los ciclos de copia del EFB (0x2C/0x2E) siguen detenidos: no hay modelo de tiempo de las copias.
 - **Backend GLES:** los mismos valores con un *storage buffer* (atomicMin/Max/Add) y una imagen R32UI de 320x264x5 con el último triángulo que contó cada quad (imageAtomicExchange). Se activan con la primera escritura de BP 0x55/0x56 (caja) o 0x57 (contadores), como Dolphin; leer antes da una parada clara. Antes de que la CPU reescriba media caja se sincroniza con la GPU. Si el GL no ofrece buffers/imágenes en el fragment shader, el shader se compila sin esto y la lectura se detiene.
 
+**Acceso de la CPU al EFB (M018)** — fuentes: Dolphin `MMU.cpp`, `EFBInterface.cpp`, `VideoCommon.h` como información:
+- Dispositivo en la dirección física 0x08000000 (16 MiB; los juegos usan 0xC8000000 por el DBAT1): x en los bits 2-11, y en los bits 12-21, bit 22 = Z.
+- Lectura de color como ARGB8888 en el formato actual (RGBA6 expandido, RGB565 cuantizado a 5/6/5, alfa 0xFF salvo RGBA6) con el modo de lectura de alfa del PE (ALPHAREAD 0/1/2; 3 se detiene). Lectura de Z de 24 bits, o comprimida a 16 bits (lineal, near, mid, far) en RGB565_Z16. Escrituras de color y Z en el formato actual. Fuera de 640x528: lee 0 e ignora la escritura.
+- Funciona con el renderizador por software y con el backend GLES (lectura/escritura de un solo píxel en las texturas del EFB).
+- Paradas claras: accesos que no son de 32 bits, el bit 23 ("Z + color", sin documentar), formatos de píxel 4-7.
+
 **GPU, parte 1 (M013)** — fuentes: archivos de Dolphin como información (ver README) y YAGCD; el código es propio:
 - `hw::CommandProcessor` (0x0C000000): STATUS calculado (marcas de agua, lectura y comando inactivos, breakpoint), CTRL (6 bits), CLEAR, PERF_SELECT (3 bits), registro 0x0A (8 bits), los ocho punteros del FIFO como pares LO/HI con máscaras 0xFFE0 / 0x03FF (GC) o 0x1FFF (Wii), métricas que leen 0 y 0x64 que lee 4.
 - FIFO enlazado: cada ráfaga del gather pipe avanza el puntero de escritura del CP (a la base cuando es igual al final, si no +32), suma 32 a la distancia y copia los punteros al PI; la GPU lee bloques de 32 bytes mientras la lectura está activada, hay distancia y no está en un breakpoint activado. Interrupción CP (causa PI 0x800) por breakpoint, marca alta o marca baja con su habilitación, solo con la lectura activada.
@@ -265,6 +271,8 @@ Son comportamientos que el PEM deja indefinidos o que el manual del 750CL no det
 | Puntos | No se recortan (el software de Dolphin tampoco; lo marca como TODO) |
 | Contadores de quads del PE | Orden de los registros de Dolphin ("not verified"); un quad 2x2 por triángulo cuando al menos un píxel llega a la etapa (Dolphin por software cuenta cada tercer píxel). Las cuentas de Z solo con la prueba Z activa |
 | Bounding box | Bloques 2x2 tras alpha test y Z, como el software de Dolphin; sin verificar en consola |
+| Lectura de color del EFB en RGB565 | Se cuantiza a 5/6/5 al leer (el EFB por software guarda RGB8, como el de Dolphin); la escritura en RGB565 guarda RGB8 sin cuantizar |
+| Lecturas/escrituras del EFB de 8/16 bits | Parada clara (Dolphin las convierte desde la de 32 bits) |
 | Z freeze antes del primer triángulo | Pendiente constante 1,0 (suposición de Dolphin) |
 | RGB565_Z16 | Se guarda como RGB8 con Z de 24 bits, como el software de Dolphin; el anti-aliasing de 3 muestras no se emula |
 

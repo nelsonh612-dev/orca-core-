@@ -109,6 +109,15 @@ public:
     // returns true from attach_stats and keeps `stats` current when sync_stats is called
     // (before the CPU reads a PE register). The default sink cannot.
     virtual bool attach_stats(PixelStats* /*stats*/) { return false; }
+    // One EFB pixel for CPU access (24-bit colour and depth, sw::Efb encoding).
+    virtual bool peek_pixel(u32 /*x*/, u32 /*y*/, u32& /*color*/, u32& /*depth*/, std::string& error) {
+        error = "the GPU backend does not support CPU EFB reads";
+        return false;
+    }
+    virtual bool poke_pixel(u32 /*x*/, u32 /*y*/, bool /*depth*/, u32 /*value*/, std::string& error) {
+        error = "the GPU backend does not support CPU EFB writes";
+        return false;
+    }
     virtual bool sync_stats(bool /*bbox*/, std::string& error) {
         error = "the GPU backend does not track the bounding box / counters";
         return false;

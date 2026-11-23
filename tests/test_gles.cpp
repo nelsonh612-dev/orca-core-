@@ -1,6 +1,7 @@
 // OpenGL ES backend against the software reference: every scene is fed as real command bytes
 // to two GPUs (software rasterizer / GLES backend) and the whole EFB (colour and depth) is
 // compared. Exits with 77 (skipped) when no GLES 3.2 context with framebuffer fetch exists.
+#include "orca/gpu/efb_access.hpp"
 #include "orca/gpu/gles/backend.hpp"
 #include "orca/gpu/gpu.hpp"
 #include "orca/hw/pixel_engine.hpp"
@@ -573,6 +574,40 @@ TEST_CASE(gles_bounding_box_and_counters) {
     }
     const Diff d = t.diff();
     report("bbox/counter scenes", d);
+    CHECK_EQ(d.color, 0U);
+    CHECK_EQ(d.depth, 0U);
+}
+
+// CPU EFB peeks/pokes through the GLES backend give the software results.
+TEST_CASE(gles_efb_cpu_access) {
+    Twin t;
+    t.scene();
+    t.bpw(bp::ZMODE, 1U | (7U << 1) | (1U << 4));
+    t.prim(0x90, {{10, 100, -0.9f, 0xFF00FFFFU}, {200, 110, -0.1f, 0x00FF80FFU}, {30, 250, -0.5f, 0x8040C0FFU}});
+    CHECK(t.run());
+    EfbAccess a_sw(t.sw.gpu, t.sw.pe), a_gl(t.gl.gpu, t.gl.pe);
+    auto addr = [](u32 x, u32 y, bool z) { return (y << 12) | (x << 2) | (z ? 0x400000U : 0U); };
+    unsigned diffs = 0, nonzero = 0;
+    for (u32 y = 90; y < 260; y += 7)
+        for (u32 x = 0; x < 220; x += 9)
+            for (bool z : {false, true}) {
+                u64 a = 0, b = 0;
+                CHECK(a_sw.mmio_read(addr(x, y, z), 4, a));
+                CHECK(a_gl.mmio_read(addr(x, y, z), 4, b));
+                diffs += a != b ? 1U : 0U;
+                nonzero += (z && a != 0U) ? 1U : 0U;
+            }
+    CHECK_EQ(diffs, 0U);
+    CHECK(nonzero > 50U); // the probes really hit the triangle
+    // pokes on both sides, then the whole EFB is compared
+    for (u32 i = 0; i < 40; ++i) {
+        CHECK(a_sw.mmio_write(addr(300 + i, 400 - i, false), 4, 0xA1B2C3D4U + i * 0x010203U));
+        CHECK(a_gl.mmio_write(addr(300 + i, 400 - i, false), 4, 0xA1B2C3D4U + i * 0x010203U));
+        CHECK(a_sw.mmio_write(addr(300 + i, 400 - i, true), 4, 0x00123456U * i));
+        CHECK(a_gl.mmio_write(addr(300 + i, 400 - i, true), 4, 0x00123456U * i));
+    }
+    const Diff d = t.diff();
+    report("EFB peek/poke", d);
     CHECK_EQ(d.color, 0U);
     CHECK_EQ(d.depth, 0U);
 }

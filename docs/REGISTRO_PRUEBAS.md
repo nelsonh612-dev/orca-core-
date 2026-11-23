@@ -25,7 +25,7 @@ Todos los resultados son de ejecuciones reales del 2026-11-22 en este entorno, s
 | reference (diferencial de enteros) | 6 | 152.001 | 0 |
 | **fpu_engine** (M004, +1 en M017) | 10 | 142.779 | 0 |
 | **cpu_fpu** (M004, +2 en M017) | 30 | 30.788 | 0 |
-| **system** (M005) | 13 | 109 | 0 |
+| **system** (M005 + EFB por la CPU M018) | 14 | 127 | 0 |
 | **programs** (M005) | 3 | 34 | 0 |
 | **disc** (M006) | 12 | 145 | 0 |
 | **av** (M007 + campo del XFB M015) | 12 | 299 | 0 |
@@ -33,9 +33,9 @@ Todos los resultados son de ejecuciones reales del 2026-11-22 en este entorno, s
 | **dsp_mi** (M009, actualizada en M010 y M012) | 15 | 458 | 0 |
 | **dsp_core** (M010 + M011 + M012) | 29 | 534 | 0 |
 | **gpu** (M013 + precargas M014 + programa `gpu_draw` M015 + registros PE M018) | 27 | 1.066 | 0 |
-| **gpu_sw** (M014 + M015 + M018) | 30 | 734 | 0 |
+| **gpu_sw** (M014 + M015 + M018) | 31 | 790 | 0 |
 | **efb_copy** (M014 + M015) | 11 | 409 | 0 |
-| **gles** (M016 + M018, Mesa llvmpipe 25.2.8, GLES 3.2) | 11 | 113 | 0 |
+| **gles** (M016 + M018, Mesa llvmpipe 25.2.8, GLES 3.2) | 12 | 2.780 | 0 |
 | encodings (vs `llvm-mc`) | 189 instrucciones | 181 ensambladas + 8 desensambladas | 0 diferencias |
 
 ### GPU: bounding box y contadores del PE (M018)
@@ -43,6 +43,8 @@ Todos los resultados son de ejecuciones reales del 2026-11-22 en este entorno, s
 - **Software (valores a mano):** caja inicial 1023/0 por BP 0x55/0x56; el triángulo x + y <= 6 da 0..7 x 0..7; un píxel en (13, 20) la amplía a 13 y 21; BP 0x55 solo cambia izquierda/derecha. Contadores: con Z apagada, 0 en Z y 10 quads en la mezcla (bloques con bx + by <= 6); Z tardía ALWAYS: 10/10/10; Z temprana NEVER: 10 entran, 0 pasan, 0 en mezcla y la caja no crece; Z temprana LESS con profundidad mayor: 10/10/10.
 - **Registros PE:** lectura de caja y contadores (mitades baja/alta, también 32 bits), escritura rechazada, ciclos de copia detenidos, y parada cuando el backend no los sigue.
 - **GLES frente a software:** las 14 palabras de PE 0x10-0x2A idénticas tras cuatro grupos de dibujos (Z apagada; Z tardía LEQUAL con planos que se cortan; Z temprana con alpha test que rechaza la mitad y BP 0x55 reescrito; borrado de contadores y otro offset de scissor) y tras BP 0x56 escrito justo después de un dibujo. Valores de control: Z temprana 9162 entran / 4581 pasan, Z tardía 7540 / 5026, mezcla 7339. EFB idéntico (0 diferencias). Leer antes de BP 0x55-0x57 en GLES se detiene.
+- **Acceso de la CPU al EFB:** compresión Z16 a mano (lineal 0xABCDEF → 0xABCD, near 0x123456 → 0x091A y 0xFFFFFF → 0xFFFF, far 0xF0F000 → 0x41E0); escritura y lectura de color/Z en RGB8 con los tres modos de alfa; píxel dibujado leído por la CPU; RGB565 (0xFF213042) y Z16; RGBA6 (0x82FF4120 y alfa 0); coordenadas fuera del EFB que no tocan el píxel al que apuntarían; paradas. GLES frente a software: 600 lecturas (color y Z) sobre un triángulo con profundidad idénticas, y 80 escrituras con el EFB completo idéntico. Sistema completo (GameCube y Wii): `stw`/`lwz` en 0xC8000000 por el DBAT1 escriben y leen el EFB.
+- **Mutaciones del acceso al EFB:** 9; 8 detectadas (E5, coordenadas fuera del EFB, sobrevivió al principio: se añadió la comprobación del píxel al que apuntaría). E7 es equivalente (el alfa de los formatos sin alfa ya es 0xFF). Error en mi prueba: calculé 0xAB >> 2 como 0x2B (es 0x2A). **Acumulado: 395.**
 - **Pruebas modificadas:** `gpu_pe_registers` comprobaba que 0x10 y 0x2C se detenían "no implementado"; ahora 0x10 se lee y 0x2C sigue detenido con el motivo nuevo.
 - **Errores encontrados (todos en mis pruebas):** esperé 0 quads de mezcla con la Z apagada (la mezcla siempre cuenta, como en Dolphin); una escena de Z temprana no pasaba ningún píxel porque la profundidad era 0, así que no probaba nada (se detectó al imprimir los valores y se corrigió); un quad quedaba fuera de pantalla porque seguía activo el offset de scissor anterior.
 - **Mutaciones (M018):** 13 sobre el shader (cuentas, intercambio atómico, ampliación de la caja), el backend (base de ids, subida por época, sincronización), el software y el PE: **13 detectadas** (S11, la sincronización antes de que la CPU escriba media caja, sobrevivió al principio; se añadió BP 0x56 justo tras un dibujo). **Acumulado: 386.**

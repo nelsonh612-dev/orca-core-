@@ -3,7 +3,7 @@
 // Sources: YAGCD for the base address; Dolphin's VideoCommon/PixelEngine.h and
 // PixelEngine.cpp (read as information only) for the register map and the
 // token / finish behaviour:
-//   0x00 ZCONF  0x02 ALPHACONF  0x04 DSTALPHACONF  0x06 ALPHAMODE  0x08 ALPHAREAD
+//   0x00 ZCONF  0x02 ALPHACONF  0x04 DSTALPHACONF  0x06 ALPHAMODE  0x08 ALPHAREAD (bits 0-1 used by CPU EFB reads)
 //        stored as written (they configure CPU access to the EFB, not modelled yet)
 //   0x0A CTRL   bit 0 token interrupt enable, bit 1 finish interrupt enable;
 //               writing 1 to bit 2 / bit 3 acknowledges the token / finish

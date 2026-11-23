@@ -322,3 +322,23 @@ TEST_CASE(cpu_access_to_pi_and_gather_pipe_through_mmu) {
 }
 
 TEST_MAIN("system")
+
+// The CPU reaches the EFB through DBAT1 (EA 0xC8000000 -> physical 0x08000000), as games do.
+TEST_CASE(cpu_reads_and_writes_the_efb) {
+    namespace A = orca::test::ppc_asm;
+    for (auto console : {system::Console::GameCube, system::Console::Wii}) {
+        system::System sys(system::SystemConfig{console, 0x00083214U, 1});
+        sys.hle_boot(0x80003000U);
+        const u32 ea = 0xC8000000U | (17U << 12) | (9U << 2);      // x = 9, y = 17, colour
+        auto& s = sys.cpu().state();
+        s.gpr[4] = ea; s.gpr[5] = 0x01ABCDEFU; s.gpr[6] = ea | 0x400000U; // and its depth
+        const u32 code[] = {A::stw(5, 0, 4), A::lwz(3, 0, 4), A::stw(5, 0, 6), A::lwz(7, 0, 6)};
+        u32 at = 0x00003000U;
+        for (u32 w : code) { CHECK(sys.bus().write32(at, w) == mem::BusStatus::Ok); at += 4; }
+        CHECK(sys.cpu().run(4) == ppc::StepResult::Executed);
+        CHECK_EQ(sys.gpu().renderer().efb().color24(9, 17), 0xABCDEFU);
+        CHECK_EQ(s.gpr[3], 0x00ABCDEFU); // PE ALPHAREAD = 0 after reset -> alpha 0x00
+        CHECK_EQ(sys.gpu().renderer().efb().depth24(9, 17), 0xABCDEFU);
+        CHECK_EQ(s.gpr[7], 0xABCDEFU);
+    }
+}

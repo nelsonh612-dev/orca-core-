@@ -76,6 +76,8 @@ public:
 
     bool attach_stats(PixelStats* stats) override;
     bool sync_stats(bool bbox, std::string& error) override;
+    bool peek_pixel(u32 x, u32 y, u32& color, u32& depth, std::string& error) override;
+    bool poke_pixel(u32 x, u32 y, bool depth, u32 value, std::string& error) override;
 
     // EFB transfer (24-bit colour and depth values, same layout as sw::Efb).
     void download(sw::Efb& efb);

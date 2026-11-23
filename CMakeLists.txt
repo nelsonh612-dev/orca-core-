@@ -36,6 +36,7 @@ add_library(orca_core
     src/hw/pixel_engine.cpp
     src/hw/command_processor.cpp
     src/gpu/gpu.cpp
+    src/gpu/efb_access.cpp
     src/gpu/texture_decoder.cpp
     src/gpu/sw/vertex.cpp
     src/gpu/sw/renderer.cpp

@@ -23,6 +23,8 @@ System::System(SystemConfig config) : config_(config), clocks_(clocks_for(config
     cp_ = std::make_unique<hw::CommandProcessor>(bus_, *pi_, *gpu_, wii);
     bus_.map_mmio("CP", hw::cp::kBase, 0x1000, *cp_);
     bus_.map_mmio("PE", hw::pe::kBase, 0x1000, *pe_);
+    efb_access_ = std::make_unique<gpu::EfbAccess>(*gpu_, *pe_);
+    bus_.map_mmio("EFB", gpu::kEfbPhysicalBase, gpu::kEfbPhysicalSize, *efb_access_);
     pi_->set_burst_listener([this](u32) { cp_->on_gather_burst(); });
     di_ = std::make_unique<hw::DiscInterface>(bus_, scheduler_, *pi_);
     page_0c006_ = std::make_unique<hw::MmioSplitter>();
