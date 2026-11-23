@@ -1,4 +1,4 @@
-# Estado del proyecto — Milestone 012
+# Estado del proyecto — Milestone 013
 
 ## Funciones implementadas (todas con pruebas)
 
@@ -96,11 +96,22 @@
 - DMA: lectura o escritura en la dirección actual, con 512 KiB/s de lectura y 96,1 KiB/s de escritura (f_CPU/524288 y f_CPU/98432 ciclos por byte).
 - Cualquier otro comando, y leer antes del byte de comando, detienen la emulación con el código. `orca_run --card-a=` / `--card-b=` cargan la imagen (o crean una de 16 Mbit) y la guardan si cambió.
 
+**GPU, parte 1 (M013)** — fuentes: archivos de Dolphin como información (ver README) y YAGCD; el código es propio:
+- `hw::CommandProcessor` (0x0C000000): STATUS calculado (marcas de agua, lectura y comando inactivos, breakpoint), CTRL (6 bits), CLEAR, PERF_SELECT (3 bits), registro 0x0A (8 bits), los ocho punteros del FIFO como pares LO/HI con máscaras 0xFFE0 / 0x03FF (GC) o 0x1FFF (Wii), métricas que leen 0 y 0x64 que lee 4.
+- FIFO enlazado: cada ráfaga del gather pipe avanza el puntero de escritura del CP (a la base cuando es igual al final, si no +32), suma 32 a la distancia y copia los punteros al PI; la GPU lee bloques de 32 bytes mientras la lectura está activada, hay distancia y no está en un breakpoint activado. Interrupción CP (causa PI 0x800) por breakpoint, marca alta o marca baja con su habilitación, solo con la lectura activada.
+- Lector de comandos: NOP, carga CP/XF/BP, cargas XF indexadas A-D, display lists, primitivas 0x80-0xBF; 0x01-0x07, 0x3F, 0x44 y 0x48 sin efecto; un comando cortado espera más bytes; los opcodes desconocidos detienen la emulación con el código.
+- Estado CP: índices de matrices, VCD, VAT de los 8 formatos, bases y strides de los 16 arrays; tamaño de cada vértice con todos los formatos de posición, normal (incluida NBT con tres índices), color y coordenadas de textura.
+- Memoria XF (0x0000-0x1057) y registros BP con la máscara 0xFE; tokens (BP 0x47/0x48) y fin de dibujo (BP 0x45 = 2) llegan al Pixel Engine con el tiempo estimado de Dolphin (mínimo 500 ciclos).
+- `hw::PixelEngine` (0x0C001000): registros de configuración, CTRL con habilitaciones y confirmaciones, TOKEN; causas PI 0x200 y 0x400.
+- Decodificador de texturas (imagen completa y texel a texel) para los 11 formatos, con paletas IA8/RGB565/RGB5A3.
+- `System` conecta CP, PE y GPU; una parada de la GPU se devuelve como `device_stop` con el motivo.
+
 ## Funciones pendientes (en orden)
 
-1. **Restos de M012 (sin hacer):** los demás comandos de la tarjeta que Dolphin nombra (ReadID, ReadErrorBuffer, WakeUp, Sleep, ArrayToBuffer, WriteBuffer, ExtraByteProgram, ChipErase; sus códigos numéricos están en una cabecera que no tengo, salvo 0x87 = despertar según gc-memcard-adapter) y el ID del flash en la SRAM; la salida de audio (los bloques del DMA de audio ya se leen pero nadie los reproduce); la mezcla de streaming del AI. También quedan el puerto serie 1 (EXI0/CS2), el AD16 (EXI2/CS0), el mapeo de la ROM en el vector de reset 0xFFF00000, la aplicación de la protección del MI y los comandos restantes de la DI.
-2. **M013 — GPU (CP/XF/BP/TEV) y M014 — JIT ARM64:** emisor ARM64 verificado con el desensamblador de LLVM, bloques básicos, asignación de registros, caché de bloques conectada a la invalidación del bus, y pruebas diferenciales intérprete vs JIT, que tienen que correr en un dispositivo ARM64.
-3. **Después:** GPU (CP/FIFO, XF, BP, TEV, EFB/XFB → Vulkan para Mali), DSP y audio, DI y discos, SI y controles, EXI, AI y los componentes de Wii (Hollywood, IOS, Bluetooth).
+1. **Restos de M012 (sin hacer):** los demás comandos de la tarjeta que Dolphin nombra (ReadID, ReadErrorBuffer, WakeUp, Sleep, ArrayToBuffer, WriteBuffer, ExtraByteProgram, ChipErase; ahora con sus códigos de `EXI_DeviceMemoryCard.h`: 0x53, 0x82, 0x85, 0x86, 0x87, 0x88, 0xF3, 0xF4) y el ID del flash en la SRAM; la salida de audio (los bloques del DMA de audio ya se leen pero nadie los reproduce); la mezcla de streaming del AI. También quedan el puerto serie 1 (EXI0/CS2), el AD16 (EXI2/CS0), el mapeo de la ROM en el vector de reset 0xFFF00000, la aplicación de la protección del MI y los comandos restantes de la DI.
+2. **M014 — GPU, parte 2 (lo siguiente):** carga de vértices (formatos y cuantización), transformación XF (matrices, iluminación, texgen), recorte, rasterizador por software con TEV, texturas (TMEM, cargas de paleta y precargas), EFB (Z, mezcla, alpha test, niebla), copias del EFB a textura y a XFB, y el backend OpenGL ES 3.2 comparado píxel a píxel con el software sobre llvmpipe; después Vulkan (aquí solo compila: no hay controlador) y la salida de video del XFB.
+3. **M015 — JIT ARM64:** emisor ARM64 verificado con el desensamblador de LLVM, bloques básicos, asignación de registros, caché de bloques conectada a la invalidación del bus, y pruebas diferenciales intérprete vs JIT, que tienen que correr en un dispositivo ARM64.
+4. **Después:** audio real, DI y discos, SI y controles, EXI, AI y los componentes de Wii (Hollywood, IOS, Bluetooth).
 
 ## Pendiente de verificación en hardware real
 
@@ -172,6 +183,12 @@ Son comportamientos que el PEM deja indefinidos o que el manual del 750CL no det
 | Acelerador: ARAM en Wii | Parada clara |
 | Tarjeta: interrupción | Flanco: cada comando terminado activa EXIINT una vez. Dolphin consulta un nivel que 0x89 borra; no se modela |
 | Tarjeta: desbloqueo de los juegos oficiales | No se emula: la tarjeta informa UNLOCKED desde el principio, como en Dolphin |
+| CP: momento en que corre la GPU | Inmediatamente después de cada ráfaga o escritura en CTRL/CLEAR/distancia (sin tiempo de GPU); Dolphin en un núcleo la hace correr por franjas de tiempo |
+| CP: carga VCD baja con bits por encima del 16 | La versión antigua de Dolphin los mezclaba con la parte alta; Orca guarda las dos mitades por separado |
+| CP: subcomandos 0x00/0x10/0x20 | Se aceptan sin efecto (contadores de rendimiento según las notas de `CPMemory.h`) |
+| XF: carga que empieza o termina fuera de 0x0000-0x1057 | Parada (Dolphin la ignora o la recorta con un aviso) |
+| Comandos: XF con campo de cantidad > 15, display list dentro de otra, VAT 8-15 | Parada (Dolphin solo lo comprueba con un assert) |
+| Texturas: expansión de 3 bits a 8 | Solo una fuente (Metaforce); 4, 5 y 6 bits coinciden en dos |
 | Tarjeta: tiempos de borrado/programa y de DMA | 5000 ciclos y las tasas de Dolphin; no se midieron |
 | DSP: accesos genéricos a $st0-$st3, desbordamiento de pilas (STOVF), aritmética de direcciones con $wrN ≠ 0xFFFF | Parada clara (no documentado) |
 
@@ -190,7 +207,7 @@ Son comportamientos que el PEM deja indefinidos o que el manual del 750CL no det
 | 9 | `lmw/stmw`, instrucciones de cadena y `lwarx/stwcx.` no pasan por la caché bloqueada | Bajo |
 | 10 | El DMA de la caché bloqueada y las ráfagas del gather pipe terminan al instante | Falta conectarlos al planificador con tiempos reales |
 | 11 | Coste fijo de 1 ciclo por instrucción: no hay modelo de pipeline ni de caché | El tiempo es determinista, no exacto al ciclo |
-| 12 | Existen PI, gather pipe, DI, VI, SI, AI (con DMA de audio), EXI (con RTC/SRAM/ROM y tarjetas de memoria), MI, la interfaz del DSP con ARAM, el núcleo del DSP y su acelerador completo; CP/PE (GPU) dan `MemoryFault` al tocarse | Un juego comercial se detiene al usar la GPU, cuando su microcódigo lee el IROM/COEF sin volcados o al usar un comando de tarjeta no implementado, siempre con una parada que explica el motivo |
+| 12 | La GPU procesa el FIFO, los estados y las señales al CPU, pero no dibuja | Un juego comercial se detiene en el primer triángulo, copia del EFB, carga de paleta o precarga de TMEM (o cuando su microcódigo DSP lee el IROM/COEF sin volcados, o al usar un comando de tarjeta no implementado), siempre con una parada que explica el motivo |
 | No hay salida de video (no se convierte el XFB a imagen) ni de audio | Sin frontend todavía |
 | DI: solo existe la lectura 0xA8 por DMA; los discos Wii, el audio streaming y los formatos comprimidos no están implementados | Parada clara con el comando |
 | 13 | Rendimiento en el anfitrión x86: unos 20 M instr/s en enteros y unos 4 M instr/s en FP. El motor FP cambia el modo de redondeo del anfitrión en cada operación | Esperado: el intérprete es la referencia de precisión; la velocidad vendrá del JIT |

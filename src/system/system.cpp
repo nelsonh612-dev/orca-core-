@@ -17,6 +17,13 @@ System::System(SystemConfig config) : config_(config), clocks_(clocks_for(config
     gather_pipe_ = std::make_unique<hw::GatherPipe>(*pi_);
     bus_.map_mmio("PI", hw::pi::kBase, 0x1000, *pi_);
     bus_.map_mmio("GatherPipe", hw::pi::kGatherPipeBase, 0x1000, *gather_pipe_);
+    const bool wii = config_.console != Console::GameCube;
+    pe_ = std::make_unique<hw::PixelEngine>(scheduler_, *pi_);
+    gpu_ = std::make_unique<gpu::Gpu>(bus_, *pe_, wii ? 0x1FFFFFFFU : 0x03FFFFFFU);
+    cp_ = std::make_unique<hw::CommandProcessor>(bus_, *pi_, *gpu_, wii);
+    bus_.map_mmio("CP", hw::cp::kBase, 0x1000, *cp_);
+    bus_.map_mmio("PE", hw::pe::kBase, 0x1000, *pe_);
+    pi_->set_burst_listener([this](u32) { cp_->on_gather_burst(); });
     di_ = std::make_unique<hw::DiscInterface>(bus_, scheduler_, *pi_);
     page_0c006_ = std::make_unique<hw::MmioSplitter>();
     vi_ = std::make_unique<hw::VideoInterface>(scheduler_, *pi_, clocks_.cpu_hz);
@@ -169,6 +176,7 @@ RunResult System::run(u64 max_cycles) {
     const u64 cpi = config_.cycles_per_instruction;
     while (scheduler_.now() < end) {
         if (dsp_->dsp_failed()) { r.device_stop = true; r.device_error = dsp_->dsp_error(); break; }
+        if (cp_->stopped()) { r.device_stop = true; r.device_error = cp_->stop_reason(); break; }
         if (stop_pc_ && cpu_->state().pc == *stop_pc_) { r.reached_stop_pc = true; break; }
         const ppc::StepResult s = cpu_->step();
         if (s == ppc::StepResult::Executed || s == ppc::StepResult::ExceptionTaken) {

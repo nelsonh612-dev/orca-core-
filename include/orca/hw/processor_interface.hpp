@@ -65,7 +65,14 @@ public:
     // Called by the gather pipe for each 32-byte burst.
     bool write_fifo_burst(const std::array<u8, 32>& burst);
 
-    // Called after each burst has been written (future command processor hook).
+    // While the CPU and GPU FIFOs are linked the command processor drives the
+    // write pointer (Dolphin copies CP's pointers into the PI after each burst).
+    void set_fifo_from_cp(u32 write_pointer, u32 base, u32 end, bool wrapped) {
+        fifo_base_ = base & pi::FIFO_ADDR_MASK;
+        fifo_end_ = end & pi::FIFO_ADDR_MASK;
+        fifo_wp_ = (write_pointer & pi::FIFO_ADDR_MASK) | (wrapped ? pi::FIFO_WRAP : (fifo_wp_ & pi::FIFO_WRAP));
+    }
+    // Called after each burst has been written (command processor hook).
     void set_burst_listener(std::function<void(u32 physical)> f) { burst_listener_ = std::move(f); }
 
     bool mmio_read(u32 offset, unsigned size, u64& value) override;

@@ -21,6 +21,9 @@
 
 #include <array>
 #include "orca/hw/dsp_interface.hpp"
+#include "orca/gpu/gpu.hpp"
+#include "orca/hw/command_processor.hpp"
+#include "orca/hw/pixel_engine.hpp"
 #include "orca/hw/memory_interface.hpp"
 #include "orca/hw/processor_interface.hpp"
 #include "orca/loader/executable.hpp"
@@ -57,7 +60,7 @@ struct RunResult {
     u64 cycles{0};
     u64 instructions{0};
     bool reached_stop_pc{false}; // run_until / call_guest only
-    bool device_stop{false};     // a device (the DSP core) hit a host stop
+    bool device_stop{false};     // a device (the DSP core or the GPU) hit a host stop
     std::string device_error;
 };
 
@@ -73,6 +76,9 @@ public:
     core::Scheduler& scheduler() noexcept { return scheduler_; }
     hw::ProcessorInterface& pi() noexcept { return *pi_; }
     hw::GatherPipe& gather_pipe() noexcept { return *gather_pipe_; }
+    gpu::Gpu& gpu() noexcept { return *gpu_; }
+    hw::CommandProcessor& command_processor() noexcept { return *cp_; }
+    hw::PixelEngine& pixel_engine() noexcept { return *pe_; }
     hw::DiscInterface& di() noexcept { return *di_; }
     hw::VideoInterface& vi() noexcept { return *vi_; }
     hw::SerialInterface& si() noexcept { return *si_; }
@@ -144,6 +150,9 @@ private:
     std::unique_ptr<ppc::Cpu> cpu_;
     std::unique_ptr<hw::ProcessorInterface> pi_;
     std::unique_ptr<hw::GatherPipe> gather_pipe_;
+    std::unique_ptr<hw::PixelEngine> pe_;
+    std::unique_ptr<gpu::Gpu> gpu_;
+    std::unique_ptr<hw::CommandProcessor> cp_;
     std::unique_ptr<hw::MmioSplitter> page_0c006_;
     std::unique_ptr<hw::DiscInterface> di_;
     std::unique_ptr<hw::VideoInterface> vi_;

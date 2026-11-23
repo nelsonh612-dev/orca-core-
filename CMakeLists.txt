@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(orca_core VERSION 0.12.0 LANGUAGES C CXX)
+project(orca_core VERSION 0.13.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -30,6 +30,13 @@ add_library(orca_core
     src/hw/memory_interface.cpp
     src/hw/exi_ipl.cpp
     src/hw/exi_memcard.cpp
+    src/gpu/command_stream.cpp
+    src/gpu/xf_memory.cpp
+    src/gpu/cp_state.cpp
+    src/hw/pixel_engine.cpp
+    src/hw/command_processor.cpp
+    src/gpu/gpu.cpp
+    src/gpu/texture_decoder.cpp
     src/hw/external_interface.cpp
     src/hw/serial_interface.cpp
     src/hw/video_interface.cpp
@@ -81,6 +88,10 @@ if(ORCA_BUILD_TESTS)
     target_link_libraries(orca_test_exi PRIVATE orca_core)
     target_include_directories(orca_test_exi PRIVATE tests)
     add_test(NAME exi COMMAND orca_test_exi)
+    add_executable(orca_test_gpu tests/test_gpu.cpp)
+    target_link_libraries(orca_test_gpu PRIVATE orca_core)
+    target_include_directories(orca_test_gpu PRIVATE tests)
+    add_test(NAME gpu COMMAND orca_test_gpu)
     add_executable(orca_test_dsp_mi tests/test_dsp_mi.cpp)
     target_link_libraries(orca_test_dsp_mi PRIVATE orca_core)
     target_include_directories(orca_test_dsp_mi PRIVATE tests)
@@ -114,7 +125,7 @@ if(ORCA_BUILD_TESTS)
         add_custom_command(OUTPUT ${ODIR}/runtime.o COMMAND ${ORCA_PPC_CLANG} ${PPC_FLAGS} -c ${PDIR}/runtime.c -o ${ODIR}/runtime.o
                            DEPENDS ${PDIR}/runtime.c)
         set(PPC_OUTPUTS)
-        foreach(prog integer_suite float_suite hardware_suite dvd_suite av_suite exi_suite aram_suite dsp_suite)
+        foreach(prog integer_suite float_suite hardware_suite dvd_suite av_suite exi_suite aram_suite dsp_suite gpu_suite)
             add_custom_command(
                 OUTPUT ${ODIR}/${prog}.elf ${ODIR}/${prog}.dol
                 COMMAND ${ORCA_PPC_CLANG} ${PPC_FLAGS} -c ${PDIR}/${prog}.c -o ${ODIR}/${prog}.o
@@ -144,6 +155,8 @@ if(ORCA_BUILD_TESTS)
         target_compile_definitions(orca_test_dsp_core PRIVATE ORCA_PROGRAMS_DIR="${ODIR}")
         target_compile_definitions(orca_test_dsp_mi PRIVATE ORCA_PROGRAMS_DIR="${ODIR}")
         target_compile_definitions(orca_test_exi PRIVATE ORCA_PROGRAMS_DIR="${ODIR}")
+        target_compile_definitions(orca_test_gpu PRIVATE ORCA_PROGRAMS_DIR="${ODIR}")
+        add_dependencies(orca_test_gpu orca_ppc_programs)
         target_compile_definitions(orca_test_av PRIVATE ORCA_PROGRAMS_DIR="${ODIR}")
         target_compile_definitions(orca_test_disc PRIVATE ORCA_PROGRAMS_DIR="${ODIR}")
     else()
@@ -151,7 +164,7 @@ if(ORCA_BUILD_TESTS)
     endif()
 
     # A hang (e.g. an emulated deadlock) must fail, not block the test run.
-    set_tests_properties(memory cpu_integer cpu_system mmu reference fpu_engine cpu_fpu system programs disc av exi dsp_mi dsp_core PROPERTIES TIMEOUT 300)
+    set_tests_properties(memory cpu_integer cpu_system mmu reference fpu_engine cpu_fpu system programs disc av exi dsp_mi dsp_core gpu PROPERTIES TIMEOUT 300)
 
     find_program(ORCA_LLVM_MC NAMES llvm-mc llvm-mc-18 llvm-mc-17 llvm-mc-16)
     add_executable(orca_encoding_check tests/encoding_check.cpp)

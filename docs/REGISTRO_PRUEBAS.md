@@ -1,4 +1,4 @@
-# Registro de pruebas — Milestone 012
+# Registro de pruebas — Milestone 013
 
 Todos los resultados son de ejecuciones reales del 2026-11-15 en este entorno, sobre una copia limpia de los fuentes entregados.
 
@@ -8,9 +8,9 @@ Todos los resultados son de ejecuciones reales del 2026-11-15 en este entorno, s
 
 | Configuración | Compilación | Advertencias (`-Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion -Wshadow -Werror`) | CTest |
 |---|---|---|---|
-| GCC Release (`-DORCA_WERROR=ON`) | OK | 0 | 15/15 pasan (4,3 s) |
-| Clang Release (`-DORCA_WERROR=ON`) | OK | 0 | 15/15 pasan (3,5 s) |
-| GCC Debug + ASan + UBSan (`-fno-sanitize-recover=all`, `-DORCA_WERROR=ON`) | OK | 0 | 15/15 pasan (79,5 s) |
+| GCC Release (`-DORCA_WERROR=ON`) | OK | 0 | 16/16 pasan (4,1 s) |
+| Clang Release (`-DORCA_WERROR=ON`) | OK | 0 | 16/16 pasan (3,2 s) |
+| GCC Debug + ASan + UBSan (`-fno-sanitize-recover=all`, `-DORCA_WERROR=ON`) | OK | 0 | 16/16 pasan (80,3 s) |
 | Clang + ASan/UBSan | **NO EJECUTADO**: falta `compiler-rt` en el entorno | — | — |
 | Android NDK arm64-v8a | **NO EJECUTADO**: no hay NDK ni sysroot AArch64 | — | — |
 
@@ -32,7 +32,20 @@ Todos los resultados son de ejecuciones reales del 2026-11-15 en este entorno, s
 | **exi** (M008 + tarjeta de memoria M012) | 23 | 1.445 | 0 |
 | **dsp_mi** (M009, actualizada en M010 y M012) | 15 | 458 | 0 |
 | **dsp_core** (M010 + M011 + M012) | 29 | 534 | 0 |
+| **gpu** (M013) | 25 | 999 | 0 |
 | encodings (vs `llvm-mc`) | 189 instrucciones | 181 ensambladas + 8 desensambladas | 0 diferencias |
+
+### GPU, parte 1 (M013)
+
+Valores esperados calculados a mano a partir del formato de cada comando y registro.
+- Lector de comandos: cada tipo de comando con sus campos; los 64 opcodes de primitiva (tipo y VAT); 16 palabras XF como máximo y parada con más; cortes en cada byte de seis comandos (no se consume nada); display lists (dirección y tamaño & ~31); los ocho opcodes sin efecto; siete opcodes desconocidos; parada que viene del receptor o del tamaño de vértice.
+- CP: todas las cargas y sus índices; tamaños de vértice de posición (2/3 componentes, s16, float y formatos 5-7), matrices, normales (directa NBT, índices de 8/16 bits, con y sin index3), los 6 formatos de color directos y los inválidos, coordenadas de textura en los tres grupos del VAT.
+- XF: carga en memoria, en registros, cruzando de memoria a registros, en la zona sin uso, recortada al final y fuera del espacio. BP: máscara 0xFE (incluida una máscara aplicada a sí misma) y reinicio.
+- PE: registros, confirmaciones, mínimo de 500 ciclos, un solo evento para varias peticiones, petición de interrupción que se mantiene, habilitación posterior.
+- FIFO a través de la CPU (bus real y gather pipe): token y su interrupción; vuelta del anillo con un comando XF de 69 bytes repartido en tres ráfagas y datos comprobados en RAM; breakpoint (la GPU se para, bits de estado, interrupción), marca alta y baja con y sin habilitación, desbloqueo; FIFO sin enlazar; puntero de lectura más allá del final; display list con una carga CP dentro y carga XF indexada desde el array 12; máscaras de los registros (GC y Wii); tiempos de GPU.
+- Programa PowerPC `gpu_suite` (compilado con clang): configura PI y CP como GX, envía tokens y "draw done" por el gather pipe y espera las causas PE por sondeo: token 0x1234, punteros avanzados 0x20, distancia 0, token 0x5678, causas 0x600, confirmadas, STATUS 0x0C.
+- Texturas: valores a mano de RGB565, RGB5A3 (los dos modos), IA8, IA4, I4, I8, RGBA8, segunda tesela, CMPR en los dos modos (incluidos extremos iguales) y paletas C4/C8/C14X2 en los tres formatos; errores (índice fuera de la paleta, datos cortos, formatos inválidos); comparación de los 11 formatos entre el decodificador por teselas (recorrido secuencial) y el de texel suelto, con tamaños 13x11, 8x8, 1x1 y 17x4 y las tres paletas: 0 diferencias.
+- **No probado:** el camino de un juego real hasta la GPU (se detendría al dibujar).
 
 ### Acelerador, DMA de audio y tarjeta de memoria (M012)
 
@@ -231,6 +244,14 @@ I5 (liberar CS no reinicia la secuencia) sobrevivió y es **equivalente**: cada 
 **Total: 158 mutaciones detectadas.**
 
 
+### Mutaciones de M013 (48)
+
+`/tmp/mut/run11.py` sobre el lector de comandos, XF, BP, estado CP, GPU, Command Processor, Pixel Engine y texturas.
+- 40 detectadas al principio. Supervivientes: P8 y K7 no compilaban (variable sin usar con `-Werror`) y K6 apuntaba al archivo equivocado (se rehicieron: detectadas); G1 (fin de dibujo solo mira el byte bajo), K2 (el puntero de lectura vuelve solo cuando es igual al final), E4 (la petición de interrupción del token se mantiene) y T3 (extremos CMPR iguales) → se añadió una prueba para cada una: detectadas.
+- X1 (no recortar la carga XF al final) solo escribe fuera del array: la detecta la build ASan (stack-buffer-overflow), no la Release.
+- B2 (máscara de 24 bits en la carga BP) es equivalente: la máscara nunca supera 24 bits.
+- **Total: 47 detectadas, 1 equivalente. Acumulado: 242.**
+
 ### Mutaciones de M012 (39)
 
 Cada mutación se aplicó al fuente, se recompiló y se ejecutó la suite correspondiente (`/tmp/mut/run9.py` y `run10.py`).
@@ -242,6 +263,12 @@ Cada mutación se aplicó al fuente, se recompiló y se ejecutó la suite corres
 | Acelerador (C1-C13) | 13 | 11 | 13 detectadas |
 
 Supervivientes iniciales y prueba añadida: M3 (programa sin datos), M4 (búfer de 128 bytes), M5 (primer byte 0x80 de la identificación), M10 (interruptor de interrupción apagado), C5 (escala de ganancia 2), C9 (bit 31 tras el desbordamiento de escritura). **Total acumulado: 195 mutaciones detectadas.**
+
+## Errores encontrados durante M013
+
+- **Errores en mis pruebas (el código estaba bien):** opcode 0x9A tomado por triángulos (es tira de triángulos; triángulos con VAT 2 es 0x92); la máscara BP aplicada a sí misma mal calculada (0xFFFF00 con máscara 0xFF da 0, no 0xFF); índice de paleta 3 tomado por 2; un caso de "fin de dibujo" con byte bajo 2 puesto entre los que deben fallar.
+- **Diseño corregido antes de terminar:** la primera versión del decodificador de imágenes llamaba al de texel suelto, así que la comparación entre los dos no demostraba nada; se reescribió como recorrido secuencial por teselas.
+- **Incoherencia evitada:** el PI de Orca da la vuelta cuando la siguiente dirección llega al final; el CP, cuando el puntero es igual al final. Como en Dolphin, el CP manda mientras están enlazados y copia sus punteros al PI tras cada ráfaga.
 
 ## Errores encontrados durante M012
 
