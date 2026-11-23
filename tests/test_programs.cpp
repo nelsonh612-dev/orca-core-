@@ -8,6 +8,7 @@
 #include "test_port.hpp"
 
 #include <cstdio>
+#include <chrono>
 #include <fstream>
 #include <iterator>
 #include <vector>
