@@ -491,8 +491,9 @@ Cpu::Outcome Cpu::op_dcbz_l(u32 ins) {
     } else {
         it->second.fill(0);
     }
-    // The locked line is the CPU-visible copy of this physical block. Treat
-    // the zero-fill as a write for reservation and code-coherency observers.
+    // dcbz_l allocates/clears the line in Modified (M) state.
+    locked_cache_dirty_.insert(lo);
+    // Treat the zero-fill as a write for reservation and code-coherency observers.
     bus_.notify_external_write(lo, 32U, mem::AccessSource::Cpu);
     return o;
 }
