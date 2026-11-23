@@ -57,6 +57,22 @@ bool CodeBuffer::make_executable() {
     return true;
 }
 
+bool CodeBuffer::patch(const u32* at, u32 word) {
+    if (base_ == nullptr) return false;
+    const auto* p = reinterpret_cast<const u8*>(at);
+    if (p < base_ || p + 4 > base_ + used_) return false;
+    const bool was_executable = !writable_;
+    if (!set_writable()) return false;
+    u32* w = reinterpret_cast<u32*>(base_ + (p - base_));
+    *w = word;
+    if (was_executable) {
+        // the new word must reach the instruction side before the code runs again
+        __builtin___clear_cache(reinterpret_cast<char*>(w), reinterpret_cast<char*>(w + 1));
+        return make_executable();
+    }
+    return true;
+}
+
 void CodeBuffer::reset() {
     used_ = 0;
     flushed_ = 0;

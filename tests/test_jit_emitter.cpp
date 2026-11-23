@@ -141,6 +141,10 @@ std::vector<Case> cases() {
     add([](Emitter& e) { const auto l = e.tbnz(3, 40); CHECK(e.bind(l, l + 4)); }, "tbnz x3, #40, #16");
     add([](Emitter& e) { e.br(16); }, "br x16");
     add([](Emitter& e) { e.blr(17); }, "blr x17");
+    add([](Emitter& e) { e.adr(9, -12); }, "adr x9, #-12");
+    add([](Emitter& e) { e.adr(1, 0x400); }, "adr x1, #1024");
+    add([](Emitter& e) { e.emit(Emitter::b_encoding(-3)); }, "b #-12");
+    add([](Emitter& e) { e.emit(Emitter::movz_encoding(false, 10, 0xFFFF)); }, "movz w10, #0xffff");
     // scalar floating point
     add([](Emitter& e) { e.ldr_d(3, 19, 128); }, "ldr d3, [x19, #128]");
     add([](Emitter& e) { e.str_d(31, 1, 32760); }, "str d31, [x1, #32760]");

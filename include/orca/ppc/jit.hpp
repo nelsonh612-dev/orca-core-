@@ -30,8 +30,11 @@ namespace orca::ppc {
 
 // Written by translated code when it leaves a block.
 struct JitExit {
-    u32 steps{0};   // guest instructions completed in the block
+    u32 steps{0};   // guest instructions completed (all blocks entered through links included)
     u32 value{0};   // scratch for memory helpers
+    u32 limit{0};   // a linked block is entered only if steps + its length <= limit
+    u32 unused{0};
+    u64 site{0};    // link site of the exit taken (0: not a linkable exit)
 };
 
 class Jit {
@@ -70,6 +73,7 @@ public:
         u64 helper_steps{0}; // block instructions executed by the in-block interpreter call (FP, PS, lmw/stmw, ...)
         u64 chained{0};      // blocks entered directly after another one inside the same run()
         u64 tlb_fills{0};    // translation-cache entries created by the load/store helpers
+        u64 links{0};        // direct jumps patched between blocks
     };
     const Stats& stats() const noexcept { return stats_; }
 
@@ -93,13 +97,15 @@ private:
     struct Block {
         u32 ea{0}, pa{0}, count{0};
         const u32* code{nullptr};
+        u32 linked_offset{0};                 // entry for linked jumps (after the prologue), in words
         bool valid{true};
+        std::vector<const u32*> incoming;     // link sites that jump here
     };
     struct Compiler;
     friend struct Compiler;
     // Helpers called from translated code (AAPCS64, Jit* first).
     static u32 helper_load(Jit* self, u32 ea, u32 size, JitExit* out);
-    static u32 helper_store(Jit* self, u32 ea, u32 size, u32 value);
+    static u32 helper_store(Jit* self, u32 ea, u32 size, u32 value, u32 pc);
     static u32 helper_exec(Jit* self, u32 ins, u32 pc);
 
     Result interpret();
@@ -107,13 +113,31 @@ private:
     void tlb_flush() noexcept { tlb_.fill(TlbEntry{}); }
     void tlb_drop_writes_to(u32 phys_page) noexcept;
     void tlb_check_context();
+    void link_check_context();
+    void link(const u32* site, Block* target);
+    void unlink_incoming(Block* b);
     Block* lookup_or_compile(u32 pc, u32 pa, std::string& error);
-    bool compile(u32 pc, u32 pa, std::vector<u32>& words, u32& count, std::string& error);
+    bool compile(u32 pc, u32 pa, std::vector<u32>& words, u32& count, std::string& error, u32* linked_offset = nullptr,
+                 std::vector<u32>* sites = nullptr);
     void invalidate(u32 address, u32 size);
 
     // First members: translated code reaches them with small offsets from x21 (this).
     std::array<TlbEntry, kTlbEntries> tlb_{};
     u64* bus_write_epoch_{nullptr};
+    // Block linking: a link site jumps to its target only while link_context_ (the
+    // current instruction-translation context) equals the id patched into the site.
+    u32 link_context_{kNoContext};
+    static constexpr u32 kNoContext = 0xFFFFU;
+    struct FetchContext {
+        u32 msr{0}, hid4{0};
+        std::array<BatPair, 8> ibat{};
+        bool operator==(const FetchContext&) const = default;
+    };
+    std::vector<FetchContext> contexts_;                  // id = index
+    std::unordered_map<const u32*, Block*> sites_;        // link site -> block containing it
+    const u32* pending_site_{nullptr};
+    u32 current_pc_{0};                                   // store/in-block instruction being executed by a helper
+    bool current_pc_valid_{false};
     // What the cached translations depend on (checked at every run())
     struct TlbContext {
         u32 msr{0}, hid4{0};

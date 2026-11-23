@@ -40,6 +40,10 @@ public:
     // Read+execute for the whole buffer and instruction-cache maintenance for the
     // bytes appended since the last call.
     bool make_executable();
+    // Replaces one instruction of code already appended (block linking) and makes
+    // it coherent; the buffer returns to the protection it had (so code that is
+    // running and called a helper can continue).
+    bool patch(const u32* at, u32 word);
     // Drops all code (the caller must forget every pointer it got).
     void reset();
 

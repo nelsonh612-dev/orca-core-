@@ -9,7 +9,7 @@ on:
 
 concurrency:
   group: orca-core-0.1-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false # a running ASan job finishes; only waiting runs are replaced
 
 jobs:
   arm64-native:

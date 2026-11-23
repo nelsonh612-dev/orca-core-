@@ -13,6 +13,7 @@
 #include "orca/ppc/mmu.hpp"
 #include "orca/ppc/registers.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdio>
@@ -119,21 +120,75 @@ struct Jit::Compiler {
 
     // --- exits --------------------------------------------------------------
     // Leave the block: guest PC (in register or constant), steps completed, kind.
+    // JitExit::steps accumulates over linked blocks
+    void add_steps(u32 steps) {
+        e.ldr(4, T0, kExit, 0);
+        if (steps != 0U) e.add_imm(false, T0, T0, steps);
+        e.str(4, T0, kExit, 0);
+    }
     void exit_const(u32 pc, u32 steps, u32 kind) {
         flush_dirty();
+        add_steps(steps);
         e.mov_imm(false, T0, pc);
         st(T0, o.pc);
-        e.mov_imm(false, T0, steps);
-        e.str(4, T0, kExit, 0);
         e.mov_imm(false, 0, kind);
         to_epilogue.push_back(e.b());
     }
     void exit_reg(Reg pc, u32 steps, u32 kind) {
         flush_dirty();
         st(pc, o.pc);
-        e.mov_imm(false, T0, steps);
-        e.str(4, T0, kExit, 0);
+        add_steps(steps);
         e.mov_imm(false, 0, kind);
+        to_epilogue.push_back(e.b());
+    }
+    // Normal exit to a constant guest address, linkable: the site
+    //   movz w10, #context ; cmp w9 (current context), w10 ; b.ne stub ; b stub
+    // gets the context id and the target block's linked entry patched in (Jit::link).
+    // The stub returns to the dispatcher with the site's address in JitExit::site.
+    std::vector<u32> sites; // word index of each site's MOVZ
+    u32 link_ctx_off = 0;   // offset from x21 of Jit::link_context_
+    void exit_link(u32 target, u32 steps) {
+        flush_dirty();
+        add_steps(steps);
+        e.ldr(4, T1, kSelf, link_ctx_off);
+        const auto site = e.here();
+        e.movz(false, T2, 0xFFFFU);
+        e.cmp(false, T1, T2);
+        const auto ne = e.b_cond(Cond::NE);
+        const auto linked = e.b();
+        e.bind_here(ne);
+        e.bind_here(linked);
+        e.adr(T1, -static_cast<s32>((e.here() - site) * 4U));
+        e.str(8, T1, kExit, 16);
+        e.mov_imm(false, T0, target);
+        st(T0, o.pc);
+        e.movz(false, 0, 0);
+        to_epilogue.push_back(e.b());
+        sites.push_back(static_cast<u32>(site));
+    }
+    // Linked entry, right after the prologue (the normal entry jumps over it): the
+    // block runs only if its length still fits in JitExit::limit.
+    Emitter::Label body_jump = 0, refuse = 0;
+    u32 linked_entry = 0, count_word = 0;
+    void linked_entry_begin() {
+        body_jump = e.b();
+        linked_entry = static_cast<u32>(e.here());
+        e.ldr(4, T0, kExit, 0);
+        count_word = static_cast<u32>(e.here());
+        e.add_imm(false, T0, T0, 0);       // + block length (patched at the end)
+        e.ldr(4, T1, kExit, 8);
+        e.cmp(false, T0, T1);
+        refuse = e.b_cond(Cond::HI);
+        e.bind_here(body_jump);
+    }
+    void linked_entry_finish(u32 block_pc, u32 count) {
+        Emitter t;
+        t.add_imm(false, T0, T0, count);
+        e.words()[count_word] = t.words()[0];
+        e.bind_here(refuse);
+        e.mov_imm(false, T0, block_pc);
+        st(T0, o.pc);
+        e.movz(false, 0, 0);
         to_epilogue.push_back(e.b());
     }
 
@@ -457,6 +512,7 @@ bool Jit::Compiler::load_store(u32 ins, u32 pc, u32 i, unsigned size, bool load,
         } else {
             e.mov(false, 3, v);
         }
+        e.mov_imm(false, 4, pc);
         call(reinterpret_cast<const void*>(&Jit::helper_store));
         const auto ok = e.cbnz(false, 0);
         exit_const(pc, i, kExitFallback);
@@ -480,16 +536,13 @@ bool Jit::Compiler::branch(u32 ins, u32 pc, u32 i, unsigned kind, bool& ends) {
         const s32 li = static_cast<s32>((ins & 0x03FFFFFCU) << 6) >> 6;
         const u32 target = (ins & 2U) != 0U ? static_cast<u32>(li) : pc + static_cast<u32>(li);
         if (lk) { e.mov_imm(false, T0, pc + 4U); st(T0, o.lr); }
-        exit_const(target, i + 1U, kExitNormal);
+        exit_link(target, i + 1U);
         return true;
     }
     const unsigned bo = F_RT(ins), bi = F_RA(ins);
     if (kind == 2U && (bo & 4U) == 0U) return false; // invalid form: interpreter
     // target into T1 (captured before LR/CTR are written)
-    if (kind == 0U) {
-        const s32 disp = F_SIMM(ins & 0xFFFCU);
-        e.mov_imm(false, T1, (ins & 2U) != 0U ? static_cast<u32>(disp) : pc + static_cast<u32>(disp));
-    } else {
+    if (kind != 0U) {
         ld(T1, kind == 1U ? o.lr : o.ctr);
         e.and_imm(false, T1, T1, 0xFFFFFFFCU);
     }
@@ -511,6 +564,14 @@ bool Jit::Compiler::branch(u32 ins, u32 pc, u32 i, unsigned kind, bool& ends) {
         e.and_(false, T2, T2, T3);
     }
     if (lk) { e.mov_imm(false, T3, pc + 4U); st(T3, o.lr); }
+    if (kind == 0U) { // constant target: two linkable exits
+        const s32 disp = F_SIMM(ins & 0xFFFCU);
+        const auto not_taken = e.cbz(false, T2);
+        exit_link((ins & 2U) != 0U ? static_cast<u32>(disp) : pc + static_cast<u32>(disp), i + 1U);
+        e.bind_here(not_taken);
+        exit_link(pc + 4U, i + 1U);
+        return true;
+    }
     e.mov_imm(false, T3, pc + 4U);
     e.cmp_imm(false, T2, 0);
     e.csel(false, T1, T1, T3, Cond::NE);
@@ -1301,6 +1362,8 @@ bool Jit::can_execute() const noexcept { return code_ != nullptr && code_->ok();
 
 void Jit::clear() {
     tlb_flush();
+    sites_.clear();
+    pending_site_ = nullptr;
     for (auto& [page, list] : page_blocks_) bus_.unmark_code_page(page << 12);
     no_block_.clear();
     blocks_.clear();
@@ -1320,7 +1383,8 @@ void Jit::invalidate(u32 address, u32 size) {
             if (static_cast<u64>(address) + size <= b->pa || address >= bend) continue;
             b->valid = false;
             ++stats_.invalidations;
-            if (b == running_) running_invalidated_ = true;
+            if (b == running_ || (current_pc_valid_ && current_pc_ - b->ea < b->count * 4U)) running_invalidated_ = true;
+            unlink_incoming(b);
             auto bi = blocks_.find(b->ea);
             if (bi != blocks_.end() && bi->second.get() == b) {
                 retired_blocks_.push_back(std::move(bi->second));
@@ -1367,20 +1431,26 @@ u32 Jit::helper_exec(Jit* self, u32 ins, u32 pc) {
         if (self->bus_.ram_pointer(lo, size) == nullptr) return 0;
     }
     self->running_invalidated_ = false;
+    self->current_pc_ = pc;
+    self->current_pc_valid_ = true;
     const Cpu::Outcome o = c.execute_one_for_jit(ins, pc);
+    self->current_pc_valid_ = false;
     if (!o.ok() || c.fp_program_pending_) return 0; // precise: nothing was changed
     ++self->stats_.helper_steps;
     return self->running_invalidated_ ? 2U : 1U;
 }
 
-u32 Jit::helper_store(Jit* self, u32 ea, u32 size, u32 value) {
+u32 Jit::helper_store(Jit* self, u32 ea, u32 size, u32 value, u32 pc) {
     Cpu& c = self->cpu_;
     u32 lo = 0, hi = 0, split = 0; u8 wimg = 0;
     if (!c.translate_data(ea, size, true, lo, hi, split, wimg).ok() || split != size) return 0;
     if (!c.locked_cache_.empty() && c.locked_cache_.count(lo & ~31U) != 0U) return 0;
     if (self->bus_.ram_pointer(lo, size) == nullptr) return 0;
     self->running_invalidated_ = false;
+    self->current_pc_ = pc;
+    self->current_pc_valid_ = true;
     const mem::BusStatus s = self->bus_.write(lo, size, value, mem::AccessSource::Cpu);
+    self->current_pc_valid_ = false;
     if (s != mem::BusStatus::Ok) return 0; // cannot happen for RAM; keep the interpreter's handling
     if (self->running_invalidated_) return 2U;
     self->tlb_fill(ea, true);
@@ -1441,17 +1511,21 @@ bool host_fp_control_is_default() noexcept {
 }
 } // namespace
 
-bool Jit::compile(u32 pc, u32 pa, std::vector<u32>& words, u32& count, std::string& error) {
+bool Jit::compile(u32 pc, u32 pa, std::vector<u32>& words, u32& count, std::string& error, u32* linked_offset,
+                  std::vector<u32>* sites) {
     Compiler c;
+    c.link_ctx_off = static_cast<u32>(reinterpret_cast<const char*>(&link_context_) - reinterpret_cast<const char*>(this));
     c.native_fp = native_fp_;
     c.tlb_off = static_cast<u32>(reinterpret_cast<const char*>(tlb_.data()) - reinterpret_cast<const char*>(this));
     c.epoch_off = static_cast<u32>(reinterpret_cast<const char*>(&bus_write_epoch_) - reinterpret_cast<const char*>(this));
     // both must be reachable with scaled LDR offsets from x21 (they are the first members)
-    if (c.tlb_off + 24U >= 16384U || c.epoch_off >= 32768U || (c.tlb_off & 7U) != 0U || (c.epoch_off & 7U) != 0U) {
+    if (c.tlb_off + 24U >= 16384U || c.epoch_off >= 32768U || (c.tlb_off & 7U) != 0U || (c.epoch_off & 7U) != 0U ||
+        c.link_ctx_off >= 16384U || (c.link_ctx_off & 3U) != 0U) {
         error = "Jit layout: translation cache out of reach";
         return false;
     }
     c.prologue();
+    c.linked_entry_begin();
     count = 0;
     bool ended = false;
     u32 cur = pc;
@@ -1463,12 +1537,14 @@ bool Jit::compile(u32 pc, u32 pa, std::vector<u32>& words, u32& count, std::stri
         const std::size_t mark = c.e.size();
         const auto saved_slot = c.slot; const auto saved_dirty = c.dirty; const auto saved_use = c.last_use;
         const auto saved_exits = c.to_epilogue.size();
+        const auto saved_sites = c.sites.size();
         bool ends = false;
         if (!c.insn(ins, cur, count, ends)) {
             // not translated: undo anything emitted and stop before it
             c.e.words().resize(mark);
             c.slot = saved_slot; c.dirty = saved_dirty; c.last_use = saved_use;
             c.to_epilogue.resize(saved_exits);
+            c.sites.resize(saved_sites);
             break;
         }
         ++count;
@@ -1476,9 +1552,15 @@ bool Jit::compile(u32 pc, u32 pa, std::vector<u32>& words, u32& count, std::stri
         if (ends) { ended = true; break; }
     }
     if (count == 0U) { error = "first instruction not translated"; return false; }
-    if (!ended) c.exit_const(cur, count, count < kMaxBlock && (cur & 0xFFFU) != 0U ? kExitFallback : kExitNormal);
+    if (!ended) {
+        if (count < kMaxBlock && (cur & 0xFFFU) != 0U) c.exit_const(cur, count, kExitFallback);
+        else c.exit_link(cur, count);
+    }
+    c.linked_entry_finish(pc, count);
     c.epilogue();
     words = std::move(c.e.words());
+    if (linked_offset != nullptr) *linked_offset = c.linked_entry;
+    if (sites != nullptr) *sites = std::move(c.sites);
     return true;
 }
 
@@ -1499,9 +1581,9 @@ Jit::Block* Jit::lookup_or_compile(u32 pc, u32 pa, std::string& error) {
         retired_blocks_.push_back(std::move(it->second));
         blocks_.erase(it);
     }
-    std::vector<u32> words;
-    u32 count = 0;
-    if (!compile(pc, pa, words, count, error)) {
+    std::vector<u32> words, site_words;
+    u32 count = 0, linked_offset = 0;
+    if (!compile(pc, pa, words, count, error, &linked_offset, &site_words)) {
         no_block_[pc] = pa;
         page_blocks_[pa >> 12];                 // keep the page tracked so a write clears the entry
         bus_.mark_code_page(pa & ~0xFFFU);
@@ -1515,13 +1597,56 @@ Jit::Block* Jit::lookup_or_compile(u32 pc, u32 pa, std::string& error) {
         if (code == nullptr) { error = code_->error(); return nullptr; }
     }
     auto b = std::make_unique<Block>();
-    b->ea = pc; b->pa = pa; b->count = count; b->code = code;
+    b->ea = pc; b->pa = pa; b->count = count; b->code = code; b->linked_offset = linked_offset;
     Block* raw = b.get();
+    for (const u32 w : site_words) sites_[code + w] = raw;
     blocks_[pc] = std::move(b);
     const u32 first = pa >> 12, last = (pa + count * 4U - 1U) >> 12;
     for (u32 p = first; p <= last; ++p) { page_blocks_[p].push_back(raw); bus_.mark_code_page(p << 12); tlb_drop_writes_to(p << 12); }
     ++stats_.blocks_compiled;
     return raw;
+}
+
+void Jit::link_check_context() {
+    const CpuState& s = cpu_.state_;
+    FetchContext now;
+    now.msr = s.msr & (MSR_IR | MSR_PR);
+    now.hid4 = cpu_.config_.extended_bats ? (s.hid4 & HID4_SBE) : 0U;
+    now.ibat = s.ibat;
+    for (std::size_t k = 0; k < contexts_.size(); ++k)
+        if (contexts_[k] == now) { link_context_ = static_cast<u32>(k); return; }
+    if (contexts_.size() >= kNoContext) { link_context_ = kNoContext; return; } // no more ids: no new links
+    contexts_.push_back(now);
+    link_context_ = static_cast<u32>(contexts_.size() - 1U);
+}
+
+// Patches `site` (in a valid block) to jump straight to `target` while the current
+// translation context is active. Only for targets whose fetch translation does not
+// use the page table (it then depends on nothing but that context).
+void Jit::link(const u32* site, Block* target) {
+    if (link_context_ == kNoContext || !target->valid) return;
+    const auto it = sites_.find(site);
+    if (it == sites_.end() || !it->second->valid) return;
+    Translation t;
+    if (!translate_without_page_table(cpu_.state_, target->ea, AccessType::Fetch, cpu_.config_.extended_bats, t) ||
+        t.status != TranslateStatus::Ok || t.physical != target->pa)
+        return;
+    const u32* entry = target->code + target->linked_offset;
+    const auto delta = static_cast<s64>(entry - (site + 3));
+    if (delta < -(s64{1} << 25) || delta >= (s64{1} << 25)) return;
+    if (!code_->patch(site, Emitter::movz_encoding(false, T2, static_cast<u16>(link_context_))) ||
+        !code_->patch(site + 3, Emitter::b_encoding(delta)))
+        return;
+    target->incoming.push_back(site);
+    ++stats_.links;
+}
+
+void Jit::unlink_incoming(Block* b) {
+    for (const u32* site : b->incoming) {
+        (void)code_->patch(site, Emitter::movz_encoding(false, T2, static_cast<u16>(kNoContext)));
+        (void)code_->patch(site + 3, Emitter::b_encoding(1)); // back to the stub that follows
+    }
+    b->incoming.clear();
 }
 
 Jit::Result Jit::interpret() {
@@ -1539,6 +1664,8 @@ Jit::Result Jit::run(u64 max_steps) {
     if (s.halted) return interpret();
     if (!host_fp_control_is_default()) return interpret(); // the native FP path relies on it
     tlb_check_context();
+    link_check_context();
+    pending_site_ = nullptr;
     if ((s.msr & (MSR_SE | MSR_BE | MSR_LE)) != 0U) return interpret();
     if ((s.msr & MSR_EE) != 0U && (cpu_.external_line_ || s.dec_pending)) return interpret();
     if ((s.msr & MSR_POW) != 0U && (s.hid0 & 0x00E00000U) != 0U) return interpret();
@@ -1550,11 +1677,14 @@ Jit::Result Jit::run(u64 max_steps) {
         if (t.status != TranslateStatus::Ok) break;
         std::string error;
         Block* b = lookup_or_compile(pc, t.physical, error);
-        if (b == nullptr || b->count > max_steps - total) break;
+        if (b == nullptr) break;
+        if (pending_site_ != nullptr) { link(pending_site_, b); pending_site_ = nullptr; }
+        if (b->count > max_steps - total) break;
         if (!code_->make_executable()) break;
         running_ = b;
         running_invalidated_ = false;
         exit_ = {};
+        exit_.limit = static_cast<u32>(std::min<u64>(max_steps - total, 0xFFFFFFFFULL));
         const u32 kind = reinterpret_cast<Fn>(reinterpret_cast<std::uintptr_t>(b->code))(&s, &exit_, this);
         running_ = nullptr;
         const u64 steps = exit_.steps;
@@ -1565,7 +1695,9 @@ Jit::Result Jit::run(u64 max_steps) {
         total += steps;
         if (kind == kExitFallback) { ++stats_.fallback_exits; break; }
         if (steps == 0U) break;
+        pending_site_ = reinterpret_cast<const u32*>(static_cast<std::uintptr_t>(exit_.site));
     }
+    pending_site_ = nullptr;
     if (total == 0U) return interpret(); // nothing translated applies here: the interpreter takes one step
     return {StepResult::Executed, total};
 }

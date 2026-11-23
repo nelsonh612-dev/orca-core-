@@ -166,6 +166,14 @@ public:
     bool bind(Label from, Label to);
     bool bind_here(Label from) { return bind(from, here()); }
     void b_to(Label to) { const Label l = b(); bind(l, to); }
+    // ADR Xd, (this instruction + byte_offset), |byte_offset| < 1 MiB
+    void adr(Reg d, s32 byte_offset) {
+        const u32 imm = static_cast<u32>(byte_offset) & 0x1FFFFFU;
+        emit(0x10000000U | (imm & 3U) << 29 | (imm >> 2) << 5 | d);
+    }
+    // B to `to_word` from the word `from_word` (both indexes in some buffer): the encoding
+    static constexpr u32 b_encoding(s64 word_delta) noexcept { return 0x14000000U | (static_cast<u32>(word_delta) & 0x03FFFFFFU); }
+    static constexpr u32 movz_encoding(bool x, Reg d, u16 imm) noexcept { return 0x52800000U | (x ? 0x80000000U : 0U) | u32{imm} << 5 | d; }
     void br(Reg n) { emit(0xD61F0000U | u32{n} << 5); }
     void blr(Reg n) { emit(0xD63F0000U | u32{n} << 5); }
     void ret() { emit(0xD65F03C0U); }
