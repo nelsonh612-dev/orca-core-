@@ -617,14 +617,65 @@ TEST_CASE(gpu_display_list_and_indexed_load) {
     CHECK_EQ(t.pe_token(), 0xBEEFU);
 }
 
+TEST_CASE(gpu_tmem_preload) {
+    mem::Bus bus;
+    CHECK(bus.map_ram("MEM1", 0, 0x100000U));
+    core::Scheduler sched;
+    hw::ProcessorInterface pi{bus, nullptr};
+    hw::PixelEngine pe{sched, pi};
+    std::vector<u8> ram(256);
+    for (u32 i = 0; i < 256; ++i) ram[i] = static_cast<u8>(i);
+    CHECK(bus.dma_write(0x4000, ram) == mem::BusStatus::Ok);
+    auto cat = [](std::initializer_list<std::vector<u8>> parts) {
+        std::vector<u8> r;
+        for (const auto& p : parts) r.insert(r.end(), p.begin(), p.end());
+        return r;
+    };
+    {
+        // type 0, 3 lines from 0x4000 to TMEM line 2 (byte 64); 0 = GX_TexModeSync, nothing copied
+        gpu::Gpu g{bus, pe};
+        CHECK(g.feed(cat({bp_cmd(0x60, 0x4000 >> 5), bp_cmd(0x61, 2), bp_cmd(0x63, 0)})));
+        CHECK_EQ(g.tmem()[64], 0U);
+        CHECK(g.feed(bp_cmd(0x63, 3)));
+        CHECK_EQ(g.tmem()[64], 0U); CHECK_EQ(g.tmem()[65], 1U); CHECK_EQ(g.tmem()[64 + 95], 95U);
+        CHECK_EQ(g.tmem()[64 + 96], 0U); CHECK_EQ(g.tmem()[63], 0U);
+        // cut at the end of TMEM: line 0x7FFF, 4 lines -> only 32 bytes
+        CHECK(g.feed(cat({bp_cmd(0x61, 0x7FFF), bp_cmd(0x63, 4)})));
+        CHECK_EQ(g.tmem()[(1U << 20) - 1U], 31U);
+        // starting outside TMEM: nothing, no error
+        CHECK(g.feed(cat({bp_cmd(0x61, 0x8000), bp_cmd(0x63, 4)})));
+    }
+    {
+        // type 3 (RGBA8): lines alternate even (line 1) / odd (line 0x4000) banks
+        gpu::Gpu g{bus, pe};
+        CHECK(g.feed(cat({bp_cmd(0x60, 0x4000 >> 5), bp_cmd(0x61, 1), bp_cmd(0x62, 0x4000), bp_cmd(0x63, (3U << 15) | 2U)})));
+        const u32 even = 32, odd = 0x4000U * 32U;
+        CHECK_EQ(g.tmem()[even], 0U); CHECK_EQ(g.tmem()[even + 31], 31U);
+        CHECK_EQ(g.tmem()[odd], 32U); CHECK_EQ(g.tmem()[odd + 31], 63U);
+        CHECK_EQ(g.tmem()[even + 32], 64U); CHECK_EQ(g.tmem()[odd + 32], 96U);
+        CHECK_EQ(g.tmem()[even + 64], 0U); CHECK_EQ(g.tmem()[odd + 64], 0U);
+        // a bank reaching the end of TMEM stops the loop
+        CHECK(g.feed(cat({bp_cmd(0x60, 0x4080 >> 5), bp_cmd(0x61, 0x7FFF), bp_cmd(0x62, 0x10), bp_cmd(0x63, (3U << 15) | 2U)})));
+        CHECK_EQ(g.tmem()[(1U << 20) - 32U], 128U); CHECK_EQ(g.tmem()[0x10U * 32U], 160U);
+        CHECK_EQ(g.tmem()[0x11U * 32U], 0U);
+        // likewise the odd bank: odd line 0x7FFF, even line 0x20 -> one pair only
+        CHECK(g.feed(cat({bp_cmd(0x60, 0x4000 >> 5), bp_cmd(0x61, 0x20), bp_cmd(0x62, 0x7FFF), bp_cmd(0x63, (3U << 15) | 2U)})));
+        CHECK_EQ(g.tmem()[0x20U * 32U], 0U); CHECK_EQ(g.tmem()[(1U << 20) - 32U], 32U);
+        CHECK_EQ(g.tmem()[0x21U * 32U], 0U);
+        // source outside RAM stops the GPU
+        CHECK(!g.feed(cat({bp_cmd(0x60, 0x100000U >> 5), bp_cmd(0x61, 0), bp_cmd(0x63, (3U << 15) | 1U)})));
+        CHECK(g.error().find("outside RAM") != std::string::npos);
+    }
+}
+
 TEST_CASE(gpu_stops_are_reported) {
-    // drawing is not implemented: the system run stops with the reason
+    // an unhandled draw-done value: the system run stops with the reason
     FifoRig t;
     t.setup(0x00700000U, 0x00700100U);
-    t.gp({0x90, 0x00, 0x03}); // triangles VAT 0 with an empty vertex: 0 bytes each
+    t.gp(bp_cmd(0x45, 0x000001));
     t.gp_pad();
     CHECK(t.sys.command_processor().stopped());
-    CHECK(t.sys.command_processor().stop_reason().find("drawing is not implemented") != std::string::npos);
+    CHECK(t.sys.command_processor().stop_reason().find("draw done") != std::string::npos);
     const auto r = t.sys.run(10);
     CHECK(r.device_stop);
     CHECK(r.device_error.find("GPU:") != std::string::npos);
@@ -634,7 +685,7 @@ TEST_CASE(gpu_stops_are_reported) {
     hw::ProcessorInterface pi{bus, nullptr};
     hw::PixelEngine pe{sched, pi};
     const std::vector<std::pair<std::vector<u8>, const char*>> cases = {
-        {bp_cmd(0x52, 0), "EFB copy"}, {bp_cmd(0x65, 0), "TLUT load"}, {bp_cmd(0x63, 0), "preload"},
+        {[] { auto a = bp_cmd(0x43, 5); const auto c = bp_cmd(0x52, 0); a.insert(a.end(), c.begin(), c.end()); return a; }(), "pixel format 5"}, {bp_cmd(0x65, 1U << 10), "TLUT load"}, {bp_cmd(0x63, 1), "TMEM preload reads 32 bytes at 00000000 outside RAM"},
         {bp_cmd(0x45, 0x000001), "draw done"}, {{0x40, 0, 0, 0, 0, 0, 0, 0, 0x20}, "outside RAM"},
         {{0x08, 0xC0, 0, 0, 0, 0}, "not handled"}, {{0x18}, "opcode 18"},
     };

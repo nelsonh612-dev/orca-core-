@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(orca_core VERSION 0.13.0 LANGUAGES C CXX)
+project(orca_core VERSION 0.14.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -37,6 +37,9 @@ add_library(orca_core
     src/hw/command_processor.cpp
     src/gpu/gpu.cpp
     src/gpu/texture_decoder.cpp
+    src/gpu/sw/vertex.cpp
+    src/gpu/sw/renderer.cpp
+    src/gpu/sw/efb_copy.cpp
     src/hw/external_interface.cpp
     src/hw/serial_interface.cpp
     src/hw/video_interface.cpp
@@ -92,6 +95,14 @@ if(ORCA_BUILD_TESTS)
     target_link_libraries(orca_test_gpu PRIVATE orca_core)
     target_include_directories(orca_test_gpu PRIVATE tests)
     add_test(NAME gpu COMMAND orca_test_gpu)
+    add_executable(orca_test_gpu_sw tests/test_gpu_sw.cpp)
+    target_link_libraries(orca_test_gpu_sw PRIVATE orca_core)
+    target_include_directories(orca_test_gpu_sw PRIVATE tests)
+    add_test(NAME gpu_sw COMMAND orca_test_gpu_sw)
+    add_executable(orca_test_efb_copy tests/test_efb_copy.cpp)
+    target_link_libraries(orca_test_efb_copy PRIVATE orca_core)
+    target_include_directories(orca_test_efb_copy PRIVATE tests)
+    add_test(NAME efb_copy COMMAND orca_test_efb_copy)
     add_executable(orca_test_dsp_mi tests/test_dsp_mi.cpp)
     target_link_libraries(orca_test_dsp_mi PRIVATE orca_core)
     target_include_directories(orca_test_dsp_mi PRIVATE tests)
@@ -164,7 +175,7 @@ if(ORCA_BUILD_TESTS)
     endif()
 
     # A hang (e.g. an emulated deadlock) must fail, not block the test run.
-    set_tests_properties(memory cpu_integer cpu_system mmu reference fpu_engine cpu_fpu system programs disc av exi dsp_mi dsp_core gpu PROPERTIES TIMEOUT 300)
+    set_tests_properties(memory cpu_integer cpu_system mmu reference fpu_engine cpu_fpu system programs disc av exi dsp_mi dsp_core gpu gpu_sw efb_copy PROPERTIES TIMEOUT 300)
 
     find_program(ORCA_LLVM_MC NAMES llvm-mc llvm-mc-18 llvm-mc-17 llvm-mc-16)
     add_executable(orca_encoding_check tests/encoding_check.cpp)

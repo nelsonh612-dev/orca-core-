@@ -8,14 +8,28 @@
 // GPU time follows Dolphin's estimate, in CPU cycles: NOP / 0x44 / 0x48 = 6,
 // 0x01-0x07 and 0x3F = 1, CP = 12, BP = 12, XF = 18 + 6 per word, indexed = 6,
 // display list call = 6 (plus its contents), primitive = 12 per vertex + 6.
-// Not implemented yet (each stops with a message): drawing primitives, EFB
-// copies (BP 0x52), TLUT loads (BP 0x65), TMEM preloads (BP 0x63), and draw-done
-// values other than 2.
+// Primitives are decoded, transformed and drawn by the software renderer
+// (sw/vertex.hpp, sw/renderer.hpp), which lists what it does not do yet.
+// BP 0xE0-0xE7 also set the TEV colour registers or constants (bit 23 of the
+// value selects constant), as in BPStructs.cpp.
+// TLUT loads (BP 0x65): tlut_src (BP 0x64) << 5, masked to 0x01FFFFFF on
+// GameCube, copied to TMEM at (BP 0x65 bits 0-9) << 9, (bits 10-20) * 32 bytes.
+// EFB copies and clears (BP 0x52) are done by sw/efb_copy.hpp, which lists
+// its sources and limits.
+// TMEM preloads (BP 0x63, non-zero value), as in BPStructs.cpp: source
+// BP 60 << 5, TMEM line (32 bytes) BP 61; type 3 (RGBA8) alternates 32-byte
+// lines between the even (BP 61) and odd (BP 62) banks, stopping at the end of
+// TMEM; other types copy count * 32 bytes, cut at the end of TMEM. Orca masks
+// the source with the console's physical mask (Dolphin notes this as a TODO).
+// Not implemented yet (each stops with a message): draw-done values other than 2.
 #pragma once
 #include "orca/gpu/bp_memory.hpp"
 #include "orca/gpu/command_stream.hpp"
 #include "orca/gpu/cp_state.hpp"
 #include "orca/gpu/xf_memory.hpp"
+#include "orca/gpu/sw/efb_copy.hpp"
+#include "orca/gpu/sw/renderer.hpp"
+#include "orca/gpu/sw/vertex.hpp"
 #include "orca/hw/pixel_engine.hpp"
 #include "orca/memory/bus.hpp"
 
@@ -41,6 +55,12 @@ public:
     const CpState& cp() const noexcept { return cp_; }
     const XfMemory& xf() const noexcept { return xf_; }
     const BpMemory& bp() const noexcept { return bp_; }
+    const sw::TevState& tev() const noexcept { return tev_; }
+    sw::Renderer& renderer() noexcept { return renderer_; }
+    const std::vector<u8>& tmem() const noexcept { return tmem_; }
+    // Result of the last BP 0x52 (EFB copy / clear) and how many there were.
+    const sw::CopyResult& last_copy() const noexcept { return last_copy_; }
+    u64 copies() const noexcept { return copies_; }
 
     // CommandSink
     bool on_cp(u8 reg, u32 value, std::string& error) override;
@@ -60,7 +80,13 @@ private:
     CpState cp_;
     XfMemory xf_;
     BpMemory bp_;
+    sw::TevState tev_;
+    sw::VertexDecoder decoder_;
+    sw::Renderer renderer_;
+    std::vector<u8> tmem_ = std::vector<u8>(1U << 20, 0); // 1 MiB texture memory
     std::vector<u8> pending_;
+    sw::CopyResult last_copy_;
+    u64 copies_{0};
     u64 cycles_{0};       // total GPU time
     u64 batch_start_{0};  // cycles_ at the start of the current feed()
     bool failed_{false};

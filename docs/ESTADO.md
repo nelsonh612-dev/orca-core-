@@ -1,4 +1,4 @@
-# Estado del proyecto — Milestone 013
+# Estado del proyecto — Milestone 014
 
 ## Funciones implementadas (todas con pruebas)
 
@@ -106,12 +106,26 @@
 - Decodificador de texturas (imagen completa y texel a texel) para los 11 formatos, con paletas IA8/RGB565/RGB5A3.
 - `System` conecta CP, PE y GPU; una parada de la GPU se devuelve como `device_stop` con el motivo.
 
+**GPU, parte 2: rasterizador por software de referencia (M014)** — fuentes: archivos de Dolphin como información (`SWVertexLoader.cpp`, `VertexLoader_*.cpp`, `TransformUnit.cpp`, `SetupUnit.cpp`, `Clipper.cpp`, `Rasterizer.cpp`, `Tev.cpp`, `TextureSampler.cpp`, `SWEfbInterface.cpp`, `TextureEncoder.cpp`, `BPStructs.cpp`, `BPMemory.h`, `TMEM.cpp`); el código es propio. Es la referencia de precisión para los backends GLES/Vulkan:
+- Carga de vértices: índices de matriz (> 63 detiene), posición, normal (divisores 128/64/32768/16384, NBT), colores en los 6 formatos (el color 1 alimenta el canal 0 si falta el 0; un color ausente es blanco), coordenadas con ByteDequant, datos directos o indexados desde los arrays.
+- Transformación XF: matriz de posición, proyección ortográfica y perspectiva (z · (1 − 1e-7)), normales (la principal renormalizada), iluminación de los dos canales con las 8 luces (difusa, especular, foco, atenuación), generación de coordenadas normal / emboss / color, fila de origen 0-12, AB11/ABC1, ST/STQ, dual tex con matriz posterior y normalización, q = 0, escala de textura.
+- Ensamblado de triángulos, quads, tiras y abanicos; recorte contra los 6 planos, culling con la regla de Dolphin, división de perspectiva y viewport.
+- Rasterizador de punto fijo (28.4 con −9, regla de relleno con sesgo, bloques 2x2), interpolación con desplazamiento 0,495, rectángulos de scissor con las 9 posiciones del offset.
+- **Líneas y puntos (M014):** líneas recortadas con el plano +z de Dolphin (−z + w), ensanchadas por medio grosor (BP 22, en 1/6 de píxel) en el eje menor, con remates horizontales o verticales y desplazamiento de coordenadas en el borde lejano; puntos como cuadrado de tamaño BP 22 bits 8-15 (sin recorte, como el software de Dolphin) con desplazamiento de coordenadas en los lados +x/+y.
+- TEV completo: 16 etapas, entradas de color/alpha, bias, escala, resta, modos de comparación, clamps, registros y constantes (11 bits), tablas de konst y de intercambio, texturas indirectas (formatos de 8/5/4/3 bits, bias, matrices con escala, matrices dinámicas S/T, wrap, suma con la etapa anterior, alpha bump), alpha test con sus 4 operaciones, z textura (8/16/24 bits, sumar o reemplazar), z temprana y tardía.
+- Texturas: los 11 formatos, paletas en TMEM, nearest/bilinear, wrap clamp/repeat/mirror, LOD por bloque 2x2 (FixedLog2, bias en 1/32, min/max), mip point y lineal, imágenes en RAM o en TMEM gestionada a mano.
+- EFB: los formatos RGB8_Z24, RGBA6_Z24, RGB565_Z16 (como en el software de Dolphin: color de 8 bits y Z de 24) y Z24; comparación Z, mezcla (factores con +1 desde 128), resta, operaciones lógicas, alpha constante, dither en RGBA6, actualización de color/alpha/Z.
+- **Z freeze (M014):** con GENMODE bit 19 la profundidad sale de la pendiente del último triángulo dibujado o descartado por culling antes de congelar (también fuera del scissor; no si fue rechazado trivialmente); valor inicial = constante 1,0 (la suposición de Dolphin).
+- **Copias del EFB (BP 0x52, M014):** rectángulo de BP 49/4A + 1 (se ignora si empieza fuera del EFB, se recorta si sale), destino BP 4B << 5, separación BP 4D << 5 (0 = sin copia). A textura: los 13 formatos (R4, R8, RA4, RA8, RGB565, RGB5A3, RGBA8, A8, G8, B8, RG8, GB8 y la variante 0x1 de R8) con la disposición en bloques, media escala con filtro de caja (suma de 6 bits s + (s >> 6) o suma de 8 bits >> 2), intensidad (4096 + 66R + 129G + 25B) >> 8 con los bits 15 y 16, copias de profundidad (R4, R8, RGBA8, G8, B8, RG8, GB8; las demás detienen). A XFB: filtro vertical con los 7 pesos, gamma 1,0 / 1,7 / 2,2, YUV BT.601 con redondeo, croma 1/4-1/2-1/4 y formato Y U Y V. Borrado posterior del rectángulo con las reglas de ClearScreen (alpha solo en RGBA6, cuantización RGB565 y Z16).
+- **Precargas de TMEM (BP 0x63, M014):** tipo 3 (RGBA8) alterna líneas de 32 bytes entre los bancos par (BP 61) e impar (BP 62); los demás copian cuenta · 32 bytes; se recorta al final de TMEM.
+
 ## Funciones pendientes (en orden)
 
 1. **Restos de M012 (sin hacer):** los demás comandos de la tarjeta que Dolphin nombra (ReadID, ReadErrorBuffer, WakeUp, Sleep, ArrayToBuffer, WriteBuffer, ExtraByteProgram, ChipErase; ahora con sus códigos de `EXI_DeviceMemoryCard.h`: 0x53, 0x82, 0x85, 0x86, 0x87, 0x88, 0xF3, 0xF4) y el ID del flash en la SRAM; la salida de audio (los bloques del DMA de audio ya se leen pero nadie los reproduce); la mezcla de streaming del AI. También quedan el puerto serie 1 (EXI0/CS2), el AD16 (EXI2/CS0), el mapeo de la ROM en el vector de reset 0xFFF00000, la aplicación de la protección del MI y los comandos restantes de la DI.
-2. **M014 — GPU, parte 2 (lo siguiente):** carga de vértices (formatos y cuantización), transformación XF (matrices, iluminación, texgen), recorte, rasterizador por software con TEV, texturas (TMEM, cargas de paleta y precargas), EFB (Z, mezcla, alpha test, niebla), copias del EFB a textura y a XFB, y el backend OpenGL ES 3.2 comparado píxel a píxel con el software sobre llvmpipe; después Vulkan (aquí solo compila: no hay controlador) y la salida de video del XFB.
-3. **M015 — JIT ARM64:** emisor ARM64 verificado con el desensamblador de LLVM, bloques básicos, asignación de registros, caché de bloques conectada a la invalidación del bus, y pruebas diferenciales intérprete vs JIT, que tienen que correr en un dispositivo ARM64.
-4. **Después:** audio real, DI y discos, SI y controles, EXI, AI y los componentes de Wii (Hollywood, IOS, Bluetooth).
+2. **Lo que falta de la GPU en software (bloqueado por archivos que no pude obtener; ya pedidos al usuario):** niebla (necesita `BPMemory.cpp` para decodificar A y C), escala vertical del XFB (necesita `CopyRegion.h`), texturas RGBA8 cargadas en TMEM y conversión del XFB a imagen para la salida de video (necesitan `TextureDecoder_Common.cpp`), y confirmar el filtro de copia en copias de textura (`TextureConversionShader.cpp`). También faltan los vértices con índice 0xFF/0xFFFF (el software de Dolphin no los descarta y su cargador de hardware sí: fuentes en conflicto), el ajuste de aspecto de líneas y puntos (BP 22 bit 22) y el anti-aliasing de RGB565_Z16. Todo esto detiene la emulación con el motivo.
+3. **M015 — backend OpenGL ES 3.2** (el que usarán los teléfonos de gama baja): generación de shaders para TEV, caché de estados y de texturas, comparación píxel a píxel con el rasterizador por software sobre llvmpipe; después Vulkan (aquí solo compila: no hay controlador; hay que decidir glslang o un generador SPIR-V propio) y la salida de video del XFB.
+4. **M016 — JIT ARM64:** emisor ARM64 verificado con el desensamblador de LLVM, bloques básicos, asignación de registros, caché de bloques conectada a la invalidación del bus, y pruebas diferenciales intérprete vs JIT, que tienen que correr en un dispositivo ARM64.
+5. **Después:** audio real, DI y discos, SI y controles, EXI, AI y los componentes de Wii (Hollywood, IOS, Bluetooth).
 
 ## Pendiente de verificación en hardware real
 
@@ -191,6 +205,15 @@ Son comportamientos que el PEM deja indefinidos o que el manual del 750CL no det
 | Texturas: expansión de 3 bits a 8 | Solo una fuente (Metaforce); 4, 5 y 6 bits coinciden en dos |
 | Tarjeta: tiempos de borrado/programa y de DMA | 5000 ciclos y las tasas de Dolphin; no se midieron |
 | DSP: accesos genéricos a $st0-$st3, desbordamiento de pilas (STOVF), aritmética de direcciones con $wrN ≠ 0xFFFF | Parada clara (no documentado) |
+| Copias a textura: filtro de copia y gamma | Dolphin los aplica en sus backends de hardware (PR 10204 y 10466) pero no en su codificador por software (issue 14020). Orca los aplica con las fórmulas del XFB por píxel, antes del filtro de caja y del empaquetado; con los pesos por defecto de GX (0,0,21,22,21,0,0) y gamma 1,0 el resultado es idéntico a no filtrar. No se filtran las copias de profundidad. Pesos todos a 0 (estado tras el reset) dan negro |
+| Copias: texels del relleno de bloque fuera del rectángulo | Se leen del EFB con direcciones lineales, como el codificador de Dolphin; más allá del final del EFB se lee 0 |
+| Copias de profundidad a media escala RG8/GB8/RGBA8 | **Contradicción en Dolphin:** su codificador a media escala invierte el orden de bytes respecto al de escala completa. Orca usa el de escala completa en los dos casos |
+| Copias de XFB | Se exige columna inicial y ancho pares y escala vertical 1,0 (otra escala necesita `CopyRegion.h`). Sin los bits de clamp, las filas vecinas fuera del rectángulo se leen del EFB (el hardware lee basura según Dolphin) |
+| Precarga de TMEM: máscara de la dirección de origen | Orca aplica la máscara física de la consola (Dolphin lo marca como TODO) |
+| Líneas a 45° (\|dx\| = \|dy\|) | Remates horizontales, como Dolphin (que lo marca como FIXME) |
+| Puntos | No se recortan (el software de Dolphin tampoco; lo marca como TODO) |
+| Z freeze antes del primer triángulo | Pendiente constante 1,0 (suposición de Dolphin) |
+| RGB565_Z16 | Se guarda como RGB8 con Z de 24 bits, como el software de Dolphin; el anti-aliasing de 3 muestras no se emula |
 
 ## Problemas conocidos
 
@@ -207,9 +230,9 @@ Son comportamientos que el PEM deja indefinidos o que el manual del 750CL no det
 | 9 | `lmw/stmw`, instrucciones de cadena y `lwarx/stwcx.` no pasan por la caché bloqueada | Bajo |
 | 10 | El DMA de la caché bloqueada y las ráfagas del gather pipe terminan al instante | Falta conectarlos al planificador con tiempos reales |
 | 11 | Coste fijo de 1 ciclo por instrucción: no hay modelo de pipeline ni de caché | El tiempo es determinista, no exacto al ciclo |
-| 12 | La GPU procesa el FIFO, los estados y las señales al CPU, pero no dibuja | Un juego comercial se detiene en el primer triángulo, copia del EFB, carga de paleta o precarga de TMEM (o cuando su microcódigo DSP lee el IROM/COEF sin volcados, o al usar un comando de tarjeta no implementado), siempre con una parada que explica el motivo |
-| No hay salida de video (no se convierte el XFB a imagen) ni de audio | Sin frontend todavía |
-| DI: solo existe la lectura 0xA8 por DMA; los discos Wii, el audio streaming y los formatos comprimidos no están implementados | Parada clara con el comando |
+| 12 | La GPU dibuja solo con el rasterizador por software (la referencia de precisión, demasiado lento para un teléfono); no hay backend GLES/Vulkan todavía | Un juego puede detenerse en la niebla, una textura RGBA8 en TMEM, una copia de XFB con escala, un vértice con índice 0xFF/0xFFFF o el ajuste de aspecto de líneas (o cuando su microcódigo DSP lee el IROM/COEF sin volcados, o al usar un comando de tarjeta no implementado), siempre con una parada que explica el motivo |
 | 13 | Rendimiento en el anfitrión x86: unos 20 M instr/s en enteros y unos 4 M instr/s en FP. El motor FP cambia el modo de redondeo del anfitrión en cada operación | Esperado: el intérprete es la referencia de precisión; la velocidad vendrá del JIT |
 | 14 | No se ha compilado para Android/ARM64 (no hay NDK en este entorno) | Hay que verificarlo |
 | 15 | `lswx`, `stswx`, `mcrxr` y todas las instrucciones paired-single y `psq` no se pueden verificar con LLVM. Se revisaron contra las tablas de opcodes del manual del 750CL | Medio: hace falta otra fuente (binutils con -m750cl o hardware) |
+| 16 | No hay salida de video (el XFB se escribe en RAM pero no se convierte a imagen) ni de audio | Sin frontend todavía |
+| 17 | DI: solo existe la lectura 0xA8 por DMA; los discos Wii, el audio streaming y los formatos comprimidos no están implementados | Parada clara con el comando |

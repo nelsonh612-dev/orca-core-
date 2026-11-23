@@ -1,4 +1,4 @@
-# Registro de pruebas — Milestone 013
+# Registro de pruebas — Milestone 014
 
 Todos los resultados son de ejecuciones reales del 2026-11-15 en este entorno, sobre una copia limpia de los fuentes entregados.
 
@@ -8,9 +8,9 @@ Todos los resultados son de ejecuciones reales del 2026-11-15 en este entorno, s
 
 | Configuración | Compilación | Advertencias (`-Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion -Wshadow -Werror`) | CTest |
 |---|---|---|---|
-| GCC Release (`-DORCA_WERROR=ON`) | OK | 0 | 16/16 pasan (4,1 s) |
-| Clang Release (`-DORCA_WERROR=ON`) | OK | 0 | 16/16 pasan (3,2 s) |
-| GCC Debug + ASan + UBSan (`-fno-sanitize-recover=all`, `-DORCA_WERROR=ON`) | OK | 0 | 16/16 pasan (80,3 s) |
+| GCC Release (`-DORCA_WERROR=ON`) | OK | 0 | 18/18 pasan (4,4 s) |
+| Clang Release (`-DORCA_WERROR=ON`) | OK | 0 | 18/18 pasan (3,3 s) |
+| GCC Debug + ASan + UBSan (`-fno-sanitize-recover=all`, `-DORCA_WERROR=ON`) | OK | 0 | 18/18 pasan (85,3 s) |
 | Clang + ASan/UBSan | **NO EJECUTADO**: falta `compiler-rt` en el entorno | — | — |
 | Android NDK arm64-v8a | **NO EJECUTADO**: no hay NDK ni sysroot AArch64 | — | — |
 
@@ -32,8 +32,30 @@ Todos los resultados son de ejecuciones reales del 2026-11-15 en este entorno, s
 | **exi** (M008 + tarjeta de memoria M012) | 23 | 1.445 | 0 |
 | **dsp_mi** (M009, actualizada en M010 y M012) | 15 | 458 | 0 |
 | **dsp_core** (M010 + M011 + M012) | 29 | 534 | 0 |
-| **gpu** (M013) | 25 | 999 | 0 |
+| **gpu** (M013 + precargas de TMEM M014) | 26 | 1.031 | 0 |
+| **gpu_sw** (M014) | 26 | 606 | 0 |
+| **efb_copy** (M014) | 10 | 330 | 0 |
 | encodings (vs `llvm-mc`) | 189 instrucciones | 181 ensambladas + 8 desensambladas | 0 diferencias |
+
+### GPU, parte 2: rasterizador por software (M014)
+
+Todos los valores esperados se calcularon a mano a partir de las reglas documentadas en las cabeceras (`sw/vertex.hpp`, `sw/renderer.hpp`, `sw/efb_copy.hpp`, `gpu.hpp`), no ejecutando el código. Cuando una expectativa mía falló, se revisó contra la fuente antes de tocar nada (ver "Errores encontrados durante M014").
+- Carga de vértices: posiciones (s16 con frac, u8 con y sin ByteDequant, float, indexadas con base virtual enmascarada), índices de matriz y el límite 63, salto 0xFF/0xFFFF, normales con sus divisores y NBT, colores en los 6 formatos, color 1 en el canal 0, coordenadas en tres grupos del VAT.
+- Transformación: posición y proyección ortográfica y perspectiva (incluido el factor 1 − 1e-7, que deja z 1,5 ulp por debajo), normales renormalizadas, iluminación difusa / con signo / clamp, foco, especular con y sin normalizar la distancia, luces 4-7 (bits 11-14), ambiente del vértice, segundo canal; texgen regular (filas 0, 3, 4 y 5, AB11 frente a ABC1, STQ), emboss con la tangente y la binormal, color, dual tex con y sin normalizar, q = 0 (x/2 e y/2 con clamp), NaN → 1.
+- Rasterizado: cobertura de un triángulo (28 píxeles, x + y ≤ 6) y de un quad, regla de relleno con un rectángulo alineado con las muestras (32 píxeles con los 8 órdenes de vértices), tiras, abanicos, culling, Z (LEQUAL, LESS con la misma profundidad, ALWAYS, NEVER, temprana/tardía, sin actualización), recorte y scissor, interpolación de color.
+- TEV: lerp con c = 128 + 1, resta con bias y escala 2, bias −128, escala 1/2 sin redondeo, comparaciones GT/EQ (incluida GT con a = b), konst 1/8 y la selección inválida 9 (= 0), dos etapas con registros intermedios.
+- Alpha test (GREATER/NEVER con OR, XOR), mezcla (factores con +1 desde 128: 192 en lugar de 191), resta, XOR lógico, actualización de color desactivada, RGBA6 con alpha constante, solo alpha, dither (incluido un valor que distingue el orden [y][x] de la tabla).
+- Texturas: nearest, repeat, mirror, clamp, bilinear (pesos 1/127/127/16129), paletas C8 en TMEM, selección de mip point/lineal con límites, sesgo de LOD en 1/32 (14 → nivel 0, 16 → nivel 1), alpha bump indirecto de 8 y 5 bits, matriz indirecta con escala 17 en los cuatro formatos (8, 5, 4, 3 bits: texels 1, 2, 1, 2), z textura de 8/16/24 bits con reemplazo y suma.
+- **Z freeze:** pendiente inicial 1,0 (profundidad 1), pendiente congelada de un triángulo inclinado (mismo dz/dx y dz/dy), triángulo descartado por culling y triángulo fuera del scissor (pero dentro del volumen de recorte) que actualizan la pendiente, dibujo congelado que no la cambia.
+- **Líneas y puntos:** línea horizontal (fila 4, x 2-9), vertical de ancho 2 (columnas 19-20), tira de dos segmentos (16 píxeles), recorte por el primer y por el segundo vértice, línea larga recortada cerca del extremo, plano +z de las líneas (z = 1,5 se descarta; z = 0,5 se dibuja), 45° con remates horizontales, color interpolado en el extremo recortado, puntos de 2x2 y de 1 píxel, desplazamiento de coordenadas de puntos (texels 0 y 2 en cada eje) y de líneas, parada por el ajuste de aspecto.
+- **Copias del EFB** (suite `efb_copy`): RGBA8, RGB565 y RGB5A3 desde RGB8; RGB5A3 (4443 y 5551), RGBA8, A8, RA4, RA8, RG8 y GB8 desde RGBA6; R8, I8 = 136 para (100, 150, 200), intensidad sin conversión automática, G8, R4 con dos texels por byte; disposición de bloques (8x4, 8x8, dos bloques y segunda fila en la separación); media escala (6 bits: 100 → 101; 8 bits: 15 >> 2; fila 1; B8 de 8 de ancho; límite 224 de RGB5A3; filtro activo sobre RGBA6); profundidad (Z 0x123456 en RGBA8, R8, G8, B8, RG8, GB8, R4; formatos inválidos); relleno de bloque, direcciones lineales, rectángulo recortado, lectura más allá del EFB, rectángulo fuera (ni copia ni borrado), separación 0 (solo borrado), destino fuera de RAM.
+- Filtro y gamma: pesos por defecto = copia exacta; deflicker 8,8,10,12,10,8,8 sin clamp (100), con clamp superior (125) e inferior (75); brillo ×2 con saturación (202, 255); gamma 2,2 de 128 → 186 (y el valor 3 igual que 2,2); profundidad sin filtrar; pesos a 0 dan negro.
+- XFB: fila roja (Y 82, Cb 90, Cr 240, los valores BT.601), blanco 235/128 y negro 16/128, filtro de croma con resultado negativo redondeado hacia abajo (−28,5 → −29), gamma 2,2 (Y 176), clamp superior con el filtro vertical (125 → 16), columna impar, escala 0,5 y 2, escala 0 con inversión, escala 1 con inversión.
+- Borrado: RGB8 solo color dentro del rectángulo, RGBA6 con color, alpha y Z, solo alpha, RGB565_Z16 con cuantización (0x102031) y Z16 (0xABCDAB), nada habilitado.
+- A través de comandos reales de la GPU: copia y borrado, segunda copia que ve el color de borrado, máscara BP 0xFE aplicada a BP 0x52.
+- **Precargas de TMEM** (suite `gpu`): valor 0 sin efecto, 3 líneas a la línea 2 de TMEM, recorte al final, inicio fuera de TMEM, RGBA8 alternando bancos, final de TMEM en el banco par y en el impar, origen fuera de RAM.
+- **Mutaciones (M014):** 78 mutaciones del código nuevo (`efb_copy.cpp`, líneas/puntos/z freeze de `renderer.cpp`, `vertex.cpp`, TEV/mezcla/texturas de `renderer.cpp`, precargas de `gpu.cpp`): **75 detectadas**. Las 3 que sobreviven son equivalentes: F15 (quitar el `min(255)` del filtro: la gamma ya satura a 255), P1 (una precarga con valor 0 copia 0 bytes) y P5 (`even > kTmem` en lugar de `>=`: con `even = kTmem` la longitud es 0). La primera pasada dejó 28 sin detectar: se añadieron las pruebas que faltaban (listadas arriba) y se eliminaron dos líneas de código muerto que revelaron (la segunda copia del borde del XFB, que nunca se lee, y una condición redundante en el borrado).
+- **No probado:** el camino de un juego real hasta una imagen en pantalla (no hay salida de video), la niebla, las texturas RGBA8 en TMEM y la escala vertical del XFB (no implementados: detienen la emulación).
 
 ### GPU, parte 1 (M013)
 
@@ -244,6 +266,15 @@ I5 (liberar CS no reinicia la secuencia) sobrevivió y es **equivalente**: cada 
 **Total: 158 mutaciones detectadas.**
 
 
+### Mutaciones de M014 (78)
+
+`/tmp/mut/run12.py` (copias del EFB F1-F28, líneas/puntos L1-L10, z freeze Z1-Z3, precargas P1-P5) y `run13.py` (vértices y transformación V1-V15, rasterizador/TEV/mezcla/texturas R1-R20) sobre las suites `efb_copy`, `gpu_sw` y `gpu`.
+- Primera pasada: 47 detectadas, 28 supervivientes y 4 que no compilaban con `-Werror` (se reescribieron sin variables sin usar y se reportan con su versión final).
+- Supervivientes cubiertos con pruebas nuevas: F3, F6, F8, F9, F28 (copias), L1, L3, L4 (líneas), Z1 (z freeze fuera del scissor), P4 (banco impar), V5, V8, V10, V11, V12, V15 (transformación), R1, R2, R4, R6, R8, R10, R12, R13, R14, R15, R17, R18, R19 (raster, TEV, mezcla, LOD, dither, alpha test, z textura, konst, indirectas). Todas detectadas después.
+- Código muerto eliminado por F19 y F20 (no se cuentan).
+- Equivalentes: F15, P1, P5 (explicadas en la sección de M014).
+- **Total: 75 detectadas, 3 equivalentes. Acumulado: 317.**
+
 ### Mutaciones de M013 (48)
 
 `/tmp/mut/run11.py` sobre el lector de comandos, XF, BP, estado CP, GPU, Command Processor, Pixel Engine y texturas.
@@ -263,6 +294,13 @@ Cada mutación se aplicó al fuente, se recompiló y se ejecutó la suite corres
 | Acelerador (C1-C13) | 13 | 11 | 13 detectadas |
 
 Supervivientes iniciales y prueba añadida: M3 (programa sin datos), M4 (búfer de 128 bytes), M5 (primer byte 0x80 de la identificación), M10 (interruptor de interrupción apagado), C5 (escala de ganancia 2), C9 (bit 31 tras el desbordamiento de escritura). **Total acumulado: 195 mutaciones detectadas.**
+
+## Errores encontrados durante M014
+
+- No apareció ningún error en el código del emulador a partir de las pruebas.
+- **Errores en mis expectativas, corregidos tras revisar la fuente:** R4 de profundidad (0x12 da 0x10 en el primer texel, porque el segundo texel es Z 0, no 0x11); el blanco del factor de mezcla (255·63 >> 8 = 62, no 63); una línea a z = 0,5 que esperaba descartada, cuando el plano +z de las líneas en Dolphin es −z + w (solo z > w se descarta; los triángulos usan otro plano); una copia a través de la GPU que salía negra porque los pesos del filtro de copia estaban en 0 (estado tras el reset) — se documentó como comportamiento y la prueba fija los pesos de GX; y un comentario del Y del XFB (27940 >> 8 = 109 sin bit de redondeo).
+- **Pruebas que no probaban lo que decían** (las encontraron las mutaciones): el triángulo "fuera del scissor" estaba fuera del volumen de recorte (rechazo trivial, que no actualiza la pendiente) y además la pendiente ya era la esperada; el recorte por el segundo vértice daba el mismo resultado con la fórmula equivocada (se añadió una línea larga con el extremo justo fuera); q = 0 con valores que el clamp igualaba; dither con un valor que daba lo mismo con los índices cambiados.
+- Las pruebas de M013 que esperaban una parada en líneas, copias del EFB, precargas y z freeze se cambiaron por paradas que siguen existiendo (fin de dibujo con valor 1, formato de píxel 5, precarga fuera de RAM), porque esas funciones ya están implementadas.
 
 ## Errores encontrados durante M013
 
