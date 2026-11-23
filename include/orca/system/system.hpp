@@ -12,6 +12,7 @@
 #include "orca/gpu/efb_access.hpp"
 #include "orca/ppc/jit.hpp"
 #include "orca/disc/disc_image.hpp"
+#include "orca/audio/mixer.hpp"
 #include "orca/hw/audio_interface.hpp"
 #include "orca/hw/disc_interface.hpp"
 #include "orca/hw/serial_interface.hpp"
@@ -89,6 +90,7 @@ public:
     hw::VideoInterface& vi() noexcept { return *vi_; }
     hw::SerialInterface& si() noexcept { return *si_; }
     hw::AudioInterface& ai() noexcept { return *ai_; }
+    audio::Mixer& mixer() noexcept { return *mixer_; }
     hw::ExternalInterface& exi() noexcept { return *exi_; }
     hw::MemoryInterface& mi() noexcept { return *mi_; }
     hw::DspInterface& dsp() noexcept { return *dsp_; }
@@ -171,6 +173,7 @@ private:
     std::unique_ptr<hw::VideoInterface> vi_;
     std::unique_ptr<hw::SerialInterface> si_;
     std::unique_ptr<hw::AudioInterface> ai_;
+    std::unique_ptr<audio::Mixer> mixer_;
     std::unique_ptr<hw::ExternalInterface> exi_;
     std::unique_ptr<hw::IplRtcSram> ipl_;
     std::array<std::unique_ptr<hw::MemoryCard>, 2> cards_;

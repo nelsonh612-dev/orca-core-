@@ -148,6 +148,7 @@ struct DiRig {
         bus.map_ram("ram", 0, 0x100000);
         std::vector<u8> app(64, 0), dol(0x100, 0);
         di.insert(std::make_unique<disc::MemoryDisc>(build_disc(app, dol)));
+        di.after_ipl_boot(false, 0); // as the IPL leaves the drive: ID read, ready
     }
     void w(u32 off, u32 v) { CHECK(di.mmio_write(off, 4, v)); }
     u32 r(u32 off) { u64 v = 0; CHECK(di.mmio_read(off, 4, v)); return static_cast<u32>(v); }
@@ -212,9 +213,9 @@ TEST_CASE(di_errors_are_explicit) {
     t.sched.advance_to(1);
     CHECK_EQ(t.r(0x00) & hw::di::DISR_DEINT, hw::di::DISR_DEINT);
     CHECK_EQ(t.r(0x00) & hw::di::DISR_TCINT, 0U);
-    t.w(0x08, 0x12000000U);                // inquiry: not implemented
+    t.w(0x08, 0x5A000000U);                // an undocumented command
     CHECK(!t.di.mmio_write(0x1C, 4, 1));
-    CHECK(t.di.last_error().find("0x12") != std::string::npos);
+    CHECK(t.di.last_error().find("0x5A") != std::string::npos);
     CHECK(!t.di.busy());
     t.read_cmd(0x2000, 0x20, 0);
     CHECK(!t.di.mmio_write(0x1C, 4, 1));   // immediate mode
@@ -229,11 +230,147 @@ TEST_CASE(di_errors_are_explicit) {
     u64 v = 0;
     CHECK(!t.di.mmio_read(0x24, 4, v));    // DICFG not implemented
     CHECK(!t.di.mmio_read(0x00, 2, v));
+    t.sched.advance_to(t.sched.now() + 1);
+    t.w(0x08, 0xA8000080U);                // read sub-command not documented
+    CHECK(!t.di.mmio_write(0x1C, 4, 3));
+    t.w(0x08, 0xE3020000U);                // stop motor with eject
+    CHECK(!t.di.mmio_write(0x1C, 4, 1));
+    CHECK(t.di.last_error().find("eject") != std::string::npos);
+    // no disc: the drive answers "medium not present" (DEINT), the cover reads open
     hw::DiscInterface empty(t.bus, t.sched, t.pi);
+    u64 cvr = 0;
+    CHECK(empty.mmio_read(0x04, 4, cvr));
+    CHECK_EQ(cvr & hw::di::DICVR_CVR, hw::di::DICVR_CVR);
     CHECK(empty.mmio_write(0x08, 4, 0xA8000000U));
     CHECK(empty.mmio_write(0x18, 4, 0x20));
-    CHECK(!empty.mmio_write(0x1C, 4, 3));
-    CHECK(empty.last_error().find("no disc") != std::string::npos);
+    CHECK(empty.mmio_write(0x1C, 4, 3));
+    t.sched.advance_to(t.sched.now() + 1);
+    u64 sr = 0;
+    CHECK(empty.mmio_read(0x00, 4, sr));
+    CHECK_EQ(sr & hw::di::DISR_DEINT, hw::di::DISR_DEINT);
+    CHECK(empty.drive_error() == hw::di::DriveError::MediumNotPresent);
+}
+
+TEST_CASE(di_drive_states_and_immediate_commands) {
+    mem::Bus bus;
+    core::Scheduler sched;
+    hw::ProcessorInterface pi{bus, nullptr};
+    hw::DiscInterface di{bus, sched, pi};
+    bus.map_ram("ram", 0, 0x100000);
+    std::vector<u8> app(64, 0), dol(0x100, 0);
+    auto img = build_disc(app, dol);
+    img[8] = 1; // the header asks for streaming audio
+    di.insert(std::make_unique<disc::MemoryDisc>(img));
+    auto w = [&](u32 off, u32 v) { CHECK(di.mmio_write(off, 4, v)); };
+    auto r = [&](u32 off) { u64 v = 0; CHECK(di.mmio_read(off, 4, v)); return static_cast<u32>(v); };
+    auto run = [&](u32 c0, u32 c1, u32 c2, u32 dicr) {
+        w(0x00, hw::di::DISR_TCINT | hw::di::DISR_DEINT);
+        w(0x08, c0); w(0x0C, c1); w(0x10, c2); w(0x1C, dicr);
+        sched.advance_to(sched.now() + 1);
+        return (r(0x00) & hw::di::DISR_TCINT) != 0U;
+    };
+    auto request_error = [&] { CHECK(run(0xE0000000U, 0, 0, 1)); return r(0x20); };
+    CHECK(di.drive_state() == hw::di::DriveState::DiscIdNotRead);
+    // data before the disc ID: "disc ID not read" (state 6 is reported as 5)
+    w(0x14, 0x2000); w(0x18, 0x20);
+    CHECK(!run(0xA8000000U, 0, 0x20, 3));
+    CHECK_EQ(request_error(), 0x05020401U);
+    CHECK_EQ(request_error(), 0x05000000U);   // the error was cleared by the first request
+    // inquiry: DMA of the drive's identification
+    w(0x14, 0x3000); w(0x18, 0x20);
+    CHECK(run(0x12000000U, 0, 0x20, 3));
+    u32 word = 0;
+    bus.read32(0x3000, word); CHECK_EQ(word, 0x00000002U);
+    bus.read32(0x3004, word); CHECK_EQ(word, 0x20060526U);
+    CHECK_EQ(r(0x14), 0x3020U);
+    // the disc ID, then configuration of streaming audio (allowed before the first data read)
+    w(0x14, 0x4000); w(0x18, 0x20);
+    CHECK(run(0xA8000040U, 0, 0x20, 3));
+    bus.read32(0x4000, word); CHECK_EQ(word, 0x4F524341U); // "ORCA"
+    CHECK(di.drive_state() == hw::di::DriveState::ReadyNoReadsMade);
+    CHECK(run(0xE4010000U | 10U, 0, 0, 1));
+    CHECK(di.streaming_enabled());
+    w(0x14, 0x5000); w(0x18, 0x20);
+    CHECK(run(0xA8000000U, 0x100000U >> 2, 0x20, 3));
+    CHECK(di.drive_state() == hw::di::DriveState::Ready);
+    CHECK(!run(0xE4000000U, 0, 0, 1));         // too late now
+    CHECK_EQ(request_error(), 0x00052402U);
+    // seek; past the end of the disc: "block out of bounds"
+    CHECK(run(0xAB000000U, 0x1000, 0, 1));
+    w(0x14, 0x5000); w(0x18, 0x20);
+    CHECK(!run(0xA8000000U, 0x00200000U >> 2, 0x20, 3));
+    CHECK_EQ(request_error(), 0x00052100U);
+    // stopping the motor: reads fail until a new disc
+    CHECK(run(0xE3000000U, 0, 0, 1));
+    w(0x14, 0x5000); w(0x18, 0x20);
+    CHECK(!run(0xA8000000U, 0, 0x20, 3));
+    CHECK_EQ(request_error(), 0x04020400U);
+}
+
+TEST_CASE(dtk_streaming_audio) {
+    // decoder: filter 0 with shift 12 gives the nibble itself (<< 12 >> 12)
+    u8 block[32] = {0x0C, 0x0C, 0, 0};
+    for (unsigned i = 0; i < 28; ++i) block[4 + i] = static_cast<u8>((i & 7U) | ((7U - (i & 7U)) << 4));
+    s16 pcm[56];
+    s32 hist[4] = {};
+    hw::decode_dtk_block(block, pcm, hist);
+    for (unsigned i = 0; i < 28; ++i) {
+        CHECK_EQ(pcm[2 * i], static_cast<s16>(i & 7U));
+        CHECK_EQ(pcm[2 * i + 1], static_cast<s16>(7U - (i & 7U)));
+    }
+    // filter 1 (h1 * 60/64) with shift 0: a nibble of 1 -> 4096, then the history decays
+    u8 f1[32] = {0x10, 0x10, 0, 0};
+    f1[4] = 0x11;
+    s32 h[4] = {};
+    hw::decode_dtk_block(f1, pcm, h);
+    CHECK_EQ(pcm[0], 4096);
+    CHECK_EQ(pcm[2], 3840);                   // 4096 * 60 / 64
+    CHECK_EQ(pcm[4], 3600);                   // 3840 * 60 / 64
+    // the drive plays a track, queues the next and stops at the end on request
+    mem::Bus bus;
+    core::Scheduler sched;
+    hw::ProcessorInterface pi{bus, nullptr};
+    hw::DiscInterface di{bus, sched, pi};
+    bus.map_ram("ram", 0, 0x100000);
+    std::vector<u8> app(64, 0), dol(0x100, 0);
+    auto img = build_disc(app, dol);
+    for (unsigned b = 0; b < 4; ++b) { // two 64-byte tracks at 0x180000 and 0x180040
+        u8* p = &img[0x180000U + 32U * b];
+        std::fill(p, p + 32, 0);
+        p[0] = p[1] = 0x0C;
+        for (unsigned i = 0; i < 28; ++i) p[4 + i] = static_cast<u8>(b + 1U);
+    }
+    di.insert(std::make_unique<disc::MemoryDisc>(img));
+    di.after_ipl_boot(true, 0);
+    auto cmd = [&](u32 c0, u32 c1, u32 c2) { di.mmio_write(0x08, 4, c0); di.mmio_write(0x0C, 4, c1); di.mmio_write(0x10, 4, c2);
+                                             CHECK(di.mmio_write(0x1C, 4, 1)); sched.advance_to(sched.now() + 1); };
+    cmd(0xE1000000U, 0x180000U >> 2, 0x40);
+    CHECK(di.stream_playing());
+    cmd(0xE1000000U, 0x180040U >> 2, 0x40);   // queued after the first track
+    std::vector<s16> out(2 * 28 * 8);
+    CHECK_EQ(di.dtk_pull(out, 28), 28U);
+    CHECK_EQ(out[0], 1);
+    cmd(0xE2010000U, 0, 0);                   // current position (rounded down to 32 KiB) >> 2
+    u64 imm = 0; di.mmio_read(0x20, 4, imm);
+    CHECK_EQ(imm, u64{0x180000U >> 2});
+    CHECK_EQ(di.dtk_pull(out, 28 * 2), 28U * 2U);
+    CHECK_EQ(out[0], 2);
+    CHECK_EQ(out[2 * 28], 3);                 // the queued track follows without a gap
+    cmd(0xE1000000U, 0, 0);                   // stop at the end of the current track
+    CHECK_EQ(di.dtk_pull(out, 28 * 4), 28U);  // its last block, then the drive stops
+    CHECK_EQ(out[0], 4);
+    CHECK(!di.stream_playing());
+    cmd(0xE2000000U, 0, 0);
+    di.mmio_read(0x20, 4, imm);
+    CHECK_EQ(imm, 0U);
+    // without streaming configured: "no audio buffer"
+    hw::DiscInterface off{bus, sched, pi};
+    off.insert(std::make_unique<disc::MemoryDisc>(img));
+    off.after_ipl_boot(false, 0);
+    off.mmio_write(0x08, 4, 0xE1000000U);
+    CHECK(off.mmio_write(0x1C, 4, 1));
+    sched.advance_to(sched.now() + 1);
+    CHECK(off.drive_error() == hw::di::DriveError::NoAudioBuffer);
 }
 
 TEST_CASE(cpu_stop_reason_names_the_device) {

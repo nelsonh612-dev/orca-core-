@@ -79,10 +79,10 @@ int program_main(void) {
     orca_emit(REG32(0x80002028u) - REG32(0x80002024u));
     orca_emit(REG32(0x80002014u));
 
-    /* AI: play at 48 kHz, wait for the AISCNT == AIIT match (polled) */
+    /* AI: play at 48 kHz (AISFR = 1), wait for the AISCNT == AIIT match (polled) */
     AI(0x0C) = 480u;
     const uint32_t t0 = mftbl();
-    AI(0x00) = 0x20u | 0x01u;        /* SCRESET | PSTAT */
+    AI(0x00) = 0x20u | 0x02u | 0x01u; /* SCRESET | AISFR | PSTAT */
     while ((AI(0x00) & 0x08u) == 0u) { }
     const uint32_t t1 = mftbl();
     orca_emit(1u);

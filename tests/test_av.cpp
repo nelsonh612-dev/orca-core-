@@ -285,10 +285,11 @@ TEST_CASE(ai_sample_counter_rates_and_interrupt) {
     auto r = [&](u32 o) { u64 v = 0; CHECK(ai.mmio_read(o, 4, v)); return static_cast<u32>(v); };
     sched.advance_to(1000);
     CHECK_EQ(r(0x08), 0U);
-    w(0x00, ai::PSTAT);                                // play at 48 kHz: 10125 CPU cycles per sample
-    sched.advance_to(1000 + 10125 * 480 - 1);
+    // GameCube "48 kHz" = 108 MHz / 2248: one sample every 486e6 * 2248 / 108e6 = 10115.999.. cycles
+    w(0x00, ai::PSTAT | ai::AISFR);
+    sched.advance_to(1000 + 4855680 - 1);              // 480 samples = 480 * 2248 * 4.5 cycles = 4,855,680
     CHECK_EQ(r(0x08), 479U);
-    sched.advance_to(1000 + 10125 * 480);
+    sched.advance_to(1000 + 4855680);
     CHECK_EQ(r(0x08), 480U);
     w(0x00, 0);                                        // stop: counter frozen
     sched.advance_to(sched.now() + 1000000);
@@ -299,16 +300,16 @@ TEST_CASE(ai_sample_counter_rates_and_interrupt) {
     pi.mmio_write(0x04, 4, pi::CAUSE_AI);
     w(0x0C, 320);
     const u64 t0 = sched.now();
-    w(0x00, ai::PSTAT | ai::AFR | ai::AIINTMSK);
+    w(0x00, ai::PSTAT | ai::AIINTMSK);                 // AISFR = 0: "32 kHz" = 108 MHz / 3372
     while (!pi.line() && sched.next_event_time()) sched.advance_to(*sched.next_event_time());
     CHECK(pi.line());
-    CHECK_EQ(sched.now() - t0, 4860000ULL);            // 320 samples at 32 kHz = 10 ms = 4.86 M cycles
+    CHECK_EQ(sched.now() - t0, 4855680ULL);            // 320 * 3372 * 4.5 cycles
     CHECK_EQ(r(0x08), 320U);
     CHECK((r(0x00) & ai::AIINT) != 0U);
-    w(0x00, ai::PSTAT | ai::AFR | ai::AIINTMSK | ai::AIINT); // ack
+    w(0x00, ai::PSTAT | ai::AIINTMSK | ai::AIINT);    // ack
     CHECK(!pi.line());
     // AIINTVLD: AIINT holds its value
-    w(0x00, ai::PSTAT | ai::AFR | ai::AIINTMSK | ai::AIINTVLD);
+    w(0x00, ai::PSTAT | ai::AIINTMSK | ai::AIINTVLD);
     w(0x0C, r(0x08) + 10);
     sched.advance_to(sched.now() + 15187 * 20);
     CHECK_EQ(r(0x00) & ai::AIINT, 0U);
@@ -349,7 +350,7 @@ TEST_CASE(av_suite_program_video_input_audio) {
     CHECK_EQ(L[8], 263U);                       // DPV latched in the handler at field 2 start
     CHECK_EQ(L[9], 1U);                         // AI interrupt flag seen
     CHECK(L[10] >= 480U && L[10] < 490U);       // AISCNT after the AIIT match
-    CHECK(L[11] >= 405000U && L[11] <= 405100U); // 480 samples at 48 kHz = 10 ms = 405,000 TB ticks (40.5 MHz)
+    CHECK(L[11] >= 404560U && L[11] <= 404660U); // 480 samples at 108 MHz / 2248 = 9.9911 ms = 404,640 TB ticks (40.5 MHz)
 }
 #endif
 

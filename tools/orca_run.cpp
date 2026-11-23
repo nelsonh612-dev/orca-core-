@@ -1,6 +1,6 @@
 // orca_run: headless runner. Loads a DOL/ELF, boots it (HLE) and runs for a
 // number of cycles, then prints why it stopped and the CPU state.
-// Usage: orca_run [--ipl-rom=FILE] [--rtc=SECONDS] [--dsp-irom=FILE] [--dsp-coef=FILE] [--card-a=FILE] [--card-b=FILE] [--dump-xfb=FILE.ppm] [--list-files] file.(dol|elf|iso|gcm) [cycles] [gc|wii]
+// Usage: orca_run [--ipl-rom=FILE] [--rtc=SECONDS] [--dsp-irom=FILE] [--dsp-coef=FILE] [--card-a=FILE] [--card-b=FILE] [--dump-xfb=FILE.ppm] [--dump-audio=FILE.wav] [--list-files] file.(dol|elf|iso|gcm) [cycles] [gc|wii]
 //   --ipl-rom: IPL ROM image (descrambled, as the CPU reads it) for EXI0/CS1
 //   --rtc:     initial RTC counter value (seconds); default 0
 //   --list-files: print the disc FST (.iso/.gcm) and exit
@@ -27,7 +27,7 @@ int main(int argc_in, char** argv_in) {
     bool list_files = false;
     std::string irom_path, coef_path;
     std::string card_path[2];
-    std::string xfb_path;
+    std::string xfb_path, audio_path;
     for (int i = 0; i < argc_in; ++i) {
         if (std::strncmp(argv_in[i], "--ipl-rom=", 10) == 0) ipl_path = argv_in[i] + 10;
         else if (std::strncmp(argv_in[i], "--rtc=", 6) == 0) rtc = std::strtoul(argv_in[i] + 6, nullptr, 0);
@@ -37,6 +37,7 @@ int main(int argc_in, char** argv_in) {
         else if (std::strncmp(argv_in[i], "--card-a=", 9) == 0) card_path[0] = argv_in[i] + 9;
         else if (std::strncmp(argv_in[i], "--card-b=", 9) == 0) card_path[1] = argv_in[i] + 9;
         else if (std::strncmp(argv_in[i], "--dump-xfb=", 11) == 0) xfb_path = argv_in[i] + 11;
+        else if (std::strncmp(argv_in[i], "--dump-audio=", 13) == 0) audio_path = argv_in[i] + 13;
         else args.push_back(argv_in[i]);
     }
     const int argc = static_cast<int>(args.size());
@@ -111,7 +112,23 @@ int main(int argc_in, char** argv_in) {
         const std::vector<orca::u8> file((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
         if (!sys.load_executable(file, error)) { std::fprintf(stderr, "load failed: %s\n", error.c_str()); return 1; }
     }
+    std::vector<orca::s16> audio;
+    if (!audio_path.empty()) sys.mixer().set_sink([&audio](std::span<const orca::s16> f) { audio.insert(audio.end(), f.begin(), f.end()); });
     const auto r = sys.run(cycles);
+    if (!audio_path.empty()) {
+        // 16-bit stereo PCM WAV at 48 kHz, little-endian
+        std::ofstream out(audio_path, std::ios::binary);
+        auto le = [&out](orca::u32 v, int n) { for (int k = 0; k < n; ++k) out.put(static_cast<char>((v >> (8 * k)) & 0xFFU)); };
+        const auto data = static_cast<orca::u32>(audio.size() * 2U);
+        out.write("RIFF", 4); le(36U + data, 4); out.write("WAVEfmt ", 8); le(16, 4); le(1, 2); le(2, 2);
+        le(orca::audio::kOutputRate, 4); le(orca::audio::kOutputRate * 4U, 4); le(4, 2); le(16, 2);
+        out.write("data", 4); le(data, 4);
+        for (const orca::s16 v : audio) le(static_cast<orca::u16>(v), 2);
+        if (!out) std::fprintf(stderr, "cannot write %s\n", audio_path.c_str());
+        else std::printf("audio: %zu frames at 48 kHz written to %s (DMA underruns %llu, streaming underruns %llu)\n", audio.size() / 2U,
+                         audio_path.c_str(), static_cast<unsigned long long>(sys.mixer().dma_underruns()),
+                         static_cast<unsigned long long>(sys.mixer().stream_underruns()));
+    }
     for (unsigned slot = 0; slot < 2; ++slot) {
         const auto* card = sys.memory_card(slot);
         if (card == nullptr || !card->dirty()) continue;

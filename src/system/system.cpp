@@ -34,7 +34,7 @@ System::System(SystemConfig config) : config_(config), clocks_(clocks_for(config
     page_0c006_ = std::make_unique<hw::MmioSplitter>();
     vi_ = std::make_unique<hw::VideoInterface>(scheduler_, *pi_, clocks_.cpu_hz);
     si_ = std::make_unique<hw::SerialInterface>(scheduler_, *pi_, vi_.get());
-    ai_ = std::make_unique<hw::AudioInterface>(scheduler_, *pi_, clocks_.cpu_hz);
+    ai_ = std::make_unique<hw::AudioInterface>(scheduler_, *pi_, clocks_.cpu_hz, config_.console == Console::Wii);
     vi_->set_field_listener([this](bool bottom) {
         si_->on_video_field();
         if (field_listener_) field_listener_(bottom);
@@ -53,6 +53,11 @@ System::System(SystemConfig config) : config_(config), clocks_(clocks_for(config
     dsp_ = std::make_unique<hw::DspInterface>(bus_, scheduler_, *pi_, config_.console == Console::GameCube, clocks_.cpu_hz);
     bus_.map_mmio("DSP", hw::dsp::kBase, 0x1000, *dsp_);
     dsp_->set_aid_rate_source([this] { return ai_->dma_rate_32khz(); });
+    // audio output: AI DMA (DSP) + streaming audio (drive) -> mixer
+    mixer_ = std::make_unique<audio::Mixer>(clocks_.cpu_hz);
+    dsp_->set_audio_sink([this](std::span<const u8> block) { mixer_->push_dma_block(block, ai_->dma_divisor()); });
+    ai_->set_stream_source([this](std::span<s16> out, std::size_t n) { return di_->dtk_pull(out, n); });
+    ai_->set_stream_sink([this](std::span<const s16> pcm, u32 divisor, u32 vol) { mixer_->push_stream(pcm, divisor, vol); });
 }
 
 System::~System() = default;
@@ -171,6 +176,8 @@ bool System::boot_disc(std::string& error) {
     const auto entry = call_guest(close, {}, kBudget, error);
     if (!entry) return false;
     hle_boot(*entry);
+    // the IPL read the disc ID and the apploader and configured streaming audio
+    di_->after_ipl_boot(id[8] != 0U, id[9]);
     return true;
 }
 
@@ -226,6 +233,7 @@ RunResult System::run(u64 max_cycles) {
         r.stop = s;
         break;
     }
+    mixer_->advance(scheduler_.now()); // audio due by now (minus the mixer latency)
     r.cycles = scheduler_.now() - start;
     r.instructions = cpu_->instructions_retired() - retired0;
     return r;

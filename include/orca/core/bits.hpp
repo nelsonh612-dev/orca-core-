@@ -8,6 +8,7 @@ using u8 = std::uint8_t;
 using u16 = std::uint16_t;
 using u32 = std::uint32_t;
 using u64 = std::uint64_t;
+__extension__ typedef unsigned __int128 u128; // GCC/Clang (all supported hosts); exact 64x64 products
 using s8 = std::int8_t;
 using s16 = std::int16_t;
 using s32 = std::int32_t;
