@@ -89,6 +89,25 @@ TEST_CASE(jit_arm64_translates_adde_and_subfe_using_xer_carry_in) {
 }
 
 #if defined(__aarch64__)
+TEST_CASE(jit_arm64_cache_respects_configured_memory_bound) {
+    Machine m(0x1000U, CpuConfig{0xABCD1234U, 2U});
+    m.code(0x1000U, {A::b(4), A::b(4), A::b(4)});
+
+    CHECK(m.cpu->run_jit(1U) == StepResult::Executed);
+    CHECK_EQ(m.cpu->jit_cached_blocks(), 1U);
+    CHECK_EQ(m.s().pc, 0x1004U);
+
+    CHECK(m.cpu->run_jit(1U) == StepResult::Executed);
+    CHECK_EQ(m.cpu->jit_cached_blocks(), 2U);
+    CHECK_EQ(m.s().pc, 0x1008U);
+
+    CHECK(m.cpu->run_jit(1U) == StepResult::Executed);
+    CHECK(m.cpu->jit_cached_blocks() <= 2U);
+    CHECK_EQ(m.s().pc, 0x100CU);
+}
+#endif
+
+#if defined(__aarch64__)
 TEST_CASE(jit_arm64_differential_guarded_lmw_stmw) {
     const u32 lmw = A::D(46, 28, 4, 0);
     const u32 stmw = A::D(47, 28, 5, 0);
