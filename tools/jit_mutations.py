@@ -34,8 +34,12 @@ MUTATIONS = [
     ("Store helper: own-code check after update dropped", "        e.cmp_imm(false, 0, 2);\n        const auto same = e.b_cond(Cond::NE);\n        exit_const(pc + 4U, i + 1U, kExitNormal);\n        e.bind_here(same);\n    }\n    return true;", "    }\n    return true;"),
 ]
 
-def run(cmd, cwd=None):
-    return subprocess.run(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+def run(cmd, cwd=None, timeout=None):
+    try:
+        return subprocess.run(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        # a hang (e.g. a linked loop that never leaves translated code) also detects the mutation
+        return subprocess.CompletedProcess(cmd, 124, "timeout")
 
 def main():
     build = os.path.abspath(sys.argv[1])
@@ -51,17 +55,18 @@ def main():
             if b.returncode != 0:
                 results.append((name, "does not build"))
                 continue
-            t1 = run([f"{build}/orca_test_jit"], cwd=build)
-            t2 = run([f"{build}/orca_test_programs"], cwd=build) if t1.returncode == 0 else t1
-            results.append((name, "killed" if (t1.returncode != 0 or t2.returncode != 0) else "SURVIVED"))
+            t1 = run([f"{build}/orca_test_jit"], cwd=build, timeout=300)
+            t2 = run([f"{build}/orca_test_programs"], cwd=build, timeout=300) if t1.returncode == 0 else t1
+            hang = t1.returncode == 124 or t2.returncode == 124
+            results.append((name, ("killed (hang)" if hang else "killed") if (t1.returncode != 0 or t2.returncode != 0) else "SURVIVED"))
         finally:
             SRC.write_text(original)
         print(f"[mutation] {results[-1][1]:>14}  {name}", flush=True)
     run(["ninja", "-C", build])
-    killed = sum(1 for _, r in results if r == "killed")
+    killed = sum(1 for _, r in results if r.startswith("killed"))
     print(f"[mutation] {killed} of {len(results)} killed")
     for name, r in results:
-        if r != "killed":
+        if not r.startswith("killed"):
             print(f"[mutation] not killed: {name}: {r}")
 
 if __name__ == "__main__":
