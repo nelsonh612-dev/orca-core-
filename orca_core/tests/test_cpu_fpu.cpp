@@ -426,6 +426,23 @@ TEST_CASE(locked_cache_dcbst_casts_out_and_retains_line) {
     CHECK(m.cpu->locked_cache_line(0x80003000U, line));
 }
 
+TEST_CASE(locked_cache_clean_dcbst_does_not_break_reservation) {
+    FpMachine m;
+    m.s().hid2 |= HID2_LCE;
+    m.s().dbat[3] = {0x80000002U, 0x80000002U};
+    m.s().msr |= MSR_DR;
+    m.s().gpr[3] = 0x80003000U;
+    m.s().gpr[4] = 0;
+    m.s().gpr[5] = 0xCAFEBABEU;
+    const u32 dcbst = (31U << 26U) | (3U << 16U) | (4U << 11U) | (54U << 1U);
+    m.code(0x1000, {A::dcbz_l(3, 4), A::stw(5, 0, 3), dcbst,
+                    A::lwarx(6, 0, 3), dcbst, A::stwcx_(5, 0, 3)});
+    CHECK(m.cpu->run(6) == StepResult::Executed);
+    CHECK_EQ(m.s().gpr[6], 0xCAFEBABEU);
+    CHECK_EQ(CR0(m.s().cr), 2U); // clean dcbst must not invalidate the reservation
+    CHECK_EQ(m.r32(0x80003000U), 0xCAFEBABEU);
+}
+
 TEST_CASE(locked_cache_dcbf_casts_out_and_invalidates_line) {
     FpMachine m;
     m.s().hid2 |= HID2_LCE;
