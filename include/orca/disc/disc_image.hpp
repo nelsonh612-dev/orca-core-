@@ -55,6 +55,24 @@ private:
     u64 size_{0};
 };
 
+#if defined(__unix__) || defined(__APPLE__)
+// A disc image behind an open file descriptor (Android hands out descriptors
+// for files the user picks). Takes ownership of `fd`.
+class FdDisc final : public DiscReader {
+public:
+    static std::unique_ptr<FdDisc> open(int fd, std::string& error);
+    ~FdDisc() override;
+    FdDisc(const FdDisc&) = delete;
+    FdDisc& operator=(const FdDisc&) = delete;
+    u64 size() const override { return size_; }
+    bool read(u64 offset, std::span<u8> out) override;
+private:
+    FdDisc(int fd, u64 size) : fd_(fd), size_(size) {}
+    int fd_;
+    u64 size_;
+};
+#endif
+
 struct DiscHeader {
     std::string game_id;   // 6 characters, e.g. "GALE01"
     std::string name;

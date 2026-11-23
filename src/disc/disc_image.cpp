@@ -1,5 +1,10 @@
 #include "orca/disc/disc_image.hpp"
 
+#if defined(__unix__) || defined(__APPLE__)
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
+
 #include <algorithm>
 #include <array>
 #include <cstring>
@@ -31,6 +36,31 @@ bool FileDisc::read(u64 offset, std::span<u8> out) {
     file_.read(reinterpret_cast<char*>(out.data()), static_cast<std::streamsize>(out.size()));
     return static_cast<std::size_t>(file_.gcount()) == out.size();
 }
+
+#if defined(__unix__) || defined(__APPLE__)
+std::unique_ptr<FdDisc> FdDisc::open(int fd, std::string& error) {
+    struct stat st{};
+    if (fd < 0 || ::fstat(fd, &st) != 0 || st.st_size <= 0) {
+        if (fd >= 0) ::close(fd);
+        error = "disc: the file descriptor is not a readable file";
+        return nullptr;
+    }
+    return std::unique_ptr<FdDisc>(new FdDisc(fd, static_cast<u64>(st.st_size)));
+}
+
+FdDisc::~FdDisc() { ::close(fd_); }
+
+bool FdDisc::read(u64 offset, std::span<u8> out) {
+    if (offset > size_ || out.size() > size_ - offset) return false;
+    std::size_t done = 0;
+    while (done < out.size()) {
+        const ssize_t n = ::pread(fd_, out.data() + done, out.size() - done, static_cast<off_t>(offset + done));
+        if (n <= 0) return false;
+        done += static_cast<std::size_t>(n);
+    }
+    return true;
+}
+#endif
 
 std::optional<DiscHeader> parse_header(DiscReader& disc, std::string& error) {
     std::array<u8, 0x440> h{};

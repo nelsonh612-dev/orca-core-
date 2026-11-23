@@ -62,6 +62,7 @@ add_library(orca_core
     src/ios/memory_values.cpp
     src/ios/bluetooth.cpp
     src/ios/nand_setup.cpp
+    src/frontend/emulator.cpp
     src/wiimote/wiimote.cpp
     src/hw/exi_ipl.cpp
     src/hw/exi_memcard.cpp
@@ -122,7 +123,7 @@ endif()
 
 if(ORCA_BUILD_TESTS)
     enable_testing()
-    foreach(suite memory cpu_integer cpu_system mmu reference fpu_engine cpu_fpu system crypto wii_disc audio dsp_hle ios wiimote)
+    foreach(suite memory cpu_integer cpu_system mmu reference fpu_engine cpu_fpu system crypto wii_disc audio dsp_hle ios wiimote frontend)
         add_executable(orca_test_${suite} tests/test_${suite}.cpp)
         target_link_libraries(orca_test_${suite} PRIVATE orca_core)
         target_include_directories(orca_test_${suite} PRIVATE tests)
@@ -236,6 +237,8 @@ if(ORCA_BUILD_TESTS)
         target_compile_definitions(orca_test_programs PRIVATE ORCA_PROGRAMS_DIR="${ODIR}")
         add_dependencies(orca_test_disc orca_ppc_programs)
         add_dependencies(orca_test_ios orca_ppc_programs)
+        add_dependencies(orca_test_frontend orca_ppc_programs)
+        target_compile_definitions(orca_test_frontend PRIVATE ORCA_PROGRAMS_DIR="${ODIR}")
         target_compile_definitions(orca_test_ios PRIVATE ORCA_PROGRAMS_DIR="${ODIR}")
         add_dependencies(orca_test_av orca_ppc_programs)
         add_dependencies(orca_test_exi orca_ppc_programs)

@@ -1,0 +1,73 @@
+// Frontend layer: loading, frames, controls, Wii prerequisites.
+#include "orca/frontend/emulator.hpp"
+#include "test_framework.hpp"
+#include "test_port.hpp"
+
+#include <filesystem>
+#include <fstream>
+#include <vector>
+
+using namespace orca;
+
+namespace {
+std::vector<u8> read_file(const std::string& path) {
+    std::ifstream f(path, std::ios::binary);
+    return std::vector<u8>((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+}
+} // namespace
+
+TEST_CASE(frontend_rejects_what_it_cannot_load) {
+    frontend::Settings s;
+    s.jit = false;
+    frontend::Emulator emu(s);
+    std::string error;
+    CHECK(!emu.run_frame());
+    CHECK(emu.error() == "nothing loaded");
+    CHECK(!emu.load_disc(std::make_unique<disc::MemoryDisc>(std::vector<u8>(0x100, 0)), error));
+    CHECK(error.find("magic") != std::string::npos);
+    // a Wii disc without NAND / key settings
+    std::vector<u8> wii(0x100, 0);
+    wii[0x18] = 0x5D; wii[0x19] = 0x1C; wii[0x1A] = 0x9E; wii[0x1B] = 0xA3;
+    CHECK(!emu.load_disc(std::make_unique<disc::MemoryDisc>(wii), error));
+    CHECK(error.find("NAND") != std::string::npos);
+    const auto dir = std::filesystem::temp_directory_path() / "orca_frontend_nand";
+    std::filesystem::remove_all(dir);
+    frontend::Settings w;
+    w.nand_dir = dir.string();
+    frontend::Emulator emu2(w);
+    CHECK(!emu2.load_disc(std::make_unique<disc::MemoryDisc>(wii), error));
+    CHECK(error.find("key") != std::string::npos);
+    // the NAND was prepared on the way (SYSCONF and setting.txt)
+    CHECK(std::filesystem::exists(dir / "shared2" / "sys" / "SYSCONF"));
+    std::filesystem::remove_all(dir);
+}
+
+#ifdef ORCA_PROGRAMS_DIR
+TEST_CASE(frontend_runs_gpu_draw_and_shows_its_frame) {
+    frontend::Settings s;
+    s.jit = false;
+    frontend::Emulator emu(s);
+    std::string error;
+    CHECK(emu.load_executable(read_file(ORCA_PROGRAMS_DIR "/gpu_draw.dol"), false, error));
+    test::TestPort port;
+    port.cpu = &emu.system()->cpu();
+    emu.system()->bus().map_mmio("test-port", test::TestPort::kPhysical, 0x1000, port);
+    hw::PadState pad;
+    pad.buttons = hw::PadButtons::A;
+    emu.set_pad(0, pad);
+    int frames = 0;
+    while (emu.run_frame() && frames < 100) ++frames;
+    CHECK(port.exited);
+    CHECK(emu.error().find("halted") != std::string::npos || emu.error().find("Halted") != std::string::npos);
+    CHECK(emu.capture_frame());
+    const auto& f = emu.frame();
+    CHECK_EQ(f.width, 640U);
+    CHECK_EQ(f.height, 480U);
+    const std::size_t red = (100U * 640U + 200U) * 4U;
+    CHECK(f.rgba[red] >= 250U && f.rgba[red + 1] <= 3U);
+    std::array<s16, 64> audio{};
+    CHECK_EQ(emu.take_audio(audio), 0U); // the program plays no sound
+}
+#endif
+
+int main() { return orca::test::run_all("frontend"); }
