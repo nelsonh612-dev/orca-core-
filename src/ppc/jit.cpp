@@ -231,6 +231,77 @@ constexpr u32 F_UIMM(u32 i) { return i & 0xFFFFU; }
 constexpr bool F_RC(u32 i) { return (i & 1U) != 0U; }
 } // namespace
 
+// Floating-point and paired-single instructions: executed inside the block by the
+// interpreter's own implementation (Jit::helper_exec), so FPSCR, NaN and rounding
+// behaviour are the reference ones. dcbz_l (opcode 4) is not part of this class.
+bool fp_class(u32 ins, bool& update, unsigned& update_reg) {
+    const unsigned op = ins >> 26, ra = (ins >> 16) & 31U;
+    update = false;
+    update_reg = ra;
+    if (op >= 48U && op <= 55U) { update = (op & 1U) != 0U; return true; }
+    if (op == 56U || op == 57U || op == 60U || op == 61U) { update = op == 57U || op == 61U; return true; }
+    if (op == 59U || op == 63U) return true;
+    if (op == 4U) {
+        const unsigned xo10 = (ins >> 1) & 0x3FFU, xo6 = (ins >> 1) & 0x3FU;
+        if (xo10 == 1014U) return false;
+        update = xo6 == 38U || xo6 == 39U;
+        return true;
+    }
+    if (op == 31U) {
+        const unsigned xo = (ins >> 1) & 0x3FFU;
+        switch (xo) {
+        case 535: case 599: case 663: case 727: case 983: return true;
+        case 567: case 631: case 695: case 759: update = true; return true;
+        default: return false;
+        }
+    }
+    return false;
+}
+
+// For FP/paired-single memory instructions: effective address, a size covering every
+// byte the access can touch, and the direction. False for non-memory instructions.
+bool fp_memory_operand(u32 ins, const CpuState& s, u32& ea, u32& size, bool& store) {
+    const unsigned op = ins >> 26, ra = (ins >> 16) & 31U, rb = (ins >> 11) & 31U;
+    const u32 base = ra == 0U ? 0U : s.gpr[ra];
+    if (op >= 48U && op <= 55U) {
+        ea = base + static_cast<u32>(static_cast<s32>(static_cast<s16>(ins & 0xFFFFU)));
+        size = (op == 50U || op == 51U || op == 54U || op == 55U) ? 8U : 4U;
+        store = op >= 52U;
+        return true;
+    }
+    auto psq_size = [&](unsigned i, bool st, unsigned w) {
+        const u32 gqr = s.gqr[i];
+        const unsigned type = st ? (gqr & 7U) : ((gqr >> 16) & 7U);
+        const unsigned el = type == 0U ? 4U : (type == 4U || type == 6U) ? 1U : (type == 5U || type == 7U) ? 2U : 4U;
+        return el * (w != 0U ? 1U : 2U);
+    };
+    if (op == 56U || op == 57U || op == 60U || op == 61U) {
+        const u32 d = ins & 0xFFFU;
+        ea = base + ((d & 0x800U) != 0U ? (d | 0xFFFFF000U) : d);
+        store = op >= 60U;
+        size = psq_size((ins >> 12) & 7U, store, (ins >> 15) & 1U);
+        return true;
+    }
+    if (op == 4U) {
+        const unsigned xo6 = (ins >> 1) & 0x3FU;
+        if (xo6 != 6U && xo6 != 7U && xo6 != 38U && xo6 != 39U) return false;
+        ea = base + s.gpr[rb];
+        store = xo6 == 7U || xo6 == 39U;
+        size = psq_size((ins >> 7) & 7U, store, (ins >> 10) & 1U);
+        return true;
+    }
+    if (op == 31U) {
+        const unsigned xo = (ins >> 1) & 0x3FFU;
+        if (xo != 535U && xo != 567U && xo != 599U && xo != 631U && xo != 663U && xo != 695U && xo != 727U && xo != 759U && xo != 983U)
+            return false;
+        ea = base + s.gpr[rb];
+        size = (xo == 599U || xo == 631U || xo == 727U || xo == 759U) ? 8U : 4U;
+        store = xo >= 663U;
+        return true;
+    }
+    return false;
+}
+
 // Kind codes returned in w0: 0 = continue at state.pc, 1 = interpret the instruction at state.pc.
 static constexpr u32 kExitNormal = 0, kExitFallback = 1;
 
@@ -568,6 +639,26 @@ bool Jit::Compiler::op31(u32 ins, u32 pc, u32 i, bool& ends) {
 
 bool Jit::Compiler::insn(u32 ins, u32 pc, u32 i, bool& ends) {
     ends = false;
+    {
+        bool update = false;
+        unsigned ureg = 0;
+        if (fp_class(ins, update, ureg)) {
+            flush_dirty();
+            after_flush_clean();
+            e.mov_imm(false, 1, ins);
+            e.mov_imm(false, 2, pc);
+            call(reinterpret_cast<const void*>(&Jit::helper_exec));
+            const auto ok = e.cbnz(false, 0);
+            exit_const(pc, i, kExitFallback);
+            e.bind_here(ok);
+            if (update) { const int k = find(ureg); if (k >= 0) slot[static_cast<unsigned>(k)] = -1; } // rA changed in memory
+            e.cmp_imm(false, 0, 2);
+            const auto same = e.b_cond(Cond::NE);
+            exit_const(pc + 4U, i + 1U, kExitNormal);
+            e.bind_here(same);
+            return true;
+        }
+    }
     const unsigned op = ins >> 26;
     const unsigned rt = F_RT(ins), ra = F_RA(ins);
     const s32 simm = F_SIMM(ins);
@@ -762,6 +853,27 @@ u32 Jit::helper_load(Jit* self, u32 ea, u32 size, JitExit* out) {
     for (u32 k = 0; k < size; ++k) v = (v << 8) | p[k];
     out->value = v;
     return 1;
+}
+
+u32 Jit::helper_exec(Jit* self, u32 ins, u32 pc) {
+    Cpu& c = self->cpu_;
+    const CpuState& s = c.state_;
+    // FP unavailable or enabled FP exceptions: the interpreter handles it outside the block
+    if ((s.msr & MSR_FP) == 0U || (s.msr & (MSR_FE0 | MSR_FE1)) != 0U) return 0;
+    u32 ea = 0, size = 0;
+    bool store = false;
+    if (fp_memory_operand(ins, s, ea, size, store)) {
+        u32 lo = 0, hi = 0, split = 0; u8 wimg = 0;
+        if (!c.translate_data(ea, size, store, lo, hi, split, wimg).ok() || split != size) return 0;
+        if (!c.locked_cache_.empty() &&
+            (c.locked_cache_.count(lo & ~31U) != 0U || c.locked_cache_.count((lo + size - 1U) & ~31U) != 0U)) return 0;
+        if (self->bus_.ram_pointer(lo, size) == nullptr) return 0;
+    }
+    self->running_invalidated_ = false;
+    const Cpu::Outcome o = c.execute_one_for_jit(ins, pc);
+    if (!o.ok() || c.fp_program_pending_) return 0; // precise: nothing was changed
+    ++self->stats_.helper_steps;
+    return self->running_invalidated_ ? 2U : 1U;
 }
 
 u32 Jit::helper_store(Jit* self, u32 ea, u32 size, u32 value) {

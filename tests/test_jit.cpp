@@ -42,6 +42,37 @@ u32 random_insn(Rng& r, u32 at, u32 code_end) {
     auto reg = [&] { return 1U + r.u(27); };
     auto anyreg = [&] { return r.u(32); };
     const bool rc = r.u(2) != 0U;
+    auto freg = [&] { return r.u(32); };
+    if (r.u(3) == 0U) { // floating point and paired singles
+        const u32 fa = freg(), fb = freg(), fc = freg(), fd = freg();
+        switch (r.u(14)) {
+        case 0: { const u32 xs[] = {21, 20, 25, 18, 29, 28, 31, 30, 23, 26};                 // A-form double
+                  return 63U << 26 | fd << 21 | fa << 16 | fb << 11 | fc << 6 | xs[r.u(10)] << 1 | (rc ? 1U : 0U); }
+        case 1: { const u32 xs[] = {21, 20, 25, 18, 29, 28, 31, 30, 24};                     // A-form single
+                  return 59U << 26 | fd << 21 | fa << 16 | fb << 11 | fc << 6 | xs[r.u(9)] << 1 | (rc ? 1U : 0U); }
+        case 2: { const u32 xs[] = {0, 32, 12, 14, 15, 40, 72, 264, 136};                    // X-form 63
+                  const u32 x = xs[r.u(9)];
+                  return 63U << 26 | (x == 0U || x == 32U ? (r.u(8) << 2) : fd) << 21 | fa << 16 | fb << 11 | x << 1 | (rc && x != 0U && x != 32U ? 1U : 0U); }
+        case 3: return 63U << 26 | fd << 21 | 583U << 1;                                     // mffs
+        case 4: return 63U << 26 | r.u(256) << 17 | fb << 11 | 711U << 1;                    // mtfsf
+        case 5: return 63U << 26 | (r.u(8) << 2) << 21 | (r.u(8) << 2) << 16 | 64U << 1;     // mcrfs
+        case 6: { const u32 xs[] = {21, 20, 25, 18, 29, 28, 31, 30, 10, 11, 12, 13, 14, 15, 23, 24, 26}; // paired A-form
+                  return 4U << 26 | fd << 21 | fa << 16 | fb << 11 | fc << 6 | xs[r.u(17)] << 1 | (rc ? 1U : 0U); }
+        case 7: { const u32 xs[] = {0, 32, 64, 96, 40, 72, 136, 264, 528, 560, 592, 624};   // paired X-form
+                  const u32 x = xs[r.u(12)];
+                  return 4U << 26 | (x < 128U ? (r.u(8) << 2) : fd) << 21 | fa << 16 | fb << 11 | x << 1; }
+        case 8: case 9: { // lfs/lfsu/lfd/lfdu/stfs/stfsu/stfd/stfdu off the data pointers
+            const u32 op = 48U + r.u(8);
+            return D(op, fd, 28U + r.u(2), r.u(256) - 64U + (r.u(10) == 0U ? 0x0FFDU - 0x80U : 0U)); }
+        case 10: { const u32 xs[] = {535, 567, 599, 631, 663, 695, 727, 759, 983};           // indexed FP
+                   return X31(xs[r.u(9)], fd, 28U + r.u(2), 30U + r.u(2)); }
+        case 11: case 12: { // psq_l/psq_lu/psq_st/psq_stu
+            const u32 ops[] = {56, 57, 60, 61};
+            return ops[r.u(4)] << 26 | fd << 21 | (28U + r.u(2)) << 16 | r.u(2) << 15 | r.u(8) << 12 | (r.u(0x100U) - 0x40U) & 0xFFFU; }
+        default: { const u32 xs[] = {6, 7, 38, 39};                                          // psq_lx/stx/lux/stux
+                   return 4U << 26 | fd << 21 | (28U + r.u(2)) << 16 | (30U + r.u(2)) << 11 | r.u(2) << 10 | r.u(8) << 7 | xs[r.u(4)] << 1; }
+        }
+    }
     switch (r.u(30)) {
     case 0: return D(14, reg(), r.u(4) == 0U ? 0U : anyreg(), r.next());          // addi
     case 1: return D(15, reg(), anyreg(), r.next());                                 // addis
@@ -119,7 +150,21 @@ void setup(Machine& m, Rng& r, const std::vector<u32>& prog) {
     m.s().lr = kCode + 4U * r.u(static_cast<u32>(prog.size()));
     m.s().ctr = r.u(5);
     m.s().pc = kCode;
-    m.s().msr = 0; // real mode, no FP: FP instructions take the FP-unavailable exception in both
+    // real mode; FP enabled in most programs (otherwise FP instructions take the
+    // FP-unavailable exception in both), paired singles and quantized loads enabled
+    m.s().msr = r.u(5) == 0U ? 0U : MSR_FP;
+    m.s().hid2 = HID2_PSE | HID2_LSQE;
+    const u64 fspecial[] = {0x7FF8000000000000ULL, 0x7FF0000000000001ULL, 0x7FF0000000000000ULL, 0xFFF0000000000000ULL,
+                            0x0000000000000001ULL, 0x8000000000000000ULL, 0, 0x3FF0000000000000ULL, 0x47EFFFFFE0000000ULL,
+                            0x380FFFFFFFFFFFFFULL, 0xC1E0000000000000ULL};
+    for (auto& f : m.s().fpr) {
+        auto pick = [&] { return r.u(3) == 0U ? fspecial[r.u(11)] : (static_cast<u64>(r.next()) << 32 | r.next()) & 0xC7FFFFFFFFFFFFFFULL; };
+        f.ps0 = pick();
+        f.ps1 = pick();
+    }
+    m.s().fpscr = r.next() & 0x07FFF8FFU & ~0x000000F8U; // exceptions disabled (no FE in MSR anyway), any RN/flags
+    const u32 types[] = {0, 4, 5, 6, 7};
+    for (auto& g : m.s().gqr) g = types[r.u(5)] | (r.u(64) << 8) | (types[r.u(5)] << 16) | (r.u(64) << 24);
 }
 
 struct RunEnd { StepResult r; u64 steps; };

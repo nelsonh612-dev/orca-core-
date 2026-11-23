@@ -326,6 +326,13 @@ Cpu::Outcome Cpu::store(u32 ea, unsigned size, u32 value) { return store_raw(ea,
 // ---------------------------------------------------------------------------
 // Decoder
 // ---------------------------------------------------------------------------
+Cpu::Outcome Cpu::execute_one_for_jit(u32 ins, u32 pc) {
+    cur_pc_ = pc;
+    next_pc_ = pc + 4U;
+    fp_program_pending_ = false;
+    return execute(ins);
+}
+
 Cpu::Outcome Cpu::execute(u32 ins) {
     auto& g = state_.gpr;
     const unsigned op = ins >> 26U;

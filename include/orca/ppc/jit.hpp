@@ -61,6 +61,7 @@ public:
     struct Stats {
         u64 blocks_compiled{0}, block_runs{0}, block_steps{0}, interpreter_steps{0}, invalidations{0},
             fallback_exits{0};
+        u64 helper_steps{0}; // block instructions executed by the in-block interpreter call (FP, paired singles)
     };
     const Stats& stats() const noexcept { return stats_; }
 
@@ -78,6 +79,7 @@ private:
     // Helpers called from translated code (AAPCS64, Jit* first).
     static u32 helper_load(Jit* self, u32 ea, u32 size, JitExit* out);
     static u32 helper_store(Jit* self, u32 ea, u32 size, u32 value);
+    static u32 helper_exec(Jit* self, u32 ins, u32 pc);
 
     Result interpret();
     Block* lookup_or_compile(u32 pc, u32 pa, std::string& error);

@@ -99,6 +99,10 @@ private:
     struct Outcome;
 
     Outcome execute(u32 ins);
+    // One instruction at `pc` through the interpreter's decoder, for the JIT (which
+    // has already checked that it cannot touch MMIO). Precise: a result other than
+    // Done leaves the state unchanged.
+    Outcome execute_one_for_jit(u32 ins, u32 pc);
     void deliver(Exception e, u32 srr0, u32 srr1_bits);
 
     // Memory helpers (no architectural side effects on failure).
