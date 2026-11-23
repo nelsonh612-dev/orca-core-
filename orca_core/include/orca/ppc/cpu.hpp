@@ -160,6 +160,7 @@ private:
     std::size_t observer_id_{0};
     IcacheInvalidateHandler icbi_handler_;
     std::unordered_map<u32, std::array<u8, 32>> locked_cache_;
+    std::unordered_set<u32> locked_cache_dirty_; // lines in Modified (M) state
     // Effective PC -> immutable translated straight-line block. JIT currently
     // only caches real-mode instruction fetches (MSR[IR]=0), so PC is also PA.
     struct JitBlockEntry;
