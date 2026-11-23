@@ -12,9 +12,10 @@ struct Machine {
     mem::Bus bus;
     std::unique_ptr<ppc::Cpu> cpu;
 
-    explicit Machine(u32 pc = 0x1000) {
+    explicit Machine(u32 pc = 0x1000,
+                     ppc::CpuConfig config = ppc::CpuConfig{0xABCD1234U}) {
         mem::map_gamecube_ram(bus);
-        cpu = std::make_unique<ppc::Cpu>(bus, ppc::CpuConfig{0xABCD1234U}); // arbitrary test PVR
+        cpu = std::make_unique<ppc::Cpu>(bus, config);
         cpu->state().pc = pc;
     }
     ppc::CpuState& s() { return cpu->state(); }
