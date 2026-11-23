@@ -41,7 +41,7 @@ jobs:
   arm64-sanitizers:
     name: Core tests on native ARM64 with ASan+UBSan
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 90
+    timeout-minutes: 240
     steps:
       - uses: actions/checkout@v4
       - name: Tools
@@ -55,7 +55,7 @@ jobs:
       - name: Test
         env:
           EGL_PLATFORM: surfaceless
-        run: ctest --test-dir build --output-on-failure
+        run: ctest --test-dir build --output-on-failure -j 4
 
   android-ndk:
     name: Android NDK arm64-v8a build of the core (no APK)

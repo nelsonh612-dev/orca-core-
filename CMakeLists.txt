@@ -14,6 +14,15 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 option(ORCA_SANITIZE "Build with AddressSanitizer + UndefinedBehaviorSanitizer" OFF)
 option(ORCA_WERROR "Treat compiler warnings as errors" OFF)
 option(ORCA_BUILD_TESTS "Build the test suite" ON)
+# Per-test time limits (seconds). Sanitizer Debug builds run 10-30x slower (the ARM64 CI
+# runner took 207 s for cpu_fpu alone), so they get a larger limit by default.
+if(ORCA_SANITIZE)
+    set(ORCA_TEST_TIMEOUT 3600 CACHE STRING "ctest time limit per suite (s)")
+    set(ORCA_GLES_TIMEOUT 5400 CACHE STRING "ctest time limit for the GLES suite (s)")
+else()
+    set(ORCA_TEST_TIMEOUT 300 CACHE STRING "ctest time limit per suite (s)")
+    set(ORCA_GLES_TIMEOUT 600 CACHE STRING "ctest time limit for the GLES suite (s)")
+endif()
 
 set(ORCA_WARNINGS -Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion -Wshadow)
 if(ORCA_WERROR)
@@ -138,7 +147,7 @@ if(ORCA_BUILD_TESTS)
         target_include_directories(orca_test_gles PRIVATE tests)
         add_test(NAME gles COMMAND orca_test_gles)
         # no GPU / no EGL display: the suite reports itself as skipped (exit code 77)
-        set_tests_properties(gles PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 600)
+        set_tests_properties(gles PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT ${ORCA_GLES_TIMEOUT})
     endif()
     add_executable(orca_test_dsp_mi tests/test_dsp_mi.cpp)
     target_link_libraries(orca_test_dsp_mi PRIVATE orca_core)
@@ -216,7 +225,7 @@ if(ORCA_BUILD_TESTS)
     endif()
 
     # A hang (e.g. an emulated deadlock) must fail, not block the test run.
-    set_tests_properties(memory cpu_integer cpu_system mmu reference fpu_engine cpu_fpu system programs disc av exi dsp_mi dsp_core gpu gpu_sw efb_copy PROPERTIES TIMEOUT 300)
+    set_tests_properties(memory cpu_integer cpu_system mmu reference fpu_engine cpu_fpu system programs disc av exi dsp_mi dsp_core gpu gpu_sw efb_copy PROPERTIES TIMEOUT ${ORCA_TEST_TIMEOUT})
 
     find_program(ORCA_LLVM_MC NAMES llvm-mc llvm-mc-18 llvm-mc-17 llvm-mc-16)
     add_executable(orca_encoding_check tests/encoding_check.cpp)
