@@ -193,8 +193,18 @@ int Wiimote::bus_read(u8 device, u8 address, int count, u8* out) {
         return n;
     case kExtensionAddr:
         if (!extension_present_) return 0;
-        if (extension_[0xF0] == 0xAA) { fail("Wii Remote: encrypted extension reads (0xF0 = 0xAA) are not emulated"); return 0; }
         std::copy_n(extension_.begin() + address, n, out);
+        if (extension_[0xF0] == 0xAA) {
+            // Encrypted reads. With the key area (0x40-0x4F) all zero, the
+            // cipher is x -> (x - 0x17) ^ 0x17 for every byte (WiiBrew,
+            // "Extension controllers"; the same result as the general key
+            // schedule). Other keys are not emulated.
+            if (std::any_of(extension_.begin() + 0x40, extension_.begin() + 0x50, [](u8 b) { return b != 0; })) {
+                fail("Wii Remote: extension encryption with a non-zero key is not emulated");
+                return 0;
+            }
+            for (int i = 0; i < n; ++i) out[i] = static_cast<u8>(static_cast<u8>(out[i] - 0x17U) ^ 0x17U);
+        }
         return n;
     default: return 0;
     }

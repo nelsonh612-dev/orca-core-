@@ -21,8 +21,10 @@
 // device address. Errors: 4 busy, 6 invalid space, 7 no answer from the
 // device, 8 invalid address.
 //
+// Encrypted extension reads (register 0xF0 = 0xAA) work with the all-zero
+// key the games write.
 // Not emulated, each reported by error(): the interleaved modes 0x3E/0x3F,
-// encrypted extension reads (register 0xF0 = 0xAA), the Wii MotionPlus
+// encryption with any other key, the Wii MotionPlus
 // (address 0x53 does not answer, as without one), unknown output reports.
 #pragma once
 #include "orca/core/bits.hpp"

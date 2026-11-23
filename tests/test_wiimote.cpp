@@ -208,16 +208,26 @@ TEST_CASE(wiimote_nunchuk_connection_and_data) {
     w.update(in);
     r = drain(w);
     CHECK(r.size() == 1U && r[0][0] == 0x20U && (r[0][3] & 2U) == 0U);
-    // encrypted mode: explicit stop
+    // encrypted mode with the zero key: every byte is (x - 0x17) ^ 0x17
     Wiimote e;
     in.nunchuk = NunchukState{};
     e.update(in);
     drain(e);
     CHECK(write_mem(e, 1, 0xA400F0, {0xAA}));
+    CHECK(write_mem(e, 1, 0xA40040, std::vector<u8>(16, 0)));
+    CHECK(read_mem(e, 1, 0xA400FA, 6));
+    e.update(in);
+    r = drain(e);
+    const u8 id[6] = {0, 0, 0xA4, 0x20, 0, 0};
+    for (int i = 0; i < 6; ++i)
+        CHECK_EQ(r.back()[static_cast<std::size_t>(6 + i)], static_cast<u8>(static_cast<u8>(id[i] - 0x17) ^ 0x17));
+    CHECK(!e.failed());
+    // another key: explicit stop
+    CHECK(write_mem(e, 1, 0xA40040, {1}));
     CHECK(read_mem(e, 1, 0xA40000, 6));
     e.update(in);
     CHECK(e.failed());
-    CHECK(e.error().find("encrypted") != std::string::npos);
+    CHECK(e.error().find("non-zero key") != std::string::npos);
 }
 
 TEST_CASE(wiimote_speaker_adpcm) {
