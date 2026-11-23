@@ -258,6 +258,51 @@ bool fp_class(u32 ins, bool& update, unsigned& update_reg) {
     return false;
 }
 
+// Other instructions the block runs through the interpreter's implementation, in place:
+// multiple/string loads and stores, reservations, cache-block operations, barriers,
+// traps and mfmsr. None of them reads the time base or changes MSR or the MMU.
+// They may write any GPR, so the register cache is dropped after them.
+bool interp_class(u32 ins) {
+    const unsigned op = ins >> 26;
+    if (op == 46U || op == 47U || op == 3U) return true; // lmw, stmw, twi
+    if (op == 19U && ((ins >> 1) & 0x3FFU) == 150U) return true; // isync
+    if (op != 31U) return false;
+    switch ((ins >> 1) & 0x3FFU) {
+    case 20: case 150:                       // lwarx, stwcx.
+    case 1014: case 86: case 54: case 470: case 982: case 278: case 246: // dcbz dcbf dcbst dcbi icbi dcbt dcbtst
+    case 598: case 854:                      // sync, eieio
+    case 4:                                  // tw
+    case 83:                                 // mfmsr
+    case 533: case 597: case 661: case 725:  // lswx lswi stswx stswi
+        return true;
+    default:
+        return false;
+    }
+}
+
+// Data bytes an interp_class instruction may touch (as the interpreter computes them).
+bool interp_memory_operand(u32 ins, const CpuState& s, u32& ea, u32& size, bool& store) {
+    const unsigned op = ins >> 26, rt = (ins >> 21) & 31U, ra = (ins >> 16) & 31U, rb = (ins >> 11) & 31U;
+    const u32 base = ra == 0U ? 0U : s.gpr[ra];
+    if (op == 46U || op == 47U) {
+        ea = base + static_cast<u32>(static_cast<s32>(static_cast<s16>(ins & 0xFFFFU)));
+        size = (32U - rt) * 4U;
+        store = op == 47U;
+        return true;
+    }
+    if (op != 31U) return false;
+    const unsigned xo = (ins >> 1) & 0x3FFU;
+    switch (xo) {
+    case 20: case 150: ea = base + s.gpr[rb]; size = 4; store = xo == 150U; return true;
+    case 1014: ea = (base + s.gpr[rb]) & ~31U; size = 32; store = true; return true;
+    case 597: case 725: ea = base; size = rb == 0U ? 32U : rb; store = xo == 725U; return true;
+    case 533: case 661:
+        ea = base + s.gpr[rb]; size = s.xer & XER_BYTE_COUNT; store = xo == 661U;
+        return size != 0U;
+    default: return false;
+    }
+}
+
 // For FP/paired-single memory instructions: effective address, a size covering every
 // byte the access can touch, and the direction. False for non-memory instructions.
 bool fp_memory_operand(u32 ins, const CpuState& s, u32& ea, u32& size, bool& store) {
@@ -642,7 +687,8 @@ bool Jit::Compiler::insn(u32 ins, u32 pc, u32 i, bool& ends) {
     {
         bool update = false;
         unsigned ureg = 0;
-        if (fp_class(ins, update, ureg)) {
+        const bool generic = !fp_class(ins, update, ureg) && interp_class(ins);
+        if (generic || fp_class(ins, update, ureg)) {
             flush_dirty();
             after_flush_clean();
             e.mov_imm(false, 1, ins);
@@ -651,7 +697,8 @@ bool Jit::Compiler::insn(u32 ins, u32 pc, u32 i, bool& ends) {
             const auto ok = e.cbnz(false, 0);
             exit_const(pc, i, kExitFallback);
             e.bind_here(ok);
-            if (update) { const int k = find(ureg); if (k >= 0) slot[static_cast<unsigned>(k)] = -1; } // rA changed in memory
+            if (generic) slot.fill(-1); // any GPR may have changed in memory
+            else if (update) { const int k = find(ureg); if (k >= 0) slot[static_cast<unsigned>(k)] = -1; } // rA changed in memory
             e.cmp_imm(false, 0, 2);
             const auto same = e.b_cond(Cond::NE);
             exit_const(pc + 4U, i + 1U, kExitNormal);
@@ -860,15 +907,19 @@ u32 Jit::helper_load(Jit* self, u32 ea, u32 size, JitExit* out) {
 u32 Jit::helper_exec(Jit* self, u32 ins, u32 pc) {
     Cpu& c = self->cpu_;
     const CpuState& s = c.state_;
+    bool update = false;
+    unsigned ureg = 0;
+    const bool fp = fp_class(ins, update, ureg);
     // FP unavailable or enabled FP exceptions: the interpreter handles it outside the block
-    if ((s.msr & MSR_FP) == 0U || (s.msr & (MSR_FE0 | MSR_FE1)) != 0U) return 0;
+    if (fp && ((s.msr & MSR_FP) == 0U || (s.msr & (MSR_FE0 | MSR_FE1)) != 0U)) return 0;
     u32 ea = 0, size = 0;
     bool store = false;
-    if (fp_memory_operand(ins, s, ea, size, store)) {
+    if (fp ? fp_memory_operand(ins, s, ea, size, store) : interp_memory_operand(ins, s, ea, size, store)) {
         u32 lo = 0, hi = 0, split = 0; u8 wimg = 0;
         if (!c.translate_data(ea, size, store, lo, hi, split, wimg).ok() || split != size) return 0;
-        if (!c.locked_cache_.empty() &&
-            (c.locked_cache_.count(lo & ~31U) != 0U || c.locked_cache_.count((lo + size - 1U) & ~31U) != 0U)) return 0;
+        if (!c.locked_cache_.empty())
+            for (u32 line = lo & ~31U; line <= ((lo + size - 1U) & ~31U); line += 32U)
+                if (c.locked_cache_.count(line) != 0U) return 0;
         if (self->bus_.ram_pointer(lo, size) == nullptr) return 0;
     }
     self->running_invalidated_ = false;

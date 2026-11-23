@@ -61,7 +61,7 @@ public:
     struct Stats {
         u64 blocks_compiled{0}, block_runs{0}, block_steps{0}, interpreter_steps{0}, invalidations{0},
             fallback_exits{0};
-        u64 helper_steps{0}; // block instructions executed by the in-block interpreter call (FP, paired singles)
+        u64 helper_steps{0}; // block instructions executed by the in-block interpreter call (FP, PS, lmw/stmw, ...)
         u64 chained{0};      // blocks entered directly after another one inside the same run()
     };
     const Stats& stats() const noexcept { return stats_; }

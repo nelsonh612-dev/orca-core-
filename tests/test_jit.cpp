@@ -125,8 +125,19 @@ u32 random_insn(Rng& r, u32 at, u32 code_end) {
     }
     case 25: { const u32 maxd = (code_end - at) / 4U;                               // b forward
                return B(static_cast<s32>(4U * (1U + r.u(maxd > 4U ? 4U : (maxd > 1U ? maxd - 1U : 1U))))); }
-    case 26: return 31U << 26 | reg() << 21 | SPR(268) << 11 | 371U << 1;            // mftb: interpreter
-    case 27: return D(36, reg(), 0, kCode + 4U * r.u(64));                           // store into the code: invalidation
+    case 26: switch (r.u(9)) {                                                        // run in the block by the interpreter
+        case 0: return D(46, 30U + r.u(2), 28U + r.u(2), r.u(0x80U) & ~3U);         // lmw r30/r31 (RA < RT)
+        case 1: return D(47, 20U + r.u(12), 28U + r.u(2), r.u(0x200U) - 0x80U);     // stmw (sometimes misaligned)
+        case 2: return X31(20, reg(), 28U + r.u(2), 30U + r.u(2));                  // lwarx
+        case 3: return X31(150, reg(), 28U + r.u(2), 30U + r.u(2), true);           // stwcx.
+        case 4: return X31(1014, 0, 28U + r.u(2), 30U + r.u(2));                    // dcbz
+        case 5: { const u32 xs[] = {86, 54, 278, 246, 598, 854, 982}; return X31(xs[r.u(7)], 0, 28U + r.u(2), 30U + r.u(2)); }
+        case 6: return D(3, r.u(32), reg(), r.next());                               // twi (may trap)
+        case 7: return X31(83, reg(), 0, 0);                                         // mfmsr
+        default: return X31(r.u(2) ? 597U : 725U, 1U + r.u(20), 28U + r.u(2), r.u(17)); // lswi / stswi
+        }
+    case 27: return r.u(4) == 0U ? 31U << 26 | reg() << 21 | SPR(268) << 11 | 371U << 1 // mftb: interpreter
+                                 : D(36, reg(), 0, kCode + 4U * r.u(64));            // store into the code: invalidation
     case 28: return D(14, 30U + r.u(2), 0, r.u(64));                                // keep the indexes small
     default: { // move a data pointer inside the data area (addis + addi pair is not needed: r28/r29 += small)
         const u32 base = 28U + r.u(2);

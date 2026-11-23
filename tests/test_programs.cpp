@@ -186,7 +186,7 @@ TEST_CASE(programs_identical_with_the_jit) {
         CHECK(a.state == b.state);
         CHECK_EQ(a.ram_hash, b.ram_hash);
         CHECK(b.block_steps > 0U);
-        std::printf("[programs] %-24s JIT: %9llu of %9llu instructions in %llu translated blocks (%llu of them FP/PS by the in-block call), %s\n",
+        std::printf("[programs] %-24s JIT: %9llu of %9llu instructions in %llu translated blocks (%llu of them by the in-block interpreter call: FP/PS, lmw/stmw, ...), %s\n",
                     f + std::string(f).rfind('/') + 1, static_cast<unsigned long long>(b.block_steps),
                     static_cast<unsigned long long>(b.instructions), static_cast<unsigned long long>(b.blocks),
                     static_cast<unsigned long long>(b.helper_steps),
