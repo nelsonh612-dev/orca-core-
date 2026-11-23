@@ -77,6 +77,12 @@ public final class MainActivity extends Activity {
         jit.setOnCheckedChangeListener((b, on) -> prefs.edit().putBoolean("jit", on).apply());
         root.addView(jit);
 
+        CheckBox gles = new CheckBox(this);
+        gles.setText("GPU renderer (OpenGL ES 3.2; software renderer when unavailable)");
+        gles.setChecked(prefs.getBoolean("gles", true));
+        gles.setOnCheckedChangeListener((b, on) -> prefs.edit().putBoolean("gles", on).apply());
+        root.addView(gles);
+
         setContentView(root, new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT));
     }

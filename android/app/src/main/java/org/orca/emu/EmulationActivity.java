@@ -36,7 +36,7 @@ public final class EmulationActivity extends Activity implements SurfaceHolder.C
         File nand = new File(getFilesDir(), "nand");
         File key = MainActivity.keyFile(this);
         handle = NativeLib.create(nand.getAbsolutePath(), key.exists() ? key.getAbsolutePath() : "",
-                prefs.getBoolean("jit", true), prefs.getInt("region", 0));
+                prefs.getBoolean("jit", true), prefs.getInt("region", 0), prefs.getBoolean("gles", true));
         String error;
         try {
             ParcelFileDescriptor pfd = getContentResolver().openFileDescriptor(getIntent().getData(), "r");

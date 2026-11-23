@@ -8,6 +8,11 @@
 #include "orca/frontend/emulator.hpp"
 #include "orca/wiimote/wiimote.hpp"
 
+#ifdef ORCA_HAVE_GLES
+#include "orca/gpu/gles/backend.hpp"
+#include <EGL/egl.h>
+#endif
+
 #include <aaudio/AAudio.h>
 #include <android/log.h>
 #include <android/native_window_jni.h>
@@ -42,6 +47,14 @@ struct Session {
     std::string status;
     std::string stop_reason;
     double speed{0};
+    bool want_gles{true};
+    std::string renderer{"software"};
+#ifdef ORCA_HAVE_GLES
+    EGLDisplay egl_display{EGL_NO_DISPLAY};
+    EGLContext egl_context{EGL_NO_CONTEXT};
+    EGLSurface egl_surface{EGL_NO_SURFACE};
+    std::unique_ptr<orca::gpu::gles::Backend> backend;
+#endif
     explicit Session(orca::frontend::Settings s) : emu(std::move(s)) {}
 };
 
@@ -88,7 +101,68 @@ void blit(Session& s) {
     ANativeWindow_unlockAndPost(s.window);
 }
 
+void run_loop(Session* s);
+
+#ifdef ORCA_HAVE_GLES
+// The GPU backend draws into its own framebuffers; a 1x1 pbuffer surface is
+// enough for its context (the picture reaches the screen through the XFB).
+bool start_gles(Session& s, std::string& error) {
+    s.egl_display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+    if (s.egl_display == EGL_NO_DISPLAY || !eglInitialize(s.egl_display, nullptr, nullptr)) { error = "no EGL display"; return false; }
+    const EGLint attrs[] = {EGL_RENDERABLE_TYPE, 0x40 /* EGL_OPENGL_ES3_BIT */, EGL_SURFACE_TYPE, EGL_PBUFFER_BIT, EGL_NONE};
+    EGLConfig config{};
+    EGLint n = 0;
+    if (!eglChooseConfig(s.egl_display, attrs, &config, 1, &n) || n < 1) { error = "no EGL configuration for OpenGL ES 3"; return false; }
+    const EGLint ctx_attrs[] = {0x3098 /* EGL_CONTEXT_MAJOR_VERSION */, 3, 0x30FB /* EGL_CONTEXT_MINOR_VERSION */, 2, EGL_NONE};
+    s.egl_context = eglCreateContext(s.egl_display, config, EGL_NO_CONTEXT, ctx_attrs);
+    if (s.egl_context == EGL_NO_CONTEXT) { error = "OpenGL ES 3.2 context not available"; return false; }
+    const EGLint pb[] = {EGL_WIDTH, 1, EGL_HEIGHT, 1, EGL_NONE};
+    s.egl_surface = eglCreatePbufferSurface(s.egl_display, config, pb);
+    if (s.egl_surface == EGL_NO_SURFACE || !eglMakeCurrent(s.egl_display, s.egl_surface, s.egl_surface, s.egl_context)) {
+        error = "cannot make the EGL context current";
+        return false;
+    }
+    s.backend = std::make_unique<orca::gpu::gles::Backend>();
+    if (!s.backend->init(error)) { s.backend.reset(); return false; }
+    orca::gpu::gles::Backend* b = s.backend.get();
+    s.emu.system()->gpu().set_backend(b, [b](orca::gpu::sw::Efb& f) { b->download(f); },
+                                      [b](const orca::gpu::sw::Efb& f) { b->upload(f); });
+    return true;
+}
+
+void stop_gles(Session& s) {
+    if (s.emu.system() != nullptr && s.backend) s.emu.system()->gpu().set_backend(nullptr, nullptr, nullptr);
+    s.backend.reset();
+    if (s.egl_display != EGL_NO_DISPLAY) {
+        eglMakeCurrent(s.egl_display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+        if (s.egl_surface != EGL_NO_SURFACE) eglDestroySurface(s.egl_display, s.egl_surface);
+        if (s.egl_context != EGL_NO_CONTEXT) eglDestroyContext(s.egl_display, s.egl_context);
+        eglTerminate(s.egl_display);
+    }
+    s.egl_display = EGL_NO_DISPLAY;
+}
+#endif
+
 void run(Session* s) {
+#ifdef ORCA_HAVE_GLES
+    if (s->want_gles) {
+        std::string error;
+        if (start_gles(*s, error)) {
+            s->renderer = "GLES";
+        } else {
+            LOGI("GLES backend unavailable, using the software renderer: %s", error.c_str());
+            stop_gles(*s);
+            s->renderer = "software (" + error + ")";
+        }
+    }
+#endif
+    run_loop(s);
+#ifdef ORCA_HAVE_GLES
+    stop_gles(*s);
+#endif
+}
+
+void run_loop(Session* s) {
     using clock = std::chrono::steady_clock;
     const double hz = static_cast<double>(s->emu.cpu_hz());
     auto wall_start = clock::now();
@@ -133,9 +207,9 @@ void run(Session* s) {
             std::lock_guard<std::mutex> lock(s->status_mutex);
             s->speed = speed;
             char b[96];
-            std::snprintf(b, sizeof b, "%s %.0f%% frame %llu", s->emu.game_id().c_str(), speed * 100.0,
+            std::snprintf(b, sizeof b, "%s %.0f%% frame %llu ", s->emu.game_id().c_str(), speed * 100.0,
                           static_cast<unsigned long long>(s->emu.frame().number));
-            s->status = b;
+            s->status = b + s->renderer;
         }
     }
 }
@@ -155,7 +229,7 @@ Session* session(jlong h) { return reinterpret_cast<Session*>(h); }
 extern "C" {
 
 JNIEXPORT jlong JNICALL Java_org_orca_emu_NativeLib_create(JNIEnv* env, jclass, jstring nand_dir, jstring key_file,
-                                                           jboolean jit, jint region) {
+                                                           jboolean jit, jint region, jboolean gles) {
     orca::frontend::Settings s;
     s.jit = jit != JNI_FALSE;
     s.dsp_hle = true;
@@ -167,7 +241,9 @@ JNIEXPORT jlong JNICALL Java_org_orca_emu_NativeLib_create(JNIEnv* env, jclass, 
     case 3: s.new_nand.region = orca::ios::WiiRegion::Korea; s.new_nand.language = 9; s.new_nand.country = 136; break;
     default: break;
     }
-    return reinterpret_cast<jlong>(new Session(std::move(s)));
+    auto* session = new Session(std::move(s));
+    session->want_gles = gles != JNI_FALSE;
+    return reinterpret_cast<jlong>(session);
 }
 
 // Loads the disc behind `fd` (ownership passes to the core). Returns null or an error message.
