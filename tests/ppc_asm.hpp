@@ -166,4 +166,104 @@ constexpr u32 dcbt(u32 ra, u32 rb) { return X(278, 0, ra, rb); }
 constexpr u32 dcbi(u32 ra, u32 rb) { return X(470, 0, ra, rb); }
 constexpr u32 icbi(u32 ra, u32 rb) { return X(982, 0, ra, rb); }
 
+// Floating point (A-form operand order follows the assembler: frD, frA, frC, frB)
+constexpr u32 FA(u32 op, u32 d, u32 a, u32 b, u32 c, u32 xo, bool rc = false) {
+    return (op << 26) | (d << 21) | (a << 16) | (b << 11) | (c << 6) | (xo << 1) | (rc ? 1u : 0u);
+}
+constexpr u32 FX63(u32 xo, u32 d, u32 a, u32 b, bool rc = false) { return X(xo, d, a, b, rc) & ~(63u << 26) | (63u << 26); }
+constexpr u32 fadd(u32 d, u32 a, u32 b, bool rc = false) { return FA(63, d, a, b, 0, 21, rc); }
+constexpr u32 fadds(u32 d, u32 a, u32 b, bool rc = false) { return FA(59, d, a, b, 0, 21, rc); }
+constexpr u32 fsub(u32 d, u32 a, u32 b, bool rc = false) { return FA(63, d, a, b, 0, 20, rc); }
+constexpr u32 fsubs(u32 d, u32 a, u32 b, bool rc = false) { return FA(59, d, a, b, 0, 20, rc); }
+constexpr u32 fmul(u32 d, u32 a, u32 c, bool rc = false) { return FA(63, d, a, 0, c, 25, rc); }
+constexpr u32 fmuls(u32 d, u32 a, u32 c, bool rc = false) { return FA(59, d, a, 0, c, 25, rc); }
+constexpr u32 fdiv(u32 d, u32 a, u32 b, bool rc = false) { return FA(63, d, a, b, 0, 18, rc); }
+constexpr u32 fdivs(u32 d, u32 a, u32 b, bool rc = false) { return FA(59, d, a, b, 0, 18, rc); }
+constexpr u32 fmadd(u32 d, u32 a, u32 c, u32 b, bool rc = false) { return FA(63, d, a, b, c, 29, rc); }
+constexpr u32 fmadds(u32 d, u32 a, u32 c, u32 b, bool rc = false) { return FA(59, d, a, b, c, 29, rc); }
+constexpr u32 fmsub(u32 d, u32 a, u32 c, u32 b, bool rc = false) { return FA(63, d, a, b, c, 28, rc); }
+constexpr u32 fmsubs(u32 d, u32 a, u32 c, u32 b, bool rc = false) { return FA(59, d, a, b, c, 28, rc); }
+constexpr u32 fnmadd(u32 d, u32 a, u32 c, u32 b, bool rc = false) { return FA(63, d, a, b, c, 31, rc); }
+constexpr u32 fnmadds(u32 d, u32 a, u32 c, u32 b, bool rc = false) { return FA(59, d, a, b, c, 31, rc); }
+constexpr u32 fnmsub(u32 d, u32 a, u32 c, u32 b, bool rc = false) { return FA(63, d, a, b, c, 30, rc); }
+constexpr u32 fnmsubs(u32 d, u32 a, u32 c, u32 b, bool rc = false) { return FA(59, d, a, b, c, 30, rc); }
+constexpr u32 fsel(u32 d, u32 a, u32 c, u32 b, bool rc = false) { return FA(63, d, a, b, c, 23, rc); }
+constexpr u32 fres(u32 d, u32 b, bool rc = false) { return FA(59, d, 0, b, 0, 24, rc); }
+constexpr u32 frsqrte(u32 d, u32 b, bool rc = false) { return FA(63, d, 0, b, 0, 26, rc); }
+constexpr u32 fsqrt(u32 d, u32 b) { return FA(63, d, 0, b, 0, 22); }
+constexpr u32 fcmpu(u32 bf, u32 a, u32 b) { return FX63(0, bf << 2, a, b); }
+constexpr u32 fcmpo(u32 bf, u32 a, u32 b) { return FX63(32, bf << 2, a, b); }
+constexpr u32 frsp(u32 d, u32 b, bool rc = false) { return FX63(12, d, 0, b, rc); }
+constexpr u32 fctiw(u32 d, u32 b, bool rc = false) { return FX63(14, d, 0, b, rc); }
+constexpr u32 fctiwz(u32 d, u32 b, bool rc = false) { return FX63(15, d, 0, b, rc); }
+constexpr u32 fneg(u32 d, u32 b, bool rc = false) { return FX63(40, d, 0, b, rc); }
+constexpr u32 fmr(u32 d, u32 b, bool rc = false) { return FX63(72, d, 0, b, rc); }
+constexpr u32 fnabs(u32 d, u32 b, bool rc = false) { return FX63(136, d, 0, b, rc); }
+constexpr u32 fabs_(u32 d, u32 b, bool rc = false) { return FX63(264, d, 0, b, rc); }
+constexpr u32 mffs(u32 d, bool rc = false) { return FX63(583, d, 0, 0, rc); }
+constexpr u32 mtfsf(u32 fm, u32 b, bool rc = false) { return (63u << 26) | (fm << 17) | (b << 11) | (711u << 1) | (rc ? 1u : 0u); }
+constexpr u32 mtfsfi(u32 bf, u32 imm, bool rc = false) { return (63u << 26) | (bf << 23) | (imm << 12) | (134u << 1) | (rc ? 1u : 0u); }
+constexpr u32 mtfsb0(u32 bt, bool rc = false) { return FX63(70, bt, 0, 0, rc); }
+constexpr u32 mtfsb1(u32 bt, bool rc = false) { return FX63(38, bt, 0, 0, rc); }
+constexpr u32 mcrfs(u32 bf, u32 bfa) { return (63u << 26) | (bf << 23) | (bfa << 18) | (64u << 1); }
+constexpr u32 lfsu(u32 d, int off, u32 a) { return D(49, d, a, static_cast<u32>(off)); }
+constexpr u32 lfd(u32 d, int off, u32 a) { return D(50, d, a, static_cast<u32>(off)); }
+constexpr u32 lfdu(u32 d, int off, u32 a) { return D(51, d, a, static_cast<u32>(off)); }
+constexpr u32 stfs(u32 s, int off, u32 a) { return D(52, s, a, static_cast<u32>(off)); }
+constexpr u32 stfsu(u32 s, int off, u32 a) { return D(53, s, a, static_cast<u32>(off)); }
+constexpr u32 stfd(u32 s, int off, u32 a) { return D(54, s, a, static_cast<u32>(off)); }
+constexpr u32 stfdu(u32 s, int off, u32 a) { return D(55, s, a, static_cast<u32>(off)); }
+constexpr u32 lfsx(u32 d, u32 a, u32 b) { return X(535, d, a, b); }
+constexpr u32 lfsux(u32 d, u32 a, u32 b) { return X(567, d, a, b); }
+constexpr u32 lfdx(u32 d, u32 a, u32 b) { return X(599, d, a, b); }
+constexpr u32 lfdux(u32 d, u32 a, u32 b) { return X(631, d, a, b); }
+constexpr u32 stfsx(u32 s, u32 a, u32 b) { return X(663, s, a, b); }
+constexpr u32 stfsux(u32 s, u32 a, u32 b) { return X(695, s, a, b); }
+constexpr u32 stfdx(u32 s, u32 a, u32 b) { return X(727, s, a, b); }
+constexpr u32 stfdux(u32 s, u32 a, u32 b) { return X(759, s, a, b); }
+constexpr u32 stfiwx(u32 s, u32 a, u32 b) { return X(983, s, a, b); }
+
+// Gekko paired singles (opcode 4) and quantized loads/stores. Not known to
+// LLVM; encodings follow the 750CL User's Manual opcode tables.
+constexpr u32 psA(u32 d, u32 a, u32 b, u32 c, u32 xo, bool rc = false) { return FA(4, d, a, b, c, xo, rc); }
+constexpr u32 psX(u32 xo, u32 d, u32 a, u32 b, bool rc = false) { return (4u << 26) | (d << 21) | (a << 16) | (b << 11) | (xo << 1) | (rc ? 1u : 0u); }
+constexpr u32 ps_add(u32 d, u32 a, u32 b, bool rc = false) { return psA(d, a, b, 0, 21, rc); }
+constexpr u32 ps_sub(u32 d, u32 a, u32 b) { return psA(d, a, b, 0, 20); }
+constexpr u32 ps_mul(u32 d, u32 a, u32 c) { return psA(d, a, 0, c, 25); }
+constexpr u32 ps_div(u32 d, u32 a, u32 b) { return psA(d, a, b, 0, 18); }
+constexpr u32 ps_madd(u32 d, u32 a, u32 c, u32 b) { return psA(d, a, b, c, 29); }
+constexpr u32 ps_msub(u32 d, u32 a, u32 c, u32 b) { return psA(d, a, b, c, 28); }
+constexpr u32 ps_nmadd(u32 d, u32 a, u32 c, u32 b) { return psA(d, a, b, c, 31); }
+constexpr u32 ps_nmsub(u32 d, u32 a, u32 c, u32 b) { return psA(d, a, b, c, 30); }
+constexpr u32 ps_sel(u32 d, u32 a, u32 c, u32 b) { return psA(d, a, b, c, 23); }
+constexpr u32 ps_res(u32 d, u32 b) { return psA(d, 0, b, 0, 24); }
+constexpr u32 ps_rsqrte(u32 d, u32 b) { return psA(d, 0, b, 0, 26); }
+constexpr u32 ps_sum0(u32 d, u32 a, u32 c, u32 b) { return psA(d, a, b, c, 10); }
+constexpr u32 ps_sum1(u32 d, u32 a, u32 c, u32 b) { return psA(d, a, b, c, 11); }
+constexpr u32 ps_muls0(u32 d, u32 a, u32 c) { return psA(d, a, 0, c, 12); }
+constexpr u32 ps_muls1(u32 d, u32 a, u32 c) { return psA(d, a, 0, c, 13); }
+constexpr u32 ps_madds0(u32 d, u32 a, u32 c, u32 b) { return psA(d, a, b, c, 14); }
+constexpr u32 ps_madds1(u32 d, u32 a, u32 c, u32 b) { return psA(d, a, b, c, 15); }
+constexpr u32 ps_cmpu0(u32 bf, u32 a, u32 b) { return psX(0, bf << 2, a, b); }
+constexpr u32 ps_cmpo0(u32 bf, u32 a, u32 b) { return psX(32, bf << 2, a, b); }
+constexpr u32 ps_cmpu1(u32 bf, u32 a, u32 b) { return psX(64, bf << 2, a, b); }
+constexpr u32 ps_cmpo1(u32 bf, u32 a, u32 b) { return psX(96, bf << 2, a, b); }
+constexpr u32 ps_neg(u32 d, u32 b) { return psX(40, d, 0, b); }
+constexpr u32 ps_mr(u32 d, u32 b) { return psX(72, d, 0, b); }
+constexpr u32 ps_nabs(u32 d, u32 b) { return psX(136, d, 0, b); }
+constexpr u32 ps_abs(u32 d, u32 b) { return psX(264, d, 0, b); }
+constexpr u32 ps_merge00(u32 d, u32 a, u32 b) { return psX(528, d, a, b); }
+constexpr u32 ps_merge01(u32 d, u32 a, u32 b) { return psX(560, d, a, b); }
+constexpr u32 ps_merge10(u32 d, u32 a, u32 b) { return psX(592, d, a, b); }
+constexpr u32 ps_merge11(u32 d, u32 a, u32 b) { return psX(624, d, a, b); }
+constexpr u32 dcbz_l(u32 a, u32 b) { return psX(1014, 0, a, b); }
+constexpr u32 psq_l(u32 d, int off, u32 a, u32 w, u32 i) { return (56u << 26) | (d << 21) | (a << 16) | (w << 15) | (i << 12) | (static_cast<u32>(off) & 0xFFFu); }
+constexpr u32 psq_lu(u32 d, int off, u32 a, u32 w, u32 i) { return (57u << 26) | (d << 21) | (a << 16) | (w << 15) | (i << 12) | (static_cast<u32>(off) & 0xFFFu); }
+constexpr u32 psq_st(u32 s, int off, u32 a, u32 w, u32 i) { return (60u << 26) | (s << 21) | (a << 16) | (w << 15) | (i << 12) | (static_cast<u32>(off) & 0xFFFu); }
+constexpr u32 psq_stu(u32 s, int off, u32 a, u32 w, u32 i) { return (61u << 26) | (s << 21) | (a << 16) | (w << 15) | (i << 12) | (static_cast<u32>(off) & 0xFFFu); }
+constexpr u32 psq_lx(u32 d, u32 a, u32 b, u32 w, u32 i) { return (4u << 26) | (d << 21) | (a << 16) | (b << 11) | (w << 10) | (i << 7) | (6u << 1); }
+constexpr u32 psq_stx(u32 s, u32 a, u32 b, u32 w, u32 i) { return (4u << 26) | (s << 21) | (a << 16) | (b << 11) | (w << 10) | (i << 7) | (7u << 1); }
+constexpr u32 psq_lux(u32 d, u32 a, u32 b, u32 w, u32 i) { return (4u << 26) | (d << 21) | (a << 16) | (b << 11) | (w << 10) | (i << 7) | (38u << 1); }
+constexpr u32 psq_stux(u32 s, u32 a, u32 b, u32 w, u32 i) { return (4u << 26) | (s << 21) | (a << 16) | (b << 11) | (w << 10) | (i << 7) | (39u << 1); }
+
 } // namespace orca::test::ppc_asm

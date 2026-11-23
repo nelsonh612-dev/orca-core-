@@ -1,7 +1,8 @@
 // Orca Core — architectural state of a Gekko/Broadway CPU (integer + system).
 //
-// Floating-point registers, FPSCR and paired-single state are not part of
-// this milestone; they will be added to this struct by the FPU milestone.
+// Each Gekko FPR holds two slots: ps0 (the classic FPR, double format) and
+// ps1 (second paired-single slot). Both are kept as raw IEEE-754 double bit
+// patterns so signalling NaNs and every bit survive moves and stores.
 #pragma once
 #include "orca/core/bits.hpp"
 
@@ -15,8 +16,16 @@ struct BatPair {
     bool operator==(const BatPair&) const = default;
 };
 
+struct Fpr {
+    u64 ps0{0};
+    u64 ps1{0};
+    bool operator==(const Fpr&) const = default;
+};
+
 struct CpuState {
     std::array<u32, 32> gpr{};
+    std::array<Fpr, 32> fpr{};
+    u32 fpscr{0};
     u32 pc{0};
     u32 lr{0};
     u32 ctr{0};

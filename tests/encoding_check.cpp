@@ -78,6 +78,26 @@ int main(int argc, char** argv) {
         {"tlbie 4", tlbie(4)}, {"dcbz 3, 4", dcbz(3, 4)}, {"dcbf 3, 4", dcbf(3, 4)},
         {"dcbst 3, 4", dcbst(3, 4)}, {"dcbt 3, 4", dcbt(3, 4)}, {"dcbi 3, 4", dcbi(3, 4)},
         {"icbi 3, 4", icbi(3, 4)},
+        // Floating point
+        {"fadd 1, 2, 3", fadd(1, 2, 3)}, {"fadds. 1, 2, 3", fadds(1, 2, 3, true)}, {"fsub 4, 5, 6", fsub(4, 5, 6)},
+        {"fsubs 4, 5, 6", fsubs(4, 5, 6)}, {"fmul 1, 2, 3", fmul(1, 2, 3)}, {"fmuls 1, 2, 3", fmuls(1, 2, 3)},
+        {"fdiv 1, 2, 3", fdiv(1, 2, 3)}, {"fdivs 1, 2, 3", fdivs(1, 2, 3)},
+        {"fmadd 1, 2, 3, 4", fmadd(1, 2, 3, 4)}, {"fmadds 1, 2, 3, 4", fmadds(1, 2, 3, 4)},
+        {"fmsub 1, 2, 3, 4", fmsub(1, 2, 3, 4)}, {"fmsubs. 1, 2, 3, 4", fmsubs(1, 2, 3, 4, true)},
+        {"fnmadd 1, 2, 3, 4", fnmadd(1, 2, 3, 4)}, {"fnmadds 1, 2, 3, 4", fnmadds(1, 2, 3, 4)},
+        {"fnmsub 1, 2, 3, 4", fnmsub(1, 2, 3, 4)}, {"fnmsubs 1, 2, 3, 4", fnmsubs(1, 2, 3, 4)},
+        {"fsel 1, 2, 3, 4", fsel(1, 2, 3, 4)}, {"fres 1, 2", fres(1, 2)}, {"frsqrte 1, 2", frsqrte(1, 2)},
+        {"fsqrt 1, 2", fsqrt(1, 2)}, {"fcmpu 3, 1, 2", fcmpu(3, 1, 2)}, {"fcmpo 7, 1, 2", fcmpo(7, 1, 2)},
+        {"frsp 1, 2", frsp(1, 2)}, {"fctiw 1, 2", fctiw(1, 2)}, {"fctiwz. 1, 2", fctiwz(1, 2, true)},
+        {"fneg 1, 2", fneg(1, 2)}, {"fmr 1, 2", fmr(1, 2)}, {"fnabs 1, 2", fnabs(1, 2)}, {"fabs 1, 2", fabs_(1, 2)},
+        {"mffs 5", mffs(5)}, {"mtfsf 255, 3", mtfsf(255, 3)}, {"mtfsfi 7, 3", mtfsfi(7, 3)},
+        {"mtfsb0 24", mtfsb0(24)}, {"mtfsb1 3", mtfsb1(3)}, {"mcrfs 2, 5", mcrfs(2, 5)},
+        {"lfs 1, 0(3)", lfs(1, 0, 3)}, {"lfsu 1, 4(3)", lfsu(1, 4, 3)}, {"lfd 1, -8(3)", lfd(1, -8, 3)},
+        {"lfdu 1, 8(3)", lfdu(1, 8, 3)}, {"stfs 1, 0(3)", stfs(1, 0, 3)}, {"stfsu 1, 4(3)", stfsu(1, 4, 3)},
+        {"stfd 1, 8(3)", stfd(1, 8, 3)}, {"stfdu 1, 8(3)", stfdu(1, 8, 3)},
+        {"lfsx 1, 3, 4", lfsx(1, 3, 4)}, {"lfsux 1, 3, 4", lfsux(1, 3, 4)}, {"lfdx 1, 3, 4", lfdx(1, 3, 4)},
+        {"lfdux 1, 3, 4", lfdux(1, 3, 4)}, {"stfsx 1, 3, 4", stfsx(1, 3, 4)}, {"stfsux 1, 3, 4", stfsux(1, 3, 4)},
+        {"stfdx 1, 3, 4", stfdx(1, 3, 4)}, {"stfdux 1, 3, 4", stfdux(1, 3, 4)}, {"stfiwx 1, 3, 4", stfiwx(1, 3, 4)},
     };
 
     // Relative branches assemble to relocations, so they are verified in the
@@ -94,6 +114,10 @@ int main(int argc, char** argv) {
     const std::vector<std::pair<const char*, u32>> unverifiable = {
         {"lswx 5, 3, 4 (XO 533)", lswx(5, 3, 4)}, {"stswx 5, 3, 4 (XO 661)", stswx(5, 3, 4)},
         {"mcrxr 3 (XO 512)", mcrxr(3)},
+        {"ps_add 1, 2, 3 (op4 A-form 21)", ps_add(1, 2, 3)}, {"ps_madd 1, 2, 3, 4 (op4 A 29)", ps_madd(1, 2, 3, 4)},
+        {"ps_sum0 1, 2, 3, 4 (op4 A 10)", ps_sum0(1, 2, 3, 4)}, {"ps_merge10 1, 2, 3 (op4 X 592)", ps_merge10(1, 2, 3)},
+        {"ps_cmpo1 cr1, 2, 3 (op4 X 96)", ps_cmpo1(1, 2, 3)}, {"dcbz_l 3, 4 (op4 X 1014)", dcbz_l(3, 4)},
+        {"psq_l 1, -8(3), 0, 5 (op 56)", psq_l(1, -8, 3, 0, 5)}, {"psq_stux 1, 3, 4, 1, 7 (op4 39)", psq_stux(1, 3, 4, 1, 7)},
     };
 
     const char* asm_path = "orca_encoding_check.s";

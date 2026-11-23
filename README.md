@@ -1,8 +1,8 @@
-# Orca Core — Milestone 003
+# Orca Core — Milestone 004
 
 Orca Core es un emulador independiente de GameCube/Wii escrito en C++20, con Android ARM64 como plataforma objetivo. **No contiene código de Dolphin** y no deriva de él.
 
-> **Estado:** es la base técnica de la CPU y la memoria. **Todavía no es un emulador jugable.** No hay FPU, paired-singles, JIT, GPU, audio ni dispositivos.
+> **Estado:** la CPU Gekko/Broadway está completa como intérprete de referencia: enteros, sistema, MMU, FPU, paired-singles, cuantización GQR y caché bloqueada. **Todavía no es un emulador jugable.** Faltan el planificador de tiempo, los dispositivos de la consola, el cargador de ejecutables, el JIT, la GPU y el audio.
 
 ## Qué incluye este milestone
 
@@ -17,7 +17,10 @@ Orca Core es un emulador independiente de GameCube/Wii escrito en C++20, con And
 | Excepciones arquitectónicas | DSI, ISI, externa, alineación, programa, FP no disponible, decrementador y llamada al sistema; SRR0/SRR1, MSR, prefijo IP, `rfi` |
 | MMU | Modo real, IBAT/DBAT y tabla de páginas hash (hash primario y secundario, claves y PP, bit N, R/C) |
 | Reservas | `lwarx` y `stwcx.`; las escrituras DMA cancelan la reserva |
-| Pruebas | 6 suites y más de 150.000 casos diferenciales; codificaciones verificadas con `llvm-mc`; mutaciones detectadas |
+| **FPU (M004)** | Todas las instrucciones FP del 750CL; FPSCR completo (FX, FEX, VX, OX, UX, ZX, XX, VX*, FR, FI, FPRF, RN); propagación de NaN según el PEM; FMA con un solo redondeo; precisión simple sin doble redondeo; `lfs`/`stfs` bit a bit |
+| **Paired-singles (M004)** | Las 32 instrucciones de opcode 4, más `psq_l(u)(x)` y `psq_st(u)(x)` con cuantización GQR (float, u8, u16, s8, s16 y escala con signo) |
+| **Caché bloqueada (M004)** | HID2[LCE], `dcbz_l`, DMA DMAU/DMAL en ambos sentidos, 16 KiB |
+| Pruebas | 8 suites; 268.917 casos diferenciales (enteros y FP contra referencias independientes, la de FP con aritmética racional exacta); 189 codificaciones verificadas con `llvm-mc`; 34 mutaciones detectadas |
 
 ## Compilar y probar
 
@@ -41,7 +44,8 @@ La prueba `encodings` busca `llvm-mc` en el PATH. Si no lo encuentra, CTest la m
 Benchmark del intérprete. Mide el equipo anfitrión, no un teléfono:
 
 ```sh
-./build/orca_bench_interpreter 5000000
+./build/orca_bench_interpreter 5000000        # bucle de enteros
+./build/orca_bench_interpreter 2000000 fp     # bucle de FP y paired-singles
 ```
 
 ### Android ARM64
@@ -62,7 +66,9 @@ include/orca/memory/console_maps.hpp
 include/orca/ppc/registers.hpp      números de SPR, bits de MSR/XER/SRR1/DSISR, vectores
 include/orca/ppc/state.hpp          estado arquitectónico
 include/orca/ppc/mmu.hpp            traducción BAT + tabla de páginas
+include/orca/ppc/fpu.hpp            motor de punto flotante (puro, sin estado)
 include/orca/ppc/cpu.hpp            intérprete de referencia
+src/ppc/cpu_fpu.cpp                 FP, paired-singles, psq, caché bloqueada
 src/...                             implementaciones
 tests/                              suites, ensamblador de pruebas, verificación con llvm-mc
 tools/bench_interpreter.cpp

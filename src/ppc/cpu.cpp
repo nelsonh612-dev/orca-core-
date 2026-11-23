@@ -4,7 +4,7 @@
 // for 32-bit implementations (PEM) and the IBM PowerPC 750CL User's Manual.
 // Encodings are cross-checked against LLVM's PowerPC assembler in the test
 // suite (tests/encodings).
-#include "orca/ppc/cpu.hpp"
+#include "cpu_internal.hpp"
 
 #include <array>
 
@@ -24,85 +24,6 @@ const char* to_string(StepResult r) noexcept {
     return "?";
 }
 
-struct Cpu::Outcome {
-    enum class Kind : u8 { Done, Exception, Host };
-    Kind kind{Kind::Done};
-    Exception exc{Exception::None};
-    u32 srr1_bits{0};
-    bool srr0_next{false};
-    bool set_dar{false};
-    u32 dar{0};
-    u32 dsisr{0};
-    StepResult host{StepResult::Executed};
-    const char* reason{""};
-    u32 address{0};
-
-    bool ok() const noexcept { return kind == Kind::Done; }
-    static Outcome done() { return {}; }
-    static Outcome exception(Exception e, u32 srr1 = 0, bool next = false) {
-        Outcome o; o.kind = Kind::Exception; o.exc = e; o.srr1_bits = srr1; o.srr0_next = next; return o;
-    }
-    static Outcome dsi(u32 ea, u32 dsisr) {
-        Outcome o = exception(Exception::DSI); o.set_dar = true; o.dar = ea; o.dsisr = dsisr; return o;
-    }
-    // DSISR for alignment exceptions is not populated yet (see README).
-    static Outcome alignment(u32 ea) {
-        Outcome o = exception(Exception::Alignment); o.set_dar = true; o.dar = ea; o.dsisr = 0; return o;
-    }
-    static Outcome privileged() { return exception(Exception::Program, SRR1_PROGRAM_PRIVILEGED); }
-    static Outcome stop(StepResult r, const char* why, u32 addr = 0) {
-        Outcome o; o.kind = Kind::Host; o.host = r; o.reason = why; o.address = addr; return o;
-    }
-    static Outcome unsupported(const char* why) { return stop(StepResult::UnsupportedInstruction, why); }
-    static Outcome invalid(const char* why) { return stop(StepResult::InvalidForm, why); }
-};
-
-namespace {
-
-constexpr unsigned f_rt(u32 i) noexcept { return (i >> 21U) & 31U; }
-constexpr unsigned f_ra(u32 i) noexcept { return (i >> 16U) & 31U; }
-constexpr unsigned f_rb(u32 i) noexcept { return (i >> 11U) & 31U; }
-constexpr bool f_rc(u32 i) noexcept { return (i & 1U) != 0U; }
-constexpr bool f_oe(u32 i) noexcept { return (i & 0x400U) != 0U; }
-constexpr s32 f_simm(u32 i) noexcept { return sign_extend(i & 0xFFFFU, 16); }
-constexpr u32 f_uimm(u32 i) noexcept { return i & 0xFFFFU; }
-constexpr unsigned f_spr(u32 i) noexcept { return ((i >> 16U) & 31U) | (((i >> 11U) & 31U) << 5U); }
-
-constexpr u32 mask_mb_me(unsigned mb, unsigned me) noexcept {
-    const u32 begin = 0xFFFFFFFFU >> mb;
-    const u32 end = me >= 31U ? 0xFFFFFFFFU : ~(0xFFFFFFFFU >> (me + 1U));
-    return mb <= me ? (begin & end) : (begin | end);
-}
-
-struct AddResult { u32 value; bool carry; bool overflow; };
-
-// x + y + carry_in with carry-out and signed overflow, as defined for the
-// PowerPC add/subtract family (subtraction is ~a + b + 1).
-constexpr AddResult add3(u32 x, u32 y, u32 carry_in) noexcept {
-    const u64 wide = static_cast<u64>(x) + y + carry_in;
-    const auto r = static_cast<u32>(wide);
-    return {r, (wide >> 32U) != 0U, (((x ^ r) & (y ^ r)) >> 31U) != 0U};
-}
-
-bool trap_condition(unsigned to, u32 a, u32 b) noexcept {
-    const auto sa = static_cast<s32>(a);
-    const auto sb = static_cast<s32>(b);
-    return ((to & 0x10U) != 0U && sa < sb) || ((to & 0x08U) != 0U && sa > sb) ||
-           ((to & 0x04U) != 0U && a == b) || ((to & 0x02U) != 0U && a < b) ||
-           ((to & 0x01U) != 0U && a > b);
-}
-
-bool is_classic_fp_x(unsigned xo) noexcept {
-    switch (xo) {
-    case 535: case 567: case 599: case 631: // lfsx lfsux lfdx lfdux
-    case 663: case 695: case 727: case 759: // stfsx stfsux stfdx stfdux
-    case 983:                               // stfiwx
-        return true;
-    default: return false;
-    }
-}
-
-} // namespace
 
 Cpu::Cpu(mem::Bus& bus, CpuConfig config) : bus_(bus), config_(config) {
     // Writes by other bus masters (DMA) to the reserved granule cancel a
@@ -259,22 +180,70 @@ Cpu::Outcome Cpu::translate_data(u32 ea, u32 size, bool write, u32& pa_lo, u32& 
     return Outcome::done();
 }
 
-Cpu::Outcome Cpu::load(u32 ea, unsigned size, u32& value) {
+bool Cpu::locked_cache_line(u32 physical, std::array<u8, 32>& out) const {
+    const auto it = locked_cache_.find(physical & ~31U);
+    if (it == locked_cache_.end()) return false;
+    out = it->second;
+    return true;
+}
+
+namespace {
+bool phys_accessible(const std::unordered_map<u32, std::array<u8, 32>>& lc, mem::Bus& bus, u32 pa, u32 n) {
+    if (lc.empty()) return bus.is_mapped(pa, n);
+    for (u32 i = 0; i < n; ++i)
+        if (lc.find((pa + i) & ~31U) == lc.end() && !bus.is_mapped(pa + i, 1)) return false;
+    return true;
+}
+} // namespace
+
+bool Cpu::phys_read(u32 pa, unsigned size, u64& value) {
+    if (locked_cache_.empty() ||
+        (locked_cache_.find(pa & ~31U) == locked_cache_.end() &&
+         locked_cache_.find((pa + size - 1U) & ~31U) == locked_cache_.end()))
+        return bus_.read(pa, size, value) == mem::BusStatus::Ok;
+    u64 v = 0;
+    for (unsigned i = 0; i < size; ++i) {
+        const u32 a = pa + i;
+        const auto it = locked_cache_.find(a & ~31U);
+        u8 b = 0;
+        if (it != locked_cache_.end()) b = it->second[a & 31U];
+        else if (bus_.read8(a, b) != mem::BusStatus::Ok) return false;
+        v = (v << 8U) | b;
+    }
+    value = v;
+    return true;
+}
+
+bool Cpu::phys_write(u32 pa, unsigned size, u64 value) {
+    if (locked_cache_.empty() ||
+        (locked_cache_.find(pa & ~31U) == locked_cache_.end() &&
+         locked_cache_.find((pa + size - 1U) & ~31U) == locked_cache_.end()))
+        return bus_.write(pa, size, value) == mem::BusStatus::Ok;
+    if (!phys_accessible(locked_cache_, bus_, pa, size)) return false;
+    for (unsigned i = 0; i < size; ++i) {
+        const u32 a = pa + i;
+        const auto b = static_cast<u8>(value >> ((size - 1U - i) * 8U));
+        const auto it = locked_cache_.find(a & ~31U);
+        if (it != locked_cache_.end()) it->second[a & 31U] = b;
+        else if (bus_.write8(a, b) != mem::BusStatus::Ok) return false;
+    }
+    return true;
+}
+
+Cpu::Outcome Cpu::load_raw(u32 ea, unsigned size, u64& value) {
     u32 lo = 0, hi = 0, split = 0; u8 wimg = 0;
     Outcome o = translate_data(ea, size, false, lo, hi, split, wimg);
     if (!o.ok()) return o;
     if (split == size) {
-        u64 v = 0;
-        if (bus_.read(lo, size, v) != mem::BusStatus::Ok) return Outcome::stop(StepResult::MemoryFault, "load from unmapped physical memory", lo);
-        value = static_cast<u32>(v);
+        if (!phys_read(lo, size, value)) return Outcome::stop(StepResult::MemoryFault, "load from unmapped physical memory", lo);
         return o;
     }
-    if (!bus_.is_mapped(lo, split) || !bus_.is_mapped(hi, size - split))
+    if (!phys_accessible(locked_cache_, bus_, lo, split) || !phys_accessible(locked_cache_, bus_, hi, size - split))
         return Outcome::stop(StepResult::MemoryFault, "page-crossing load from unmapped physical memory", lo);
-    u32 v = 0;
+    u64 v = 0;
     for (u32 i = 0; i < size; ++i) {
-        u8 b = 0;
-        if (bus_.read8(i < split ? lo + i : hi + (i - split), b) != mem::BusStatus::Ok)
+        u64 b = 0;
+        if (!phys_read(i < split ? lo + i : hi + (i - split), 1, b))
             return Outcome::stop(StepResult::MemoryFault, "page-crossing load failed", lo);
         v = (v << 8U) | b;
     }
@@ -282,23 +251,31 @@ Cpu::Outcome Cpu::load(u32 ea, unsigned size, u32& value) {
     return o;
 }
 
-Cpu::Outcome Cpu::store(u32 ea, unsigned size, u32 value) {
+Cpu::Outcome Cpu::store_raw(u32 ea, unsigned size, u64 value) {
     u32 lo = 0, hi = 0, split = 0; u8 wimg = 0;
     Outcome o = translate_data(ea, size, true, lo, hi, split, wimg);
     if (!o.ok()) return o;
     if (split == size) {
-        if (bus_.write(lo, size, value) != mem::BusStatus::Ok) return Outcome::stop(StepResult::MemoryFault, "store to unmapped physical memory", lo);
+        if (!phys_write(lo, size, value)) return Outcome::stop(StepResult::MemoryFault, "store to unmapped physical memory", lo);
         return o;
     }
-    if (!bus_.is_mapped(lo, split) || !bus_.is_mapped(hi, size - split))
+    if (!phys_accessible(locked_cache_, bus_, lo, split) || !phys_accessible(locked_cache_, bus_, hi, size - split))
         return Outcome::stop(StepResult::MemoryFault, "page-crossing store to unmapped physical memory", lo);
     for (u32 i = 0; i < size; ++i) {
-        const auto b = static_cast<u8>(value >> ((size - 1U - i) * 8U));
-        if (bus_.write8(i < split ? lo + i : hi + (i - split), b) != mem::BusStatus::Ok)
+        if (!phys_write(i < split ? lo + i : hi + (i - split), 1, (value >> ((size - 1U - i) * 8U)) & 0xFFU))
             return Outcome::stop(StepResult::MemoryFault, "page-crossing store failed", lo);
     }
     return o;
 }
+
+Cpu::Outcome Cpu::load(u32 ea, unsigned size, u32& value) {
+    u64 v = 0;
+    Outcome o = load_raw(ea, size, v);
+    if (o.ok()) value = static_cast<u32>(v);
+    return o;
+}
+
+Cpu::Outcome Cpu::store(u32 ea, unsigned size, u32 value) { return store_raw(ea, size, value); }
 
 // ---------------------------------------------------------------------------
 // Decoder
@@ -379,10 +356,7 @@ Cpu::Outcome Cpu::execute(u32 ins) {
         if (handled) return o;
         o = op_cache_x(ins, xo, handled);
         if (handled) return o;
-        if (is_classic_fp_x(xo)) {
-            if ((state_.msr & MSR_FP) == 0U) return Outcome::exception(Exception::FloatingPointUnavailable);
-            return Outcome::unsupported("floating-point load/store (FPU not implemented yet)");
-        }
+        if (is_classic_fp_x(xo)) return op_fp_load_store(ins, xo, true);
         o = op_integer_xo(ins, handled);
         if (handled) return o;
         return Outcome::unsupported("unknown or unimplemented opcode 31 extended opcode");
@@ -392,11 +366,15 @@ Cpu::Outcome Cpu::execute(u32 ins) {
         return op_load_store_d(ins, op);
     case 46: return op_multiple(ins, false);
     case 47: return op_multiple(ins, true);
-    case 48: case 49: case 50: case 51: case 52: case 53: case 54: case 55: case 59: case 63:
-        if ((state_.msr & MSR_FP) == 0U) return Outcome::exception(Exception::FloatingPointUnavailable);
-        return Outcome::unsupported("floating-point instruction (FPU not implemented yet)");
-    case 4: case 56: case 57: case 60: case 61:
-        return Outcome::unsupported("Gekko paired-single / quantized load-store (not implemented yet)");
+    case 48: case 49: case 50: case 51: case 52: case 53: case 54: case 55:
+        return op_fp_load_store(ins, op, false);
+    case 59: return op_fp59(ins);
+    case 63: return op_fp63(ins);
+    case 4: return op_paired(ins);
+    case 56: return op_psq(ins, false, false, false); // psq_l
+    case 57: return op_psq(ins, false, true, false);  // psq_lu
+    case 60: return op_psq(ins, false, false, true);  // psq_st
+    case 61: return op_psq(ins, false, true, true);   // psq_stu
     default:
         return Outcome::unsupported("unknown primary opcode");
     }
@@ -832,7 +810,9 @@ Cpu::Outcome Cpu::write_spr(unsigned n, u32 v) {
     case spr::TBU_WRITE: s.tb = (s.tb & 0xFFFFFFFFULL) | (static_cast<u64>(v) << 32U); return Outcome::done();
     case spr::HID0: s.hid0 = v; return Outcome::done();
     case spr::HID1: s.hid1 = v; return Outcome::done();
-    case spr::HID2: s.hid2 = v; return Outcome::done();
+    case spr::HID2:
+        if ((v & HID2_LCE) == 0U) locked_cache_.clear(); // disabling the locked cache discards its lines
+        s.hid2 = v; return Outcome::done();
     case spr::HID4: s.hid4 = v; return Outcome::done();
     case spr::IABR:
         if ((v & 2U) != 0U) return Outcome::unsupported("IABR breakpoint enable (not implemented)");
@@ -845,7 +825,7 @@ Cpu::Outcome Cpu::write_spr(unsigned n, u32 v) {
     case spr::THRM1: case spr::THRM2: case spr::THRM3: s.thrm[n - spr::THRM1] = v; return Outcome::done();
     case spr::WPAR: s.wpar = v; return Outcome::done();
     case spr::DMAU: s.dmau = v; return Outcome::done();
-    case spr::DMAL: return Outcome::unsupported("mtspr DMAL: locked-cache DMA not implemented");
+    case spr::DMAL: return locked_cache_dma(v);
     case spr::MMCR0: s.mmcr0 = v; return Outcome::done();
     case spr::MMCR1: s.mmcr1 = v; return Outcome::done();
     case spr::SIA: s.sia = v; return Outcome::done();
@@ -940,6 +920,7 @@ Cpu::Outcome Cpu::op_cache_x(u32 ins, unsigned xo, bool& handled) {
         Outcome o = translate_data(ea & ~31U, 32, true, lo, hi, split, wimg);
         if (!o.ok()) return o;
         if ((wimg & (WIMG_W | WIMG_I)) != 0U) return Outcome::alignment(ea); // 750CL: write-through / cache-inhibited
+        if (const auto it = locked_cache_.find(lo); it != locked_cache_.end()) { it->second.fill(0); return o; }
         if (!bus_.is_ram(lo, 32)) return Outcome::stop(StepResult::MemoryFault, "dcbz outside RAM", lo);
         for (u32 i = 0; i < 32U; i += 8U) (void)bus_.write64(lo + i, 0);
         return o;

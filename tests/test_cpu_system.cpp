@@ -232,12 +232,18 @@ TEST_CASE(floating_point_unavailable_and_unimplemented) {
     CHECK(m.exec(A::lfs(1, 0, 3)) == StepResult::ExceptionTaken);
     CHECK(m.cpu->last_exception() == Exception::FloatingPointUnavailable);
     CHECK_EQ(m.s().pc, 0x800U);
+    // M004: the FPU exists now. With MSR[FP]=1 lfs executes; paired-single
+    // opcode 4 without HID2[PSE] is an illegal instruction.
     Machine f;
     f.s().msr = MSR_FP;
-    const CpuState before = f.s();
-    CHECK(f.exec(A::lfs(1, 0, 3)) == StepResult::UnsupportedInstruction); // FPU not implemented yet
-    CHECK(f.s() == before);
-    CHECK(f.exec(0x10000000U) == StepResult::UnsupportedInstruction);    // paired-single opcode 4
+    f.s().gpr[3] = 0x2000;
+    f.bus.write32(0x2000, 0x3F800000U);
+    CHECK(f.exec(A::lfs(1, 0, 3)) == StepResult::Executed);
+    CHECK_EQ(f.s().fpr[1].ps0, 0x3FF0000000000000ULL);
+    f.s().pc = 0x1000;
+    CHECK(f.exec(0x10000000U) == StepResult::ExceptionTaken); // ps_cmpu0 with HID2[PSE]=0
+    CHECK(f.cpu->last_exception() == Exception::Program);
+    CHECK_EQ(f.s().srr1 & SRR1_PROGRAM_ILLEGAL, SRR1_PROGRAM_ILLEGAL);
 }
 
 TEST_CASE(external_and_decrementer_interrupts) {

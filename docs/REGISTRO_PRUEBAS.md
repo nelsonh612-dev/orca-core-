@@ -1,4 +1,4 @@
-# Registro de pruebas — Milestone 003
+# Registro de pruebas — Milestone 004
 
 Todos los resultados son de ejecuciones reales del 2026-11-14 en este entorno, sobre una copia limpia de los fuentes entregados.
 
@@ -8,10 +8,10 @@ Todos los resultados son de ejecuciones reales del 2026-11-14 en este entorno, s
 
 | Configuración | Compilación | Advertencias (`-Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion -Wshadow -Werror`) | CTest |
 |---|---|---|---|
-| GCC Release | OK | 0 | 6/6 pasan |
-| Clang Release | OK | 0 | 6/6 pasan |
-| GCC Debug + ASan + UBSan (`-fno-sanitize-recover=all`) | OK | 0 | 6/6 pasan |
-| Clang + ASan/UBSan | **NO EJECUTADO**: falta `compiler-rt` en el entorno y no se pueden instalar paquetes | — | — |
+| GCC Release | OK | 0 | 8/8 pasan |
+| Clang Release | OK | 0 | 8/8 pasan |
+| GCC Debug + ASan + UBSan (`-fno-sanitize-recover=all`) | OK | 0 | 8/8 pasan (26,4 s) |
+| Clang + ASan/UBSan | **NO EJECUTADO**: falta `compiler-rt` en el entorno | — | — |
 | Android NDK arm64-v8a | **NO EJECUTADO**: no hay NDK ni sysroot AArch64 | — | — |
 
 ## Detalle por suite (GCC + ASan + UBSan)
@@ -20,52 +20,69 @@ Todos los resultados son de ejecuciones reales del 2026-11-14 en este entorno, s
 |---|---|---|---|
 | memory | 10 | 65 | 0 |
 | cpu_integer (incluye las 9 pruebas de M002) | 33 | 215 | 0 |
-| cpu_system | 22 | 214 | 0 |
+| cpu_system | 22 | 216 | 0 |
 | mmu | 14 | 70 | 0 |
-| reference (diferencial aleatoria) | 6 | 152.001 | 0 |
-| encodings (vs `llvm-mc`) | 137 instrucciones | 129 ensambladas + 8 desensambladas | 0 diferencias |
+| reference (diferencial de enteros) | 6 | 152.001 | 0 |
+| **fpu_engine** (M004) | 9 | 101.990 | 0 |
+| **cpu_fpu** (M004) | 28 | 30.751 | 0 |
+| encodings (vs `llvm-mc`) | 189 instrucciones | 181 ensambladas + 8 desensambladas | 0 diferencias |
 
-- **Diferencial aleatoria:** 152.000 ejecuciones del intérprete comparadas con un modelo de referencia independiente (aritmética ancha con signo, división por piso, máscaras por bucle de bits). Se compara **el estado completo** de la CPU tras cada instrucción. Los registros se eligen al azar y pueden coincidir entre sí (RT = RA = RB, RA = 0). La semilla es fija, así que es reproducible.
-- **Codificaciones:** el codificador de pruebas coincide con LLVM en 137 instrucciones. Los saltos relativos y `mftb` se verifican desensamblando, porque LLVM los ensambla como relocalizaciones o alias. **No se pudieron verificar con LLVM:** `lswx`, `stswx` y `mcrxr`, porque LLVM no los implementa. Se revisaron a mano contra el PEM.
+### Referencia exacta de punto flotante (M004)
 
-## Pruebas de mutación (solidez de las pruebas)
+`tests/fp_reference.hpp` implementa la aritmética IEEE-754 con **racionales exactos** (enteros de precisión arbitraria) y redondeo escrito a mano a partir de la norma: cuatro modos, subnormales, overflow y tininess antes del redondeo. No comparte código ni técnica con el motor, que usa la FPU del anfitrión con `<cfenv>`.
 
-Se introdujeron errores a propósito en el código y se comprobó que alguna prueba fallara. Al final se restauró el código original y se confirmó que todo volvía a pasar.
+- **101.917 operaciones aleatorias** (suma, resta, multiplicación, división, FMA en sus 4 variantes y redondeo a simple; en doble y simple; en los 4 modos) comparadas **bit a bit** en el valor, OX, UX, XX, FR, FI y FPRF. Los operandos incluyen subnormales, valores cerca del overflow, cancelaciones y mantisas cortas. El resultado es idéntico con GCC y con Clang.
+- **15.000 instrucciones FP de extremo a extremo**: la CPU las decodifica y las ejecuta, y se compara el FPR destino, ps1, **el FPSCR completo** (con bits acumulativos aleatorios previos) y CR1 contra valores derivados de la referencia exacta.
 
-| Mutación | Detectada |
+### Diferencial de enteros (M003)
+
+152.000 ejecuciones contra un modelo de referencia independiente, comparando el estado completo de la CPU tras cada instrucción, con registros que pueden coincidir entre sí.
+
+### Codificaciones
+
+Coinciden con LLVM en 189 instrucciones, 52 de ellas de FP clásica. **No se pueden verificar con LLVM** (no tiene el Gekko): `lswx`, `stswx`, `mcrxr`, las paired-single y `psq_*`. Se revisaron contra las tablas del manual del 750CL y la prueba los lista explícitamente.
+
+## Pruebas de mutación
+
+Se introducen errores a propósito y se comprueba que alguna prueba falle. Al final se restaura el código y todo vuelve a pasar.
+
+**Motor FP (7 de 7 detectadas):**
+
+| Mutación | Fallos que provoca |
 |---|---|
-| M1 fórmula de overflow | Sí |
-| M2 `nor` ejecutado como `eqv` (el error de M002) | Sí |
-| M3 acarreo de `sraw` | Sí |
-| M4 LR solo se escribe si se toma el salto | **No** al principio → se añadió la prueba `link_register_written_even_when_branch_not_taken` → Sí |
-| M5 MSR[EE] conservado al entrar en una excepción | Sí |
-| M6 hash secundario de la tabla de páginas | **No** al principio (todas las pruebas usaban HTABMASK=0) → se añadió `page_table_with_htabmask_uses_upper_hash_bits` → Sí |
-| M7 bit C en lecturas | Sí |
-| M8 sin comprobar RA=RT en cargas con actualización | Sí |
-| M9 decrementador con error de uno | Sí |
-| M10 máscara de rotación | Sí |
-| M11 destino de `bclr` sin limpiar los bits bajos | Sí |
-| M12 contador de instrucciones retiradas con `sc` | **No** al principio → se añadió `retired_instruction_counter` → Sí |
-| M13 `lwarx` sin reserva | Sí |
-| M14 lectura antes de escribir en MMIO (el error de M002) | Sí |
-| M15 escritura parcial al fallar | Sí |
+| F1 sin redondeo a impar (doble redondeo en simple) | 1.657 |
+| F2 tininess después del redondeo | 12 |
+| F3 FR = FI | 59.099 |
+| F4 modos de redondeo +∞/−∞ intercambiados | 48.507 |
+| F5 FMA no fusionada | 3.348 |
+| F6 FPRF de denormales simples | 2.566 |
+| F7 truncamiento simple en el modo equivocado | 18.730 |
 
-Resultado final: **15 de 15 mutaciones detectadas.**
+**Integración FP/paired-single en la CPU (12 de 12 detectadas tras corregir las pruebas):** P1 `lfs` no escribe ps1 · P2 una operación simple no escribe ps1 · P3 FX con cualquier excepción · **P4 `fcmpu` activa VXVC: no se detectaba al principio** → se añadió `fcmpu_with_qnan_sets_no_exception` · P5 escala GQR sin signo · P6 `ps_merge10` · P7 `ps_sum1` ejecutado como `ps_sum0` · P8 dirección del DMA · P9 FPRF nunca se escribe · P10 no se comprueba LSQE · P11 sin saturación · P12 slots de `ps_muls` intercambiados.
 
-## Errores encontrados durante el desarrollo de M003
+P13 (palabra alta de `fctiw`) sobrevivió como se esperaba, porque son bits indefinidos. Se añadió una prueba que fija el valor documentado.
 
-- 2 errores en mis propias pruebas, no en el emulador: un `ba` a 0x10000000 está fuera del alcance de ±32 MB, y había una dirección de lectura equivocada en la prueba del hash secundario. Se corrigieron las pruebas.
-- 1 codificación equivocada en el benchmark (`rlwinm` con ME=29 en lugar de 28). La detectó la comparación con `llvm-mc` y se corrigió.
-- Ningún error del intérprete apareció en la diferencial aleatoria.
+**Enteros, sistema y MMU (M003): 15 de 15 detectadas.**
+
+**Total: 34 mutaciones detectadas.**
+
+## Pruebas modificadas en M004
+
+- `cpu_system/floating_point_unavailable_and_unimplemented`: en M003 comprobaba que `lfs` con MSR[FP]=1 daba *Unsupported*. Ahora la FPU existe, así que comprueba que `lfs` se ejecuta y que el opcode 4 sin HID2[PSE] da una excepción de instrucción ilegal. Es una actualización por un cambio de comportamiento intencional, no se ocultó ninguna falla.
+
+## Errores encontrados durante M004
+
+- Una prueba no compilaba por un tipo de retorno de lambda; se corrigió la prueba.
+- Las dos mutaciones que sobrevivieron (P4 y P13) dejaron al descubierto huecos en las pruebas, ya cubiertos.
+- Ningún error del motor FP apareció en las comparaciones con la referencia exacta.
 
 ## Rendimiento (solo como referencia en el anfitrión)
 
-`orca_bench_interpreter 5000000`, compilación Release con GCC, bucle de 5 instrucciones (`addi`, `lwz`, `stw`, `rlwinm`, `bdnz`) en modo real, 3 ejecuciones:
+`orca_bench_interpreter`, compilación Release con GCC, modo real, 3 ejecuciones de cada bucle:
 
-| Ejecución | Instrucciones | Tiempo | Velocidad |
-|---|---|---|---|
-| 1 | 25.000.000 | 1,100 s | 22,7 M instr/s |
-| 2 | 25.000.000 | 1,256 s | 19,9 M instr/s |
-| 3 | 25.000.000 | 1,135 s | 22,0 M instr/s |
+| Bucle | Ejecuciones | Resultado |
+|---|---|---|
+| Enteros (`addi`, `lwz`, `stw`, `rlwinm`, `bdnz`) | 25 M instrucciones | 21,6 · 21,2 · 19,0 M instr/s |
+| FP (`fmadd`, `fadds`, `ps_add`, `addi`, `bdnz`) | 10 M instrucciones | 4,2 · 4,3 · 4,2 M instr/s |
 
-Esta cifra es **del anfitrión x86**, no del Redmi 15C, y no dice nada sobre los FPS de un juego. Gekko corre a 486 MHz, así que el intérprete sirve como referencia de precisión y el rendimiento tendrá que venir del JIT ARM64.
+El bucle FP es más lento porque cada operación cambia el modo de redondeo del anfitrión para obtener resultados y banderas exactos. Estas cifras son **del anfitrión x86**, no del Redmi 15C, y no dicen nada sobre FPS. El intérprete es la referencia de precisión; el rendimiento tiene que venir del JIT ARM64.

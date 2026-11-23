@@ -37,6 +37,12 @@ inline constexpr u32 MSR_LE  = 0x00000001U; // 31 little-endian mode
 // (IBM bits 16-23, 25-27, 30-31).
 inline constexpr u32 MSR_SAVE_MASK = 0x0000FF73U;
 
+// --- HID2 (Gekko/Broadway) ----------------------------------------------
+inline constexpr u32 HID2_LSQE = 0x80000000U; // 0 paired-single quantized load/store enable
+inline constexpr u32 HID2_WPE  = 0x40000000U; // 1 write-gather pipe enable
+inline constexpr u32 HID2_PSE  = 0x20000000U; // 2 paired-single enable
+inline constexpr u32 HID2_LCE  = 0x10000000U; // 3 locked cache enable
+
 // --- SRR1 exception-specific bits ---------------------------------------
 inline constexpr u32 SRR1_PROGRAM_FP         = 0x00100000U; // 11
 inline constexpr u32 SRR1_PROGRAM_ILLEGAL    = 0x00080000U; // 12

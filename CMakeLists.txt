@@ -24,13 +24,17 @@ add_library(orca_core
     src/memory/console_maps.cpp
     src/ppc/mmu.cpp
     src/ppc/cpu.cpp
+    src/ppc/cpu_fpu.cpp
+    src/ppc/fpu.cpp
 )
+# The FP engine changes the host rounding mode at run time.
+set_source_files_properties(src/ppc/fpu.cpp PROPERTIES COMPILE_OPTIONS "-frounding-math")
 target_include_directories(orca_core PUBLIC include)
 target_compile_options(orca_core PRIVATE $<$<CXX_COMPILER_ID:GNU,Clang>:${ORCA_WARNINGS}>)
 
 if(ORCA_BUILD_TESTS)
     enable_testing()
-    foreach(suite memory cpu_integer cpu_system mmu reference)
+    foreach(suite memory cpu_integer cpu_system mmu reference fpu_engine cpu_fpu)
         add_executable(orca_test_${suite} tests/test_${suite}.cpp)
         target_link_libraries(orca_test_${suite} PRIVATE orca_core)
         target_include_directories(orca_test_${suite} PRIVATE tests)

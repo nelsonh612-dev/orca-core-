@@ -16,8 +16,10 @@
 #include "orca/ppc/registers.hpp"
 #include "orca/ppc/state.hpp"
 
+#include <array>
 #include <functional>
 #include <string>
+#include <unordered_map>
 
 namespace orca::ppc {
 
@@ -76,6 +78,11 @@ public:
     using IcacheInvalidateHandler = std::function<void(u32 physical_block)>;
     void set_icache_invalidate_handler(IcacheInvalidateHandler h) { icbi_handler_ = std::move(h); }
 
+    // Locked L1 data cache (HID2[LCE]): 32-byte lines indexed by physical address.
+    static constexpr std::size_t kLockedCacheLines = 512; // 16 KiB
+    std::size_t locked_cache_lines() const noexcept { return locked_cache_.size(); }
+    bool locked_cache_line(u32 physical, std::array<u8, 32>& out) const;
+
     Exception last_exception() const noexcept { return last_exception_; }
     const StopInfo& last_stop() const noexcept { return last_stop_; }
     u64 instructions_retired() const noexcept { return retired_; }
@@ -89,6 +96,11 @@ private:
     // Memory helpers (no architectural side effects on failure).
     Outcome load(u32 ea, unsigned size, u32& value);
     Outcome store(u32 ea, unsigned size, u32 value);
+    Outcome load_raw(u32 ea, unsigned size, u64& value);   // size 1, 2, 4 or 8
+    Outcome store_raw(u32 ea, unsigned size, u64 value);
+    // Physical accesses that honour the locked cache.
+    bool phys_read(u32 pa, unsigned size, u64& value);
+    bool phys_write(u32 pa, unsigned size, u64 value);
     Outcome translate_data(u32 ea, u32 size, bool write, u32& pa_lo, u32& pa_hi, u32& split, u8& wimg);
 
     // Instruction groups
@@ -102,6 +114,20 @@ private:
     Outcome op_cache_x(u32 ins, unsigned xo, bool& handled);
     Outcome op_19(u32 ins);
     Outcome branch_conditional(u32 ins, u32 target_kind);
+    // Floating point / paired single (cpu_fpu.cpp)
+    Outcome fp_check_available(bool paired, bool quantized);
+    Outcome fp_status(u32 exceptions, bool fr, bool fi, u32 fprf, bool set_fprf, bool tiny, bool& write);
+    Outcome fp_finish_control(u32 new_fpscr);
+    Outcome fp_compare(unsigned crf, u64 a, u64 b, bool ordered);
+    Outcome op_fp_load_store(u32 ins, unsigned kind, bool indexed);
+    Outcome op_fp59(u32 ins);
+    Outcome op_fp63(u32 ins);
+    Outcome op_paired(u32 ins);
+    Outcome op_psq(u32 ins, bool indexed, bool update, bool is_store);
+    Outcome op_dcbz_l(u32 ins);
+    Outcome locked_cache_dma(u32 dmal);
+    void set_cr1() noexcept;
+
     Outcome read_spr(unsigned n, u32& value);
     Outcome write_spr(unsigned n, u32 value);
 
@@ -122,6 +148,7 @@ private:
     u64 retired_{0};
     std::size_t observer_id_{0};
     IcacheInvalidateHandler icbi_handler_;
+    std::unordered_map<u32, std::array<u8, 32>> locked_cache_;
 };
 
 } // namespace orca::ppc
