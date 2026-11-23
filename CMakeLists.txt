@@ -60,6 +60,7 @@ add_library(orca_core
     src/ios/fs_device.cpp
     src/ios/di_device.cpp
     src/ios/memory_values.cpp
+    src/wiimote/wiimote.cpp
     src/hw/exi_ipl.cpp
     src/hw/exi_memcard.cpp
     src/gpu/command_stream.cpp
@@ -119,7 +120,7 @@ endif()
 
 if(ORCA_BUILD_TESTS)
     enable_testing()
-    foreach(suite memory cpu_integer cpu_system mmu reference fpu_engine cpu_fpu system crypto wii_disc audio dsp_hle ios)
+    foreach(suite memory cpu_integer cpu_system mmu reference fpu_engine cpu_fpu system crypto wii_disc audio dsp_hle ios wiimote)
         add_executable(orca_test_${suite} tests/test_${suite}.cpp)
         target_link_libraries(orca_test_${suite} PRIVATE orca_core)
         target_include_directories(orca_test_${suite} PRIVATE tests)
