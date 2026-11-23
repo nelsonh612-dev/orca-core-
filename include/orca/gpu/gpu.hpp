@@ -9,7 +9,9 @@
 // 0x01-0x07 and 0x3F = 1, CP = 12, BP = 12, XF = 18 + 6 per word, indexed = 6,
 // display list call = 6 (plus its contents), primitive = 12 per vertex + 6.
 // Primitives are decoded, transformed and drawn by the software renderer
-// (sw/vertex.hpp, sw/renderer.hpp), which lists what it does not do yet.
+// (sw/vertex.hpp, sw/renderer.hpp), which lists what it does not do yet. A vertex whose
+// indexed position is 0xFF / 0xFFFF is dropped and the primitive is built from the rest,
+// as Dolphin's vertex loaders do (its software renderer keeps it: sources disagree).
 // BP 0xE0-0xE7 also set the TEV colour registers or constants (bit 23 of the
 // value selects constant), as in BPStructs.cpp.
 // TLUT loads (BP 0x65): tlut_src (BP 0x64) << 5, masked to 0x01FFFFFF on

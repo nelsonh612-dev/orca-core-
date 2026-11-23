@@ -1,4 +1,4 @@
-# Registro de pruebas — Milestone 014
+# Registro de pruebas — Milestone 015
 
 Todos los resultados son de ejecuciones reales del 2026-11-15 en este entorno, sobre una copia limpia de los fuentes entregados.
 
@@ -9,8 +9,8 @@ Todos los resultados son de ejecuciones reales del 2026-11-15 en este entorno, s
 | Configuración | Compilación | Advertencias (`-Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion -Wshadow -Werror`) | CTest |
 |---|---|---|---|
 | GCC Release (`-DORCA_WERROR=ON`) | OK | 0 | 18/18 pasan (4,4 s) |
-| Clang Release (`-DORCA_WERROR=ON`) | OK | 0 | 18/18 pasan (3,3 s) |
-| GCC Debug + ASan + UBSan (`-fno-sanitize-recover=all`, `-DORCA_WERROR=ON`) | OK | 0 | 18/18 pasan (85,3 s) |
+| Clang Release (`-DORCA_WERROR=ON`) | OK | 0 | 18/18 pasan (3,2 s) |
+| GCC Debug + ASan + UBSan (`-fno-sanitize-recover=all`, `-DORCA_WERROR=ON`) | OK | 0 | 18/18 pasan (81,3 s) |
 | Clang + ASan/UBSan | **NO EJECUTADO**: falta `compiler-rt` en el entorno | — | — |
 | Android NDK arm64-v8a | **NO EJECUTADO**: no hay NDK ni sysroot AArch64 | — | — |
 
@@ -28,14 +28,28 @@ Todos los resultados son de ejecuciones reales del 2026-11-15 en este entorno, s
 | **system** (M005) | 13 | 109 | 0 |
 | **programs** (M005) | 3 | 34 | 0 |
 | **disc** (M006) | 12 | 145 | 0 |
-| **av** (M007) | 12 | 292 | 0 |
+| **av** (M007 + campo del XFB M015) | 12 | 299 | 0 |
 | **exi** (M008 + tarjeta de memoria M012) | 23 | 1.445 | 0 |
 | **dsp_mi** (M009, actualizada en M010 y M012) | 15 | 458 | 0 |
 | **dsp_core** (M010 + M011 + M012) | 29 | 534 | 0 |
-| **gpu** (M013 + precargas de TMEM M014) | 26 | 1.031 | 0 |
-| **gpu_sw** (M014) | 26 | 606 | 0 |
-| **efb_copy** (M014) | 10 | 330 | 0 |
+| **gpu** (M013 + precargas M014 + programa `gpu_draw` M015) | 27 | 1.050 | 0 |
+| **gpu_sw** (M014 + M015) | 29 | 644 | 0 |
+| **efb_copy** (M014 + M015) | 11 | 409 | 0 |
 | encodings (vs `llvm-mc`) | 189 instrucciones | 181 ensambladas + 8 desensambladas | 0 diferencias |
+
+### GPU, parte 3: referencia completa y primera imagen (M015)
+
+Fuente: el repositorio de Dolphin aportado por el usuario (solo como información). Valores esperados calculados a mano; los de la niebla con una calculadora float32 independiente del código (numpy), porque dependen del redondeo de `pow`; se eligieron parámetros lejos de los límites de cuantización (margen ≥ 0,1 de un nivel).
+- Niebla: lineal 115, exponencial 234, exponencial² 172, inversas 12 y 47 (rojo → (255·(256−f)) >> 8, azul (f·255) >> 8); perspectiva con B_MAG 0x100000 y B_SHF 4 (191); rango con K = 4 en x = 301 (65 frente a 63 sin rango); tabla de A y C infinitos (con niebla / sin niebla según los signos); paradas por B_SHF 32 y denominador 0.
+- RGBA8 en TMEM: 4x4 cargada con una precarga tipo 3 (los 16 texels), 8x8 con 2x2 bloques (bloques 1, 2 y 3), una dirección de RAM falsa que no se usa, y la parada con mipmaps.
+- Vértices descartados: tira de 5 con el tercero a 0xFF (cuadrado de 16 píxeles), triángulo de 4 con el segundo descartado (6 píxeles), todos descartados (nada, sin error).
+- Copias revisadas: intensidad redondeada (137 en lugar de 136), U en lugar de G con la conversión (157), intensidad y RGB565 desde profundidad (55, 0x11AA), A8 desde profundidad (255), gamma redondeada (3 → 34), desborde a 9 bits (200 → 78; 100 → 255), filas del bloque bajo el rectángulo con y sin clamp, profundidad filtrada (128 → 186 con gamma 2,2), bloques por el tamaño reducido (17 de ancho a media escala → 1 bloque), última columna/fila repetida fuera del EFB.
+- Escala del XFB: 0,5 con 4 filas (2 líneas: filas 0 y 2), 2 con 2 filas (3 líneas: 0, 1, 1), una fila a 0,5 (parada: 0 líneas), escala 0.
+- Conversión XFB → RGB: blanco 254, rojo (255, 0, 0), Y 16 con croma roja (178, 0, 0), segunda línea con separación, datos cortos y ancho impar; ida y vuelta de un gris 0x80 (127-129).
+- VI: dirección del campo inferior con el bit de página de TFBL, y descripción del campo (640, 1280, 240).
+- **Programa `gpu_draw` (PowerPC, clang):** FIFO como GX, transformación y estado como el SDK, un rectángulo rojo y un triángulo verde, copia al XFB con borrado y configuración de la VI. La prueba lee la imagen por los registros de la VI: rojo (≥ 250, ≤ 3, ≤ 3) dentro del rectángulo, verde en el triángulo, negro fuera, el EFB borrado a azul oscuro después de la copia. `orca_run --dump-xfb` con el mismo programa produjo la imagen esperada (se revisó visualmente; se entrega aparte).
+- **Mutaciones (M015):** 25 mutaciones (niebla N1-N9, RGBA8 en TMEM T1-T3, descarte S1, copias C1-C8, XFB → RGB X1-X2, VI V1-V2): **23 detectadas** tras añadir las pruebas de T2 (textura de 2x2 bloques) y C8 (clamp de la fila actual, que reveló que esa parte del cambio no se había aplicado al código: corregido). Sobreviven: C1 (desborde con suma exactamente 128: equivalente, 255·128 >> 6 = 510 < 512) y N3 (16777215 frente a 16777216 en la niebla en perspectiva: diferencia relativa 6·10⁻⁸, menor que un nivel de niebla con parámetros de 11 bits de mantisa; no se encontró una entrada que la distinga). **Acumulado: 340.**
+- **No probado:** un juego real (no hay frontend; el rasterizador por software es lento), la niebla y el XFB contra hardware real.
 
 ### GPU, parte 2: rasterizador por software (M014)
 
@@ -266,6 +280,10 @@ I5 (liberar CS no reinicia la secuencia) sobrevivió y es **equivalente**: cada 
 **Total: 158 mutaciones detectadas.**
 
 
+### Mutaciones de M015 (25)
+
+`/tmp/mut/run14.py` sobre `gpu_sw`, `efb_copy`, `gpu` y `av`: 23 detectadas, 2 que sobreviven (C1 equivalente, N3 no distinguible con los parámetros de 11 bits; ver la sección de M015). **Acumulado: 340.**
+
 ### Mutaciones de M014 (78)
 
 `/tmp/mut/run12.py` (copias del EFB F1-F28, líneas/puntos L1-L10, z freeze Z1-Z3, precargas P1-P5) y `run13.py` (vértices y transformación V1-V15, rasterizador/TEV/mezcla/texturas R1-R20) sobre las suites `efb_copy`, `gpu_sw` y `gpu`.
@@ -294,6 +312,13 @@ Cada mutación se aplicó al fuente, se recompiló y se ejecutó la suite corres
 | Acelerador (C1-C13) | 13 | 11 | 13 detectadas |
 
 Supervivientes iniciales y prueba añadida: M3 (programa sin datos), M4 (búfer de 128 bytes), M5 (primer byte 0x80 de la identificación), M10 (interruptor de interrupción apagado), C5 (escala de ganancia 2), C9 (bit 31 tras el desbordamiento de escritura). **Total acumulado: 195 mutaciones detectadas.**
+
+## Errores encontrados durante M015
+
+- **Error real en el código (encontrado por la mutación C8):** al reescribir las copias, el cambio que hacía que la fila actual también respetara clamp_top/clamp_bottom no se aplicó (el script que lo hacía falló a mitad y lo repetí sin esa parte). Lo detectó la mutación C8 al no encontrar el texto. Se corrigió y se añadió la prueba de las filas del bloque bajo el rectángulo.
+- **Comportamientos de M014 que cambiaron por fuentes mejores** (no son errores de prueba, sino decisiones revisadas): copias de profundidad sin filtro, intensidad truncada, formatos de profundidad no válidos, lectura lineal fuera del EFB, gamma truncada. Las expectativas de M014 se actualizaron con los nuevos valores calculados a mano (listados arriba).
+- Las pruebas de M014 que esperaban paradas en la niebla, las texturas RGBA8 en TMEM, los vértices 0xFF/0xFFFF, la escala del XFB y el bit de aspecto se cambiaron porque esas funciones ya existen.
+- `orca_run` se detenía en el primer reporte del programa (el puerto de pruebas no existe fuera de las pruebas) antes de configurar la VI: se movió la configuración de la VI antes del primer reporte en `gpu_draw`.
 
 ## Errores encontrados durante M014
 

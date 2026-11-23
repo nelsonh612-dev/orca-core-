@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(orca_core VERSION 0.14.0 LANGUAGES C CXX)
+project(orca_core VERSION 0.15.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -40,6 +40,7 @@ add_library(orca_core
     src/gpu/sw/vertex.cpp
     src/gpu/sw/renderer.cpp
     src/gpu/sw/efb_copy.cpp
+    src/video/xfb.cpp
     src/hw/external_interface.cpp
     src/hw/serial_interface.cpp
     src/hw/video_interface.cpp
@@ -136,7 +137,7 @@ if(ORCA_BUILD_TESTS)
         add_custom_command(OUTPUT ${ODIR}/runtime.o COMMAND ${ORCA_PPC_CLANG} ${PPC_FLAGS} -c ${PDIR}/runtime.c -o ${ODIR}/runtime.o
                            DEPENDS ${PDIR}/runtime.c)
         set(PPC_OUTPUTS)
-        foreach(prog integer_suite float_suite hardware_suite dvd_suite av_suite exi_suite aram_suite dsp_suite gpu_suite)
+        foreach(prog integer_suite float_suite hardware_suite dvd_suite av_suite exi_suite aram_suite dsp_suite gpu_suite gpu_draw)
             add_custom_command(
                 OUTPUT ${ODIR}/${prog}.elf ${ODIR}/${prog}.dol
                 COMMAND ${ORCA_PPC_CLANG} ${PPC_FLAGS} -c ${PDIR}/${prog}.c -o ${ODIR}/${prog}.o

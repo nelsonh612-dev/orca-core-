@@ -7,6 +7,7 @@
 #include "orca/gpu/texture_decoder.hpp"
 #include "orca/hw/pixel_engine.hpp"
 #include "orca/system/system.hpp"
+#include "orca/video/xfb.hpp"
 #include "orca/memory/bus.hpp"
 #include "test_framework.hpp"
 #include "test_port.hpp"
@@ -864,6 +865,46 @@ TEST_CASE(gpu_suite_program_fifo_tokens) {
     CHECK_EQ(L[6], 0x600U);   // PE token + PE finish causes
     CHECK_EQ(L[7], 0U);       // acknowledged
     CHECK_EQ(L[8], 0x0CU);    // read idle + command idle
+}
+
+TEST_CASE(gpu_draw_program_to_xfb) {
+    // a PowerPC program draws through the FIFO, copies the EFB to an XFB and sets up the VI;
+    // the frame read back through the VI registers is decoded to RGB
+    std::ifstream in(ORCA_PROGRAMS_DIR "/gpu_draw.dol", std::ios::binary);
+    const std::vector<u8> file((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    CHECK(!file.empty());
+    system::System sys({});
+    test::TestPort port;
+    port.cpu = &sys.cpu();
+    sys.bus().map_mmio("test-port", test::TestPort::kPhysical, 0x1000, port);
+    std::string err;
+    CHECK(sys.load_executable(file, err));
+    const auto r = sys.run(200000000ULL);
+    if (r.stop != ppc::StepResult::Halted)
+        std::fprintf(stderr, "    gpu_draw stopped: %s (%s) pc=%08X dev=%s\n", ppc::to_string(r.stop),
+                     sys.cpu().last_stop().reason.c_str(), sys.cpu().last_stop().pc, r.device_error.c_str());
+    CHECK(r.stop == ppc::StepResult::Halted);
+    CHECK_EQ(port.exit_code, 0U);
+    CHECK_EQ(port.log.size(), 2U);
+    if (port.log.size() != 2U) return;
+    CHECK_EQ(port.log[0], 0x400U); // draw done reached the CPU
+    CHECK_EQ(port.log[1], 0x600DU);
+    CHECK_EQ(sys.gpu().copies(), 1U);
+    const hw::XfbField f = sys.vi().xfb_field(false);
+    CHECK_EQ(f.address, 0x00400000U); CHECK_EQ(f.width, 640U); CHECK_EQ(f.stride, 1280U); CHECK_EQ(f.height, 480U);
+    std::vector<u8> raw(static_cast<std::size_t>(f.stride) * f.height), rgba;
+    CHECK(sys.bus().dma_read(f.address, raw) == mem::BusStatus::Ok);
+    CHECK(video::decode_xfb(raw, f.width, f.height, f.stride, rgba));
+    auto px = [&](u32 x, u32 y) { const std::size_t o = (static_cast<std::size_t>(y) * 640U + x) * 4U; return std::array<u8, 3>{rgba[o], rgba[o + 1], rgba[o + 2]}; };
+    // inside the rectangle: red (255, 0, 0 after YUV and back); the triangle: green; elsewhere black
+    // (the copy happens before the clear)
+    const auto red = px(200, 100), green = px(410, 210), bg = px(10, 10), edge = px(99, 100);
+    CHECK(red[0] >= 250U && red[1] <= 3U && red[2] <= 3U);
+    CHECK(green[1] >= 250U && green[0] <= 3U && green[2] <= 3U);
+    CHECK(bg[0] == 0U && bg[1] == 0U && bg[2] == 0U);
+    CHECK(edge[1] == 0U && edge[2] <= 3U);
+    // the EFB was cleared to dark blue after the copy
+    CHECK_EQ(sys.gpu().renderer().efb().color24(200, 100), 0x000040U);
 }
 #endif
 

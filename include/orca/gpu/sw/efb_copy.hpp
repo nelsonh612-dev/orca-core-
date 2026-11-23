@@ -11,35 +11,38 @@
 //    9 half scale (2x2 box filter), 10 scale invert, 11 clear, 14 copy to XFB,
 //    15 intensity, 16 automatic conversion (intensity applies when 15 and 16
 //    are both set). Copy filter: BP 53/54, seven 6-bit weights.
-//  * TextureEncoder.cpp (software encoder): block sizes, block counts
-//    ((width >> half) >> log2(block width)) + 1, texel packing per format,
-//    6-bit expansion, box filters (6-bit sum s -> s + (s >> 6); 8-bit sum >> 2),
-//    intensity I = (4096 + 66 R + 129 G + 25 B) >> 8, depth copies
-//    (Z bytes high/mid/low play the role of R/G/B).
-//  * SWEfbInterface.cpp: vertical copy filter (weights 0-1 previous row, 2-4
-//    current row, 5-6 next row, sum >> 6 clamped to 255, alpha untouched),
-//    row clamping (clamp_top/bottom), gamma (pow(c/255, 1/gamma)*255,
-//    truncated), XFB encoding (BT.601 YUV with rounding, 1/4-1/2-1/4 chroma
-//    filter, Y + 16, UV + 128, border pixels repeated), EFB pixel layout.
+//  * TextureConversionShader.cpp + TextureCacheBase.cpp (Dolphin's hardware-backend path,
+//    the one tested against consoles for the copy filter and gamma, PR 10204 / 10466): the
+//    EFB is read as RGB8 (6-bit channels expanded; depth bytes high/mid/low as R/G/B, alpha
+//    255) with coordinates clamped to the EFB; the copy filter applies to colour AND depth:
+//    rows previous (w0+w1), current (w2+w3+w4), next (w5+w6), sum >> 6, wrapped to 9 bits
+//    when the three weights sum to 128 or more, then min(255), alpha untouched; rows are
+//    clamped to the rectangle top/bottom when clamp_top/clamp_bottom are set (else to the
+//    EFB); gamma = round(pow(c/255, 1/gamma) * 255); intensity copies replace R, G, B with
+//    Y, U, V = (66R+129G+25B+4096, -38R-74G+112B+32768, 112R-94G-18B+32768) >> 8 with .5
+//    rounded up, for any format and also from depth; block counts = ceil(texels / block).
+//  * TextureEncoder.cpp (software encoder): texel packing per format and block layout (the
+//    same as the hardware shaders), and the integer 2x2 box filter of half scale (6-bit sum
+//    s -> s + (s >> 6); 8-bit sum >> 2).
+//  * SWEfbInterface.cpp: XFB encoding (BT.601 YUV with rounding, 1/4-1/2-1/4 chroma filter,
+//    Y + 16, UV + 128, border pixel repeated); CopyRegion.h: vertical scaling by nearest
+//    row round(row * src_h / dst_h); BPStructs.cpp: lines written = 1 + height field * scale
+//    (scale = BP 4E / 256, or 256 / BP 4E with scale invert).
 //  * BPFunctions.cpp ClearScreen: alpha is not written unless the format is
 //    RGBA6_Z24; colour quantized to RGB565 and depth to 16 bits for
 //    RGB565_Z16 (Z16 -> Z24 = (z & 0xFFFF00) | (z >> 16)).
 //  * TextureDecoder.h: XFB memory layout "YUVY" (Y, U, Y, V bytes).
 //
 // Orca choices / pending hardware verification (also listed in docs/ESTADO.md):
-//  * Dolphin applies the copy filter and gamma to texture copies in its
-//    hardware backends (PR 10204, PR 10466) but its software encoder does not
-//    (Dolphin issue 14020). Orca applies them with the XFB formulas, per EFB
-//    pixel, before the box filter and before format packing; depth copies are
-//    not filtered. The exact shader (TextureConversionShader.cpp) has not been
-//    read.
-//  * Texels past the rectangle (block padding) read the EFB with linear
-//    addressing, as Dolphin's encoder does; reads past the end of the EFB give 0.
-//  * Dolphin's half-scale depth encoder orders RG8/GB8 bytes differently from
-//    its full-scale one; Orca uses the full-scale order for both.
-//  * XFB copies: the rectangle must start on an even column and have an even
-//    width, and the vertical scale must be exactly 1.0 (scaling needs
-//    CopyRegion.h, not available); otherwise the copy stops with an error.
+//  * Half scale: the hardware shaders average with the GPU's bilinear filter in float (GPU
+//    dependent); Orca uses the software encoder's integer box filter, then the vertical
+//    filter with the neighbour texels two EFB rows above/below.
+//  * XFB: Dolphin's hardware shader averages the chroma of each pixel pair instead of the
+//    1/4-1/2-1/4 filter of the software encoder (whose YUV constants are marked "determined by
+//    hardware testing"; the shader marks its rounding as unchecked); Orca keeps the software
+//    encoder. The filter and gamma are the shared ones above.
+//  * XFB copies need an even start column and width. If fewer source lines result from the
+//    scale than lines are written, the last ones repeat the nearest source row.
 #pragma once
 #include "orca/gpu/bp_memory.hpp"
 #include "orca/gpu/sw/renderer.hpp"

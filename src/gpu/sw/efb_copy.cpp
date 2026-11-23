@@ -10,7 +10,6 @@
 namespace orca::gpu::sw {
 namespace {
 
-constexpr u32 kPixels = kEfbWidth * kEfbHeight;
 
 u32 bits(u32 v, unsigned sh, unsigned n) { return (v >> sh) & ((1U << n) - 1U); }
 u32 x6(u32 v) { return ((v << 2) | (v >> 4)) & 0xFFU; }
@@ -19,99 +18,95 @@ enum Fmt : u32 { R4 = 0, R8_1 = 1, RA4 = 2, RA8 = 3, RGB565 = 4, RGB5A3 = 5, RGB
                  R8 = 8, G8 = 9, B8 = 10, RG8 = 11, GB8 = 12 };
 
 struct Rect { u32 left, top, right, bottom; };
+using Px = std::array<u32, 4>; // R, G, B, A (8-bit, or 6-bit before the box filter of RGBA6)
 
-// Seven copy filter weights from BP 53 (w0-w3) and BP 54 (w4-w6).
-std::array<u32, 7> filter_weights(const BpMemory& bp) {
+// Copy filter weights per row (TextureCacheBase.cpp GetRAMCopyFilterCoefficients):
+// previous row = w0 + w1, current = w2 + w3 + w4, next = w5 + w6.
+std::array<u32, 3> filter_rows(const BpMemory& bp) {
     const u32 lo = bp.reg(bp::COPY_FILTER0), hi = bp.reg(bp::COPY_FILTER1);
-    return {bits(lo, 0, 6), bits(lo, 6, 6), bits(lo, 12, 6), bits(lo, 18, 6),
-            bits(hi, 0, 6), bits(hi, 6, 6), bits(hi, 12, 6)};
+    return {bits(lo, 0, 6) + bits(lo, 6, 6), bits(lo, 12, 6) + bits(lo, 18, 6) + bits(hi, 0, 6),
+            bits(hi, 6, 6) + bits(hi, 12, 6)};
 }
 
 float gamma_of(u32 trigger) {
     switch (bits(trigger, 7, 2)) { case 0: return 1.0f; case 1: return 1.7f; default: return 2.2f; }
 }
 
-u32 apply_gamma(u32 c, float gamma_rcp) {
-    const float v = std::clamp(std::pow(static_cast<float>(c) / 255.0f, gamma_rcp) * 255.0f, 0.0f, 255.0f);
-    return static_cast<u32>(static_cast<u8>(v));
-}
-
-// Reads EFB pixels the way the copy hardware is modelled: colour components,
-// optional vertical filter + gamma, optional 2x2 box filter.
+// Reads the EFB as the copy unit does (TextureConversionShader.cpp SampleEFB): RGB8 values per
+// pixel (6-bit channels expanded; depth bytes high/mid/low as R/G/B with alpha 255), coordinates
+// clamped to the EFB like a clamp-to-edge sampler; the box filter of half scale; the vertical
+// copy filter on RGB with the rows clamped by clamp_top/clamp_bottom, >> 6, wrapped to 9 bits
+// when the weights sum to 128 or more, then min(255); gamma rounded.
 class PixelReader {
 public:
     PixelReader(const Efb& efb, u32 fmt, bool depth, const Rect& r, u32 trigger, const BpMemory& bp)
-        : efb_(efb), depth_(depth), six_(fmt == 1U && !depth), rect_(r) {
-        w_ = filter_weights(bp);
+        : efb_(efb), depth_(depth), six_(fmt == 1U && !depth) {
+        w_ = filter_rows(bp);
+        wrap_ = w_[0] + w_[1] + w_[2] >= 128U;
+        gamma_ = bits(trigger, 7, 2) != 0U;
         gamma_rcp_ = 1.0f / gamma_of(trigger);
-        const bool identity = w_[0] == 0U && w_[1] == 0U && w_[5] == 0U && w_[6] == 0U && w_[2] + w_[3] + w_[4] == 64U;
-        filter_ = !depth && (!identity || bits(trigger, 7, 2) != 0U);
-        clamp_top_ = (trigger & 1U) != 0U;
-        clamp_bottom_ = (trigger & 2U) != 0U;
+        top_ = (trigger & 1U) != 0U ? r.top : 0U;
+        bottom_ = ((trigger & 2U) != 0U ? r.bottom : kEfbHeight) - 1U;
     }
 
-    // RGBA8 of the texel whose top-left source pixel has linear index `lin`.
-    std::array<u32, 4> texel(u32 lin, bool half) const {
-        if (!half) {
-            const auto p = fetch(lin);
-            if (six_) return {filter_ ? p[0] : x6(p[0]), filter_ ? p[1] : x6(p[1]), filter_ ? p[2] : x6(p[2]), x6(p[3])};
-            return p;
-        }
-        std::array<u32, 4> s{};
-        for (const u32 o : {0U, 1U, kEfbWidth, kEfbWidth + 1U}) {
-            const auto p = fetch(lin + o);
-            for (unsigned i = 0; i < 4; ++i) s[i] += p[i];
-        }
-        std::array<u32, 4> out{};
-        for (unsigned i = 0; i < 4; ++i) {
-            const bool is6 = six_ && (i == 3U || !filter_);
-            out[i] = is6 ? (s[i] + (s[i] >> 6)) & 0xFFU : s[i] >> 2;
+    // Filtered RGBA8 of the output texel whose first source pixel is (x, y).
+    Px texel(u32 x, u32 y, bool half) const {
+        const u32 step = half ? 2U : 1U;
+        const Px cur = sample(x, clamp_row(static_cast<s32>(y)), clamp_row(static_cast<s32>(y) + 1), half);
+        Px prev{}, next{};
+        if (w_[0] != 0U) prev = sample(x, clamp_row(static_cast<s32>(y) - static_cast<s32>(step)),
+                                       clamp_row(static_cast<s32>(y) - 1), half);
+        if (w_[2] != 0U) next = sample(x, clamp_row(static_cast<s32>(y + step)), clamp_row(static_cast<s32>(y + step + 1U)), half);
+        Px out = cur;
+        for (unsigned i = 0; i < 3; ++i) {
+            u32 v = (prev[i] * w_[0] + cur[i] * w_[1] + next[i] * w_[2]) >> 6;
+            if (wrap_) v &= 0x1FFU;
+            v = std::min(v, 255U);
+            if (gamma_) v = static_cast<u32>(std::round(std::pow(static_cast<float>(v) / 255.0f, gamma_rcp_) * 255.0f));
+            out[i] = v;
         }
         return out;
     }
 
 private:
-    u32 raw(u32 lin) const {
-        if (lin >= kPixels) return 0U;
-        const u32 x = lin % kEfbWidth, y = lin / kEfbWidth;
-        return depth_ ? efb_.depth24(x, y) : efb_.color24(x, y);
-    }
-    // Components: 6-bit for RGBA6 (alpha always 6-bit; RGB 8-bit once filtered),
-    // bytes high/mid/low otherwise with alpha 255.
-    std::array<u32, 4> comps(u32 c) const {
+    u32 clamp_row(s32 y) const { return static_cast<u32>(std::clamp(y, static_cast<s32>(top_), static_cast<s32>(bottom_))); }
+    Px raw(u32 x, u32 y) const {
+        x = std::min(x, kEfbWidth - 1U);
+        y = std::min(y, kEfbHeight - 1U);
+        const u32 c = depth_ ? efb_.depth24(x, y) : efb_.color24(x, y);
         if (six_) return {bits(c, 18, 6), bits(c, 12, 6), bits(c, 6, 6), bits(c, 0, 6)};
         return {bits(c, 16, 8), bits(c, 8, 8), bits(c, 0, 8), 255U};
     }
-    std::array<u32, 4> fetch(u32 lin) const {
-        auto p = comps(raw(lin));
-        if (!filter_) return p;
-        if (six_) for (unsigned i = 0; i < 3; ++i) p[i] = x6(p[i]);
-        if (lin >= kPixels) return p;
-        const s32 y = static_cast<s32>(lin / kEfbWidth), x = static_cast<s32>(lin % kEfbWidth);
-        const s32 yp = std::max(clamp_top_ ? static_cast<s32>(rect_.top) : 0, y - 1);
-        const s32 yn = std::min((clamp_bottom_ ? static_cast<s32>(rect_.bottom) : static_cast<s32>(kEfbHeight)) - 1, y + 1);
-        auto row = [&](s32 yy) {
-            auto q = comps(efb_.color24(static_cast<u32>(x), static_cast<u32>(yy)));
-            if (six_) for (unsigned i = 0; i < 3; ++i) q[i] = x6(q[i]);
-            return q;
-        };
-        const auto a = row(yp), c = row(yn);
-        for (unsigned i = 0; i < 3; ++i) {
-            const u32 sum = a[i] * (w_[0] + w_[1]) + p[i] * (w_[2] + w_[3] + w_[4]) + c[i] * (w_[5] + w_[6]);
-            p[i] = apply_gamma(std::min(255U, sum >> 6), gamma_rcp_);
+    // One texel before the vertical filter: a pixel, or (half scale) the 2x2 box of the pixels at
+    // columns x, x+1 and rows y0, y1 (TextureEncoder.cpp: 6-bit sum s -> s + (s >> 6); 8-bit sum >> 2).
+    Px sample(u32 x, u32 y0, u32 y1, bool half) const {
+        if (!half) {
+            const Px p = raw(x, y0);
+            return six_ ? Px{x6(p[0]), x6(p[1]), x6(p[2]), x6(p[3])} : p;
         }
-        return p;
+        Px sum{};
+        for (const Px& p : {raw(x, y0), raw(x + 1U, y0), raw(x, y1), raw(x + 1U, y1)})
+            for (unsigned i = 0; i < 4; ++i) sum[i] += p[i];
+        Px out{};
+        for (unsigned i = 0; i < 4; ++i) out[i] = six_ ? (sum[i] + (sum[i] >> 6)) & 0xFFU : sum[i] >> 2;
+        return out;
     }
 
     const Efb& efb_;
     bool depth_, six_;
-    Rect rect_;
-    std::array<u32, 7> w_{};
+    std::array<u32, 3> w_{};
+    bool wrap_{false}, gamma_{false};
     float gamma_rcp_{1.0f};
-    bool filter_{false}, clamp_top_{false}, clamp_bottom_{false};
+    u32 top_{0}, bottom_{0};
 };
 
-u32 intensity(u32 r, u32 g, u32 b) { return ((4096U + 66U * r + 129U * g + 25U * b) >> 8) & 0xFFU; }
+// YUV of an RGB8 value, divided by 256 with .5 rounded up (TextureConversionShader.cpp).
+Px yuv_of(const Px& c) {
+    auto rnd = [](s32 v) { return static_cast<u32>((v >> 8) + ((v >> 7) & 1)); };
+    const s32 r = static_cast<s32>(c[0]), g = static_cast<s32>(c[1]), b = static_cast<s32>(c[2]);
+    return {rnd(66 * r + 129 * g + 25 * b + 16 * 256) & 0xFFU, rnd(-38 * r - 74 * g + 112 * b + 128 * 256) & 0xFFU,
+            rnd(112 * r - 94 * g - 18 * b + 128 * 256) & 0xFFU, c[3]};
+}
 
 bool texture_copy(u32 trigger, const BpMemory& bp, const Efb& efb, mem::Bus& bus, u32 phys_mask, const Rect& r,
                   u32 fmt, CopyResult& res, std::string& error) {
@@ -120,8 +115,8 @@ bool texture_copy(u32 trigger, const BpMemory& bp, const Efb& efb, mem::Bus& bus
     const u32 cf = tf / 2U + (tf & 1U) * 8U;
     const bool depth = fmt == 3U;
     const bool half = (trigger & 0x200U) != 0U;
-    const bool yuv = !depth && (trigger & 0x8000U) != 0U && (trigger & 0x10000U) != 0U;
-    if (cf > GB8 || (depth && (cf == RA4 || cf == RA8 || cf == RGB565 || cf == RGB5A3 || cf == A8))) {
+    const bool yuv = (trigger & 0x8000U) != 0U && (trigger & 0x10000U) != 0U;
+    if (cf > GB8) {
         std::snprintf(b, sizeof b, "EFB copy format %u from %s is not a valid copy", cf, depth ? "depth" : "colour");
         error = b;
         return false;
@@ -131,8 +126,9 @@ bool texture_copy(u32 trigger, const BpMemory& bp, const Efb& efb, mem::Bus& bus
     else if (cf == R8_1 || cf == R8 || cf == RA4 || cf == A8 || cf == G8 || cf == B8) bw_log = 3;
     const u32 bw = 1U << bw_log, bh = 1U << bh_log;
     const u32 block_bytes = cf == RGBA8 ? 64U : 32U;
-    const u32 wx = (r.right - r.left - 1U) >> (half ? 1U : 0U), wy = (r.bottom - r.top - 1U) >> (half ? 1U : 0U);
-    const u32 bx = (wx >> bw_log) + 1U, by = (wy >> bh_log) + 1U;
+    // size in texels and whole blocks (TextureCacheBase.cpp ResolveFramebufferCopyData)
+    const u32 tw = (r.right - r.left) >> (half ? 1U : 0U), th = (r.bottom - r.top) >> (half ? 1U : 0U);
+    const u32 bx = (tw + bw - 1U) >> bw_log, by = (th + bh - 1U) >> bh_log;
     const u32 dest = (bp.reg(bp::EFB_ADDR) << 5) & phys_mask, stride = bp.reg(bp::EFB_STRIDE) << 5;
     const u32 step = half ? 2U : 1U;
     const PixelReader rd(efb, fmt, depth, r, trigger, bp);
@@ -145,10 +141,10 @@ bool texture_copy(u32 trigger, const BpMemory& bp, const Efb& efb, mem::Bus& bus
             for (u32 t = 0; t < bh; ++t) {
                 for (u32 s = 0; s < bw; ++s) {
                     const u32 px = sb * bw + s, py = tb * bh + t;
-                    const u32 lin = (r.top + py * step) * kEfbWidth + r.left + px * step;
-                    const auto c = rd.texel(lin, half);
+                    const Px tv = rd.texel(r.left + px * step, r.top + py * step, half);
+                    const Px c = yuv ? yuv_of(tv) : tv; // the YUV conversion replaces R, G, B
                     const u32 i = t * bw + s;
-                    const u32 lum = yuv ? intensity(c[0], c[1], c[2]) : c[0];
+                    const u32 lum = c[0];
                     auto put16 = [&](u32 v) { blk[2 * i] = static_cast<u8>(v >> 8); blk[2 * i + 1] = static_cast<u8>(v); };
                     switch (cf) {
                     case R4:
@@ -192,68 +188,58 @@ bool texture_copy(u32 trigger, const BpMemory& bp, const Efb& efb, mem::Bus& bus
     return true;
 }
 
-struct Yuv { s32 y, u, v; };
-
-Yuv to_yuv(u32 r, u32 g, u32 b) {
-    const u32 y = (66U * r + 129U * g + 25U * b) & 0xFFFFU;
-    const s32 u = static_cast<s16>(-38 * static_cast<s32>(r) - 74 * static_cast<s32>(g) + 112 * static_cast<s32>(b));
-    const s32 v = static_cast<s16>(112 * static_cast<s32>(r) - 94 * static_cast<s32>(g) - 18 * static_cast<s32>(b));
-    auto rnd = [](s32 x) { return (x >> 8) + ((x >> 7) & 1); };
-    return {static_cast<s32>(static_cast<u8>(rnd(static_cast<s32>(y)))), static_cast<s8>(rnd(u)), static_cast<s8>(rnd(v))};
-}
-
 bool xfb_copy(u32 trigger, const BpMemory& bp, const Efb& efb, mem::Bus& bus, u32 phys_mask, const Rect& r, u32 fmt,
               CopyResult& res, std::string& error) {
     char b[160];
     const u32 ys_reg = bp.reg(bp::COPY_YSCALE);
     const bool invert = (trigger & 0x400U) != 0U;
     if (invert && ys_reg == 0U) { error = "XFB copy with scale invert and a y scale of 0"; return false; }
+    if (!invert && ys_reg == 0U) { error = "XFB copy with a y scale of 0"; return false; }
     const float ys = invert ? 256.0f / static_cast<float>(ys_reg) : static_cast<float>(ys_reg) / 256.0f;
-    if (ys != 1.0f) {
-        std::snprintf(b, sizeof b, "XFB copy with vertical scale %g (BP 4E = %06X) is not implemented yet", static_cast<double>(ys), ys_reg);
-        error = b;
-        return false;
-    }
     if ((r.left & 1U) != 0U || ((r.right - r.left) & 1U) != 0U) {
         std::snprintf(b, sizeof b, "XFB copy from an odd column or with an odd width (%u..%u) is not handled", r.left, r.right);
         error = b;
         return false;
     }
-    const auto w = filter_weights(bp);
-    const float gamma_rcp = 1.0f / gamma_of(trigger);
-    const bool ct = (trigger & 1U) != 0U, cb = (trigger & 2U) != 0U;
-    const u32 width = r.right - r.left;
+    const u32 width = r.right - r.left, src_h = r.bottom - r.top;
+    // BPStructs.cpp: lines written = 1 + (BP 4A height field) * scale; SWEfbInterface.cpp encodes
+    // src_h * scale rows with CopyRegion.h (nearest row: round(row * src_h / dst_h))
+    const u32 lines = static_cast<u32>(1.0f + static_cast<float>(bits(bp.reg(bp::EFB_WH), 10, 10)) * ys);
+    const u32 dst_h = static_cast<u32>(static_cast<float>(src_h) * ys);
+    if (dst_h == 0U) { error = "XFB copy scaled to 0 lines"; return false; }
+    const double ratio = static_cast<double>(src_h) / static_cast<double>(dst_h);
     const u32 dest = (bp.reg(bp::EFB_ADDR) << 5) & phys_mask, stride = bp.reg(bp::EFB_STRIDE) << 5;
-    std::vector<Yuv> line(width + 1U);
-    std::vector<u8> out(static_cast<std::size_t>(width) * 2U);
-    auto color = [&](u32 x, u32 y) {
-        u8 c[4];
-        Renderer::efb_color_rgba(efb.color24(x, y), fmt == 1U ? 1U : 0U, c);
-        return std::array<u32, 3>{c[0], c[1], c[2]};
-    };
-    for (u32 y = r.top; y < r.bottom; ++y) {
-        const u32 yp = std::max(ct ? r.top : 0U, y == 0U ? 0U : y - 1U);
-        const u32 yn = std::min((cb ? r.bottom : kEfbHeight) - 1U, y + 1U);
-        for (u32 x = r.left, i = 1; x < r.right; ++x, ++i) {
-            const auto a = color(x, yp), c = color(x, y), n = color(x, yn);
-            std::array<u32, 3> f{};
-            for (unsigned k = 0; k < 3; ++k) {
-                const u32 sum = a[k] * (w[0] + w[1]) + c[k] * (w[2] + w[3] + w[4]) + n[k] * (w[5] + w[6]);
-                f[k] = apply_gamma(std::min(255U, sum >> 6), gamma_rcp);
-            }
-            line[i] = to_yuv(f[0], f[1], f[2]);
+    const PixelReader rd(efb, fmt, false, r, trigger, bp);
+    // encode every source row once
+    std::vector<std::vector<u8>> rows(src_h, std::vector<u8>(static_cast<std::size_t>(width) * 2U));
+    std::vector<Px> line(width + 1U);
+    for (u32 y = 0; y < src_h; ++y) {
+        for (u32 x = 0; x < width; ++x) {
+            // BT.601 with rounding (SWEfbInterface.cpp ConvertColorToYUV): Y, U, V before the offsets
+            const Px c = rd.texel(r.left + x, r.top + y, false);
+            const s32 cr = static_cast<s32>(c[0]), cg = static_cast<s32>(c[1]), cb = static_cast<s32>(c[2]);
+            const s32 yy = (66 * cr + 129 * cg + 25 * cb) & 0xFFFF;
+            const s32 uu = static_cast<s16>(-38 * cr - 74 * cg + 112 * cb), vv = static_cast<s16>(112 * cr - 94 * cg - 18 * cb);
+            auto rnd = [](s32 v) { return (v >> 8) + ((v >> 7) & 1); };
+            line[x + 1U] = {static_cast<u32>(static_cast<u8>(rnd(yy))), static_cast<u32>(static_cast<s8>(rnd(uu))),
+                            static_cast<u32>(static_cast<s8>(rnd(vv))), 0U};
         }
         line[0] = line[1]; // the border repeats the first pixel (pairs never read past the last one)
+        auto sv = [&](u32 i, unsigned k) { return static_cast<s32>(static_cast<s8>(static_cast<u8>(line[i][k]))); };
+        std::vector<u8>& out = rows[y];
         for (u32 i = 1; i < width + 1U; i += 2) {
             const std::size_t o = static_cast<std::size_t>(i - 1U) * 2U;
-            out[o] = static_cast<u8>(line[i].y + 16);
-            out[o + 1] = static_cast<u8>(128 + ((line[i - 1].u + (line[i].u * 2) + line[i + 1].u) >> 2));
-            out[o + 2] = static_cast<u8>(line[i + 1].y + 16);
-            out[o + 3] = static_cast<u8>(128 + ((line[i - 1].v + (line[i].v * 2) + line[i + 1].v) >> 2));
+            out[o] = static_cast<u8>(line[i][0] + 16U);
+            out[o + 1] = static_cast<u8>(128 + ((sv(i - 1U, 1) + sv(i, 1) * 2 + sv(i + 1U, 1)) >> 2));
+            out[o + 2] = static_cast<u8>(line[i + 1U][0] + 16U);
+            out[o + 3] = static_cast<u8>(128 + ((sv(i - 1U, 2) + sv(i, 2) * 2 + sv(i + 1U, 2)) >> 2));
         }
-        const u32 addr = (dest + (y - r.top) * stride) & phys_mask;
-        if (bus.dma_write(addr, out) != mem::BusStatus::Ok) {
-            std::snprintf(b, sizeof b, "XFB copy writes %zu bytes at %08X outside RAM", out.size(), addr);
+    }
+    for (u32 y = 0; y < lines; ++y) {
+        const u32 src_y = std::min(src_h - 1U, static_cast<u32>(std::round(static_cast<double>(y) * ratio)));
+        const u32 addr = (dest + y * stride) & phys_mask;
+        if (bus.dma_write(addr, rows[src_y]) != mem::BusStatus::Ok) {
+            std::snprintf(b, sizeof b, "XFB copy writes %u bytes at %08X outside RAM", width * 2U, addr);
             error = b;
             return false;
         }
@@ -263,8 +249,8 @@ bool xfb_copy(u32 trigger, const BpMemory& bp, const Efb& efb, mem::Bus& bus, u3
     res.address = dest;
     res.stride = stride;
     res.width = width;
-    res.height = r.bottom - r.top;
-    res.bytes = static_cast<u32>(out.size()) * res.height;
+    res.height = lines;
+    res.bytes = width * 2U * lines;
     return true;
 }
 

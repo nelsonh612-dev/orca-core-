@@ -4,6 +4,7 @@
 #include "orca/gpu/sw/efb_copy.hpp"
 #include "orca/gpu/gpu.hpp"
 #include "orca/hw/pixel_engine.hpp"
+#include "orca/video/xfb.hpp"
 #include "test_framework.hpp"
 
 #include <array>
@@ -110,10 +111,10 @@ TEST_CASE(efb_copy_intensity_r4_and_layout) {
     CHECK_EQ(t.ram(0), 100U);
     CHECK(t.copy(trig(1, 0x8000U)));              // intensity without auto conversion: still R
     CHECK_EQ(t.ram(0), 100U);
-    CHECK(t.copy(trig(1, 0x18000U)));             // I8 = (4096 + 6600 + 19350 + 5000) >> 8
-    CHECK_EQ(t.ram(0), 136U);
-    CHECK(t.copy(trig(3, 0x18000U)));             // G8 ignores intensity
-    CHECK_EQ(t.ram(0), 150U);
+    CHECK(t.copy(trig(1, 0x18000U)));             // I8: 4096 + 6600 + 19350 + 5000 = 35046 -> 136 + round bit 1
+    CHECK_EQ(t.ram(0), 137U);
+    CHECK(t.copy(trig(3, 0x18000U)));             // the conversion replaces G with U: 40268 -> 157
+    CHECK_EQ(t.ram(0), 157U);
     // R8 block is 8x4: texel (1,1) is byte 9, (7,3) byte 31
     t.efb.set_color24(1, 1, 0x110000U);
     t.efb.set_color24(7, 3, 0x770000U);
@@ -171,6 +172,11 @@ TEST_CASE(efb_copy_half_scale) {
     CHECK(t.copy(trig(5, 0x200U)));
     CHECK_EQ(t.ram(8), 0x20U);
     CHECK_EQ(t.ram(5), 0x40U);
+    // block count from the halved size: 17 wide -> 8 texels -> one R8 block (not two)
+    t.rect(0, 0, 17, 8);
+    CHECK(t.copy(trig(1, 0x200U)));
+    CHECK_EQ(t.res.width, 8U); CHECK_EQ(t.res.bytes, 32U);
+    t.rect(0, 0, 16, 8);
     // RGB5A3 boundary: 6-bit alphas 55, 55, 55, 56 -> 221 + 3 = 224 -> 1:5:5:5
     t.format(1);
     t.rect(0, 0, 8, 8);
@@ -199,14 +205,15 @@ TEST_CASE(efb_copy_depth) {
     t.rect(0, 0, 4, 4);
     CHECK(t.copy(trig(12)));
     CHECK_EQ(t.ram(0), 0xFFU); CHECK_EQ(t.ram(1), 0x12U); CHECK_EQ(t.ram(32), 0x34U); CHECK_EQ(t.ram(33), 0x56U);
-    CHECK(t.copy(trig(1, 0x18000U))); CHECK_EQ(t.ram(0), 0x12U); // intensity ignored for depth
+    CHECK(t.copy(trig(1, 0x18000U))); CHECK_EQ(t.ram(0), 55U); // intensity of the Z bytes: 14142 -> 55
     CHECK(t.copy(trig(3))); CHECK_EQ(t.ram(0), 0x34U);
     CHECK(t.copy(trig(5))); CHECK_EQ(t.ram(0), 0x56U);
     CHECK(t.copy(trig(7))); CHECK_EQ(t.ram(0), 0x34U); CHECK_EQ(t.ram(1), 0x12U);
     CHECK(t.copy(trig(9))); CHECK_EQ(t.ram(0), 0x56U); CHECK_EQ(t.ram(1), 0x34U);
     CHECK(t.copy(trig(0))); CHECK_EQ(t.ram(0), 0x10U); // R4: high nibble of 0x12, texel 1 is Z 0
-    CHECK(!t.copy(trig(8)));  // RGB565 from depth is not a copy
-    CHECK(t.err.find("format 4 from depth") != std::string::npos);
+    CHECK(t.copy(trig(8)));   // RGB565 of the Z bytes: 1000 | 01A0 | 000A
+    CHECK_EQ(t.ram(0), 0x11U); CHECK_EQ(t.ram(1), 0xAAU);
+    CHECK(t.copy(trig(14))); CHECK_EQ(t.ram(0), 0xFFU); // A8: depth alpha is 255
     t.format(0);
     CHECK(!t.copy(trig(11)));  // real format 13
     CHECK(t.err.find("format 13") != std::string::npos);
@@ -223,23 +230,23 @@ TEST_CASE(efb_copy_rectangles_and_padding) {
     t.rect(0, 0, 3, 1);
     CHECK(t.copy(trig(12)));
     CHECK_EQ(t.ram(7), 0x42U);
-    // linear addressing: past column 639 is the start of the next row
-    t.efb.set_color24(0, 1, 0x330000U);
+    // past column 639 the last column repeats (clamp-to-edge sampling)
+    t.efb.set_color24(639, 0, 0x330000U);
     t.efb.set_color24(638, 0, 0x220000U);
     t.rect(638, 0, 2, 1);
     CHECK(t.copy(trig(12)));
-    CHECK_EQ(t.ram(1), 0x22U); CHECK_EQ(t.ram(5), 0x33U);
+    CHECK_EQ(t.ram(1), 0x22U); CHECK_EQ(t.ram(3), 0x33U); CHECK_EQ(t.ram(5), 0x33U); CHECK_EQ(t.ram(7), 0x33U);
     // oversized rectangle is clamped to the EFB
     t.rect(636, 0, 8, 4);
     CHECK(t.copy(trig(12)));
     CHECK_EQ(t.res.width, 4U);
     CHECK_EQ(t.res.bytes, 64U);
-    // reads past the end of the EFB give 0
+    // past the last row the last row repeats
     t.rect(636, 527, 4, 1);
     t.efb.set_color24(636, 527, 0x010203U);
     CHECK(t.copy(trig(12)));
     CHECK_EQ(t.ram(1), 0x01U);
-    CHECK_EQ(t.ram(9), 0x00U); CHECK_EQ(t.ram(41), 0x00U); // texel (0,1): R, B
+    CHECK_EQ(t.ram(9), 0x01U); CHECK_EQ(t.ram(41), 0x03U); // texel (0,1): R, B
     // rectangle starting outside: nothing at all, not even the clear
     t.zero_ram();
     t.bp.load(bp::BLENDMODE, 8);
@@ -340,11 +347,35 @@ TEST_CASE(efb_copy_filter_and_gamma) {
     CHECK_EQ(t.ram(0), 186U);
     CHECK(t.copy(trig(1, 3U << 7)));             // 3 behaves as 2.2
     CHECK_EQ(t.ram(0), 186U);
-    // depth copies are not filtered
+    // gamma rounds to nearest: 3 -> 33.85 -> 34
+    t.efb.set_color24(0, 2, 3U << 16);
+    CHECK(t.copy(trig(1, 2U << 7)));
+    CHECK_EQ(t.ram(0), 34U);
+    // weights summing to 128 or more wrap at 512 before the clamp: 189 * 200 >> 6 = 590 -> 78
+    t.bp.load(bp::COPY_FILTER0, (63U << 12) | (63U << 18));
+    t.bp.load(bp::COPY_FILTER1, 63U);
+    t.efb.set_color24(0, 2, 200U << 16);
+    CHECK(t.copy(trig(1)));
+    CHECK_EQ(t.ram(0), 78U);
+    t.efb.set_color24(0, 2, 100U << 16);   // 295 -> clamped to 255
+    CHECK(t.copy(trig(1)));
+    CHECK_EQ(t.ram(0), 255U);
+    t.bp.load(bp::COPY_FILTER0, (21U << 12) | (22U << 18));
+    t.bp.load(bp::COPY_FILTER1, 21U);
+    // rows of the block below the rectangle: without clamp they come from the EFB, with
+    // clamp bottom they repeat the last row of the rectangle (rect row 5, R8 block of 4 rows)
+    t.efb.set_color24(0, 5, 0x500000U); t.efb.set_color24(0, 6, 0x600000U);
+    t.rect(0, 5, 8, 1);
+    CHECK(t.copy(trig(1)));
+    CHECK_EQ(t.ram(0), 0x50U); CHECK_EQ(t.ram(8), 0x60U);
+    CHECK(t.copy(trig(1, 2U)));
+    CHECK_EQ(t.ram(0), 0x50U); CHECK_EQ(t.ram(8), 0x50U);
+    t.rect(0, 2, 1, 1);
+    // depth copies go through the filter and the gamma too
     t.format(3);
     t.efb.set_depth24(0, 2, 0x800000U);
     CHECK(t.copy(trig(1, 2U << 7)));
-    CHECK_EQ(t.ram(0), 0x80U);
+    CHECK_EQ(t.ram(0), 186U);
 }
 
 TEST_CASE(efb_copy_xfb) {
@@ -393,16 +424,63 @@ TEST_CASE(efb_copy_xfb) {
     t.rect(1, 0, 2, 1);
     CHECK(!t.copy(0x4000U));
     CHECK(t.err.find("odd column") != std::string::npos);
+    // vertical scale (CopyRegion.h, nearest row = round(row * src_h / dst_h)); rows white,
+    // black, red, white
+    const u32 rowc[4] = {0xFFFFFFU, 0x000000U, 0xFF0000U, 0xFFFFFFU};
+    for (u32 y = 0; y < 4; ++y) { t.efb.set_color24(0, y, rowc[y]); t.efb.set_color24(1, y, rowc[y]); }
+    t.zero_ram();
+    t.rect(0, 0, 2, 4);
+    t.bp.load(bp::COPY_YSCALE, 0x80);  // 0.5: lines 1 + 3 * 0.5 = 2; rows 0 and round(1 * 2) = 2
+    CHECK(t.copy(0x4000U));
+    CHECK_EQ(t.res.height, 2U);
+    CHECK_EQ(t.ram(0), 235U); CHECK_EQ(t.ram(1280), 82U); CHECK_EQ(t.ram(2560), 0xEEU);
+    t.zero_ram();
+    t.rect(0, 0, 2, 2);
+    CHECK(t.copy(0x4000U | 0x400U));   // 256/128 = 2: lines 1 + 1 * 2 = 3; dst 4: rows 0, round(0.5) = 1, 1
+    CHECK_EQ(t.res.height, 3U);
+    CHECK_EQ(t.ram(0), 235U); CHECK_EQ(t.ram(1280), 16U); CHECK_EQ(t.ram(2560), 16U); CHECK_EQ(t.ram(3840), 0xEEU);
     t.rect(0, 0, 2, 1);
     t.bp.load(bp::COPY_YSCALE, 0x80);
-    CHECK(!t.copy(0x4000U));
-    CHECK(t.err.find("vertical scale") != std::string::npos);
-    CHECK(t.copy(0x4000U | 0x400U) == false); // 256/128 = 2
+    CHECK(!t.copy(0x4000U));           // one row at 0.5 -> 0 rows
+    CHECK(t.err.find("scaled to 0 lines") != std::string::npos);
     t.bp.load(bp::COPY_YSCALE, 0);
+    CHECK(!t.copy(0x4000U));
+    CHECK(t.err.find("y scale of 0") != std::string::npos);
     CHECK(!t.copy(0x4000U | 0x400U));
     CHECK(t.err.find("y scale of 0") != std::string::npos);
     t.bp.load(bp::COPY_YSCALE, 0x100);
     CHECK(t.copy(0x4000U | 0x400U)); // 256/256 = 1
+}
+
+TEST_CASE(xfb_to_rgba) {
+    // white (235,128,235,128), red (82,90,82,240), black (16,128,16,128) on one line, then a
+    // second line 12 bytes later
+    const std::vector<u8> x = {235, 128, 235, 128, 82, 90, 82, 240, 16, 128, 16, 128, 82, 90, 16, 240};
+    std::vector<u8> rgba;
+    CHECK(orca::video::decode_xfb(x, 6, 1, 12, rgba));
+    CHECK_EQ(rgba.size(), 24U);
+    // white: 1.164 * 219 = 254.9 -> 254
+    CHECK_EQ(rgba[0], 254U); CHECK_EQ(rgba[1], 254U); CHECK_EQ(rgba[2], 254U); CHECK_EQ(rgba[3], 255U);
+    // red: R 76.8 + 178.8 = 255.6 -> 255; G 76.8 + 14.9 - 91.1 = 0.7 -> 0; B 76.8 - 76.6 = 0.2 -> 0
+    CHECK_EQ(rgba[8], 255U); CHECK_EQ(rgba[9], 0U); CHECK_EQ(rgba[10], 0U);
+    CHECK_EQ(rgba[12], 255U); CHECK_EQ(rgba[16], 0U); CHECK_EQ(rgba[17], 0U);
+    // two lines: the second starts at byte 12 (Y 82, U 90, Y 16, V 240): second pixel Y 16 with
+    // red chroma: R = 178.75 -> 178, G = 14.9 - 91.1 < 0 -> 0, B = -76.6 -> 0
+    CHECK(orca::video::decode_xfb(x, 2, 2, 12, rgba));
+    CHECK_EQ(rgba[8], 255U); CHECK_EQ(rgba[12], 178U); CHECK_EQ(rgba[13], 0U); CHECK_EQ(rgba[14], 0U);
+    CHECK(!orca::video::decode_xfb(x, 6, 2, 12, rgba)); // too short
+    CHECK(!orca::video::decode_xfb(x, 3, 1, 12, rgba)); // odd width
+    // round trip through an XFB copy: a grey EFB comes back within 1 of the original
+    Rig t;
+    t.format(0);
+    t.bp.load(bp::EFB_STRIDE, 640U * 2U >> 5);
+    for (u32 x0 = 0; x0 < 4; ++x0) t.efb.set_color24(x0, 0, 0x808080U);
+    t.rect(0, 0, 4, 1);
+    CHECK(t.copy(0x4000U));
+    std::array<u8, 8> mem{};
+    CHECK(t.bus.dma_read(kDest, mem) == mem::BusStatus::Ok);
+    CHECK(orca::video::decode_xfb(mem, 4, 1, 8, rgba));
+    for (unsigned c = 0; c < 3; ++c) CHECK(rgba[c] >= 127U && rgba[c] <= 129U);
 }
 
 TEST_CASE(efb_copy_through_gpu_commands) {

@@ -159,6 +159,14 @@ TEST_CASE(vi_field_listener_and_xfb) {
     CHECK_EQ(t.vi.xfb_address(true), 0x00300500U);
     t.w32(vi::TFBL, 0x00123400U);
     CHECK_EQ(t.vi.xfb_address(false), 0x00123400U);
+    // the bottom field uses the page-offset bit of TFBL (Dolphin: "POFF for XFB bottom is
+    // connected to POFF for XFB top"): TFBL without it -> BFBL is a byte address
+    CHECK_EQ(t.vi.xfb_address(true), 0x00300500U >> 5);
+    // scan-out description: PICCONF STD 40 (x 32 = 1280 bytes), WPL 40 (x 16 = 640 pixels), ACV 240
+    t.w16(vi::PICCONF, static_cast<u16>((40U << 8) | 40U));
+    t.w16(vi::VTR, static_cast<u16>((240U << 4) | 6U));
+    const hw::XfbField f = t.vi.xfb_field(false);
+    CHECK_EQ(f.address, 0x00123400U); CHECK_EQ(f.width, 640U); CHECK_EQ(f.stride, 1280U); CHECK_EQ(f.height, 240U);
 }
 
 TEST_CASE(vi_clock_select_and_disable) {

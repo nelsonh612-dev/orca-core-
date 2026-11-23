@@ -3,6 +3,8 @@
 #include "orca/gpu/texture_decoder.hpp"
 
 #include <algorithm>
+#include <bit>
+#include <limits>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -85,12 +87,6 @@ bool Renderer::draw(Primitive prim, std::span<const OutputVertex> v, const BpMem
         char b[64];
         std::snprintf(b, sizeof b, "EFB pixel format %u is not implemented yet", fmt);
         error = b;
-        return false;
-    }
-    if (bits(bp.reg(bp::FOG_PARAM3), 21, 3) != 0U) { error = "fog is not implemented yet"; return false; }
-    if ((prim == Primitive::Lines || prim == Primitive::LineStrip || prim == Primitive::Points) &&
-        bits(bp.reg(bp::LINE_PT_WIDTH), 22, 1) != 0U) {
-        error = "lines and points with the aspect ratio adjustment (BP 22 bit 22) are not implemented yet";
         return false;
     }
     auto conv = [&](const OutputVertex& o) {
@@ -656,6 +652,63 @@ bool Renderer::pixel(s32 x, s32 y, float zf, const std::array<std::array<float, 
             z = static_cast<s32>(zt & 0xFFFFFFU);
         }
     }
+    // fog (Tev.cpp, with A and C decoded as in BPMemory.cpp)
+    {
+        const u32 p3 = bp.reg(bp::FOG_PARAM3), p0 = bp.reg(bp::FOG_PARAM0);
+        const u32 fsel = bits(p3, 21, 3);
+        if (fsel != 0U) {
+            auto f24 = [](u32 v) { // 11-bit mantissa, 8-bit exponent, sign at bit 19
+                return std::bit_cast<float>((bits(v, 19, 1) << 31) | (bits(v, 11, 8) << 23) | (bits(v, 0, 11) << 12));
+            };
+            float fa = f24(p0), fc = f24(p3);
+            if (bits(p0, 11, 8) == 255U && bits(p3, 11, 8) == 255U) { // both inf/NaN: hardware table
+                fa = 0.0f;
+                fc = (bits(p0, 19, 1) == 0U && bits(p3, 19, 1) == 0U) ? -std::numeric_limits<float>::infinity()
+                                                                       : std::numeric_limits<float>::infinity();
+            }
+            float ze;
+            if (bits(p3, 20, 1) == 0U) { // perspective: A / (B_MAG - (z >> B_SHF))
+                const u32 shift = bp.reg(bp::FOG_B_EXPONENT);
+                if (shift >= 32U) { std::snprintf(eb, sizeof eb, "fog b shift %u is not handled", shift); err_ = eb; return false; }
+                const s32 denom = static_cast<s32>(bp.reg(bp::FOG_B_MAGNITUDE)) - (z >> shift);
+                if (denom == 0) { err_ = "fog with a zero denominator (B_MAG = z >> B_SHF) is not handled"; return false; }
+                ze = (fa * 16777215.0f) / static_cast<float>(denom);
+            } else {
+                ze = fa * (static_cast<float>(z) / 16777215.0f);
+            }
+            const u32 range = bp.reg(bp::FOG_RANGE);
+            if (bits(range, 10, 1) != 0U) {
+                const float offset = static_cast<float>(x - (static_cast<s32>(bits(range, 0, 10)) - 342)) / xf_->as_float(xf::VIEWPORT);
+                float fi = 9.0f - std::fabs(offset) * 9.0f;
+                fi = std::clamp(fi, 0.0f, 9.0f);
+                const int lo = static_cast<int>(fi), hi = lo + 1;
+                // K registers 0xE9-0xED, two 12-bit values each (low half first); index 10 reads
+                // the next register (0xEE) with weight 0, as Dolphin's array layout does
+                auto kval = [&](int i) {
+                    const u32 r = bp.reg(static_cast<u8>(0xE9 + i / 2));
+                    return static_cast<float>((i % 2) != 0 ? bits(r, 0, 12) : bits(r, 12, 12)) / 256.0f * 4.0f;
+                };
+                const float factor = static_cast<float>(hi) - fi;
+                const float k = kval(lo) * factor + kval(hi) * (1.0f - factor);
+                ze *= std::sqrt(offset * offset + k * k) / k;
+            }
+            ze -= fc;
+            float fog = std::clamp(ze, 0.0f, 1.0f);
+            switch (fsel) {
+            case 4: fog = 1.0f - std::pow(2.0f, -8.0f * fog); break;
+            case 5: fog = 1.0f - std::pow(2.0f, -8.0f * fog * fog); break;
+            case 6: fog = 1.0f - fog; fog = std::pow(2.0f, -8.0f * fog); break;
+            case 7: fog = 1.0f - fog; fog = std::pow(2.0f, -8.0f * fog * fog); break;
+            default: break; // 2 linear (1 and 3 behave as linear)
+            }
+            if (std::isnan(fog)) { err_ = "fog factor is NaN (range adjustment with k = 0?)"; return false; }
+            const u32 fi8 = static_cast<u32>(fog * 256.0f), inv = 256U - fi8;
+            const u32 fcol = bp.reg(bp::FOG_COLOR);
+            out[0] = static_cast<u8>((out[0] * inv + fi8 * bits(fcol, 16, 8)) >> 8);
+            out[1] = static_cast<u8>((out[1] * inv + fi8 * bits(fcol, 8, 8)) >> 8);
+            out[2] = static_cast<u8>((out[2] * inv + fi8 * bits(fcol, 0, 8)) >> 8);
+        }
+    }
     if (late && !zcompare(static_cast<u32>(z))) return true;
 
     // ---- blending into the EFB ----
@@ -795,7 +848,13 @@ bool Renderer::sample_mip(s32 s, s32 t, s32 mip, bool linear, u32 texmap, u8 out
     if (!tex_format_valid(fmt)) { std::snprintf(eb, sizeof eb, "texture map %u uses invalid format %u", texmap, fmt); err_ = eb; return false; }
     const TexFormat f = static_cast<TexFormat>(fmt);
     const bool manual = bits(i1, 21, 1) != 0U;
-    if (manual && f == TexFormat::RGBA8) { err_ = "RGBA8 textures in TMEM (preloaded) are not implemented yet"; return false; }
+    const bool tmem_rgba8 = manual && f == TexFormat::RGBA8;
+    if (tmem_rgba8 && mip != 0) {
+        // TextureSampler.cpp advances only the AR bank by the size of a whole RGBA8 level
+        // and never the GB bank: not modelled until it is verified.
+        err_ = "mipmapped RGBA8 textures in TMEM are not implemented";
+        return false;
+    }
     int wm1 = static_cast<int>(bits(i0, 0, 10)), hm1 = static_cast<int>(bits(i0, 10, 10));
     // byte offset of the mip level
     u32 offset = 0;
@@ -812,7 +871,11 @@ bool Renderer::sample_mip(s32 s, s32 t, s32 mip, bool linear, u32 texmap, u8 out
     const u32 width = static_cast<u32>(wm1) + 1U, height = static_cast<u32>(hm1) + 1U;
     const u32 bytes = tex_size_bytes(f, width, height);
     std::span<const u8> src;
-    if (manual) {
+    if (tmem_rgba8) {
+        // AR halves of each 4x4 block in the even bank, GB halves in the odd bank (TMEM line
+        // indices in TX_SETIMAGE1/2), 32 bytes per block in each (TextureDecoder_Common.cpp);
+        // reads past the end of TMEM give 0, as Dolphin's SafeSpanRead
+    } else if (manual) {
         const std::size_t a = static_cast<std::size_t>(bits(i1, 0, 15)) * 32U + offset;
         if (a + bytes > tex_->tmem.size()) { err_ = "texture in TMEM runs past its end"; return false; }
         src = tex_->tmem.subspan(a, bytes);
@@ -828,6 +891,20 @@ bool Renderer::sample_mip(s32 s, s32 t, s32 mip, bool linear, u32 texmap, u8 out
     if (tex_format_paletted(f) && bits(tl, 10, 2) > 2U) { err_ = "invalid TLUT format 3"; return false; }
     const u32 ws = bits(m0, 0, 2), wt = bits(m0, 2, 2);
     std::string e;
+    const std::size_t ar_base = static_cast<std::size_t>(bits(i1, 0, 15)) * 32U;
+    const std::size_t gb_base = static_cast<std::size_t>(bits(tex_reg(bp, texmap, 4), 0, 15)) * 32U;
+    auto fetch = [&](u32 x, u32 y, u8 o[4]) {
+        if (tmem_rgba8) {
+            const std::size_t blocks_w = (static_cast<std::size_t>(wm1) >> 2) + 1U;
+            const std::size_t blk = (static_cast<std::size_t>(y >> 2) * blocks_w + (x >> 2)) << 4;
+            const std::size_t off = (blk + ((y & 3U) << 2) + (x & 3U)) << 1;
+            auto rd = [&](std::size_t a) { return a < tex_->tmem.size() ? tex_->tmem[a] : u8{0}; };
+            o[3] = rd(ar_base + off); o[0] = rd(ar_base + off + 1U);
+            o[1] = rd(gb_base + off); o[2] = rd(gb_base + off + 1U);
+            return true;
+        }
+        return decode_texel(f, src, x, y, width, tlut, tf, o, e);
+    };
     if (linear) {
         s -= 64; t -= 64;
         int is = s >> 7, it = t >> 7, is1 = is + 1, it1 = it + 1;
@@ -839,7 +916,7 @@ bool Renderer::sample_mip(s32 s, s32 t, s32 mip, bool linear, u32 texmap, u8 out
         const u32 w[4] = {(128 - fs) * (128 - ft), fs * (128 - ft), (128 - fs) * ft, fs * ft};
         u32 acc[4] = {0, 0, 0, 0};
         for (unsigned k = 0; k < 4; ++k) {
-            if (!decode_texel(f, src, static_cast<u32>(xs[k]), static_cast<u32>(ys[k]), width, tlut, tf, c[k], e)) { err_ = "texture: " + e; return false; }
+            if (!fetch(static_cast<u32>(xs[k]), static_cast<u32>(ys[k]), c[k])) { err_ = "texture: " + e; return false; }
             for (unsigned i = 0; i < 4; ++i) acc[i] += c[k][i] * w[k];
         }
         for (unsigned i = 0; i < 4; ++i) out[i] = static_cast<u8>(acc[i] >> 14);
@@ -847,7 +924,7 @@ bool Renderer::sample_mip(s32 s, s32 t, s32 mip, bool linear, u32 texmap, u8 out
     }
     int is = s >> 7, it = t >> 7;
     wrap_coord(is, ws, static_cast<int>(width)); wrap_coord(it, wt, static_cast<int>(height));
-    if (!decode_texel(f, src, static_cast<u32>(is), static_cast<u32>(it), width, tlut, tf, out, e)) { err_ = "texture: " + e; return false; }
+    if (!fetch(static_cast<u32>(is), static_cast<u32>(it), out)) { err_ = "texture: " + e; return false; }
     return true;
 }
 

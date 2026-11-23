@@ -11,7 +11,9 @@
 // Textures (TextureSampler.cpp): wrap clamp/repeat/mirror (3 = clamp, per the
 // hardware note in BPMemory.h), nearest/bilinear with 7-bit fractions, LOD from
 // the 2x2 block (FixedLog2, bias, min/max), point/linear mip selection, images
-// in main memory (base << 5) or TMEM (manually managed cache), palettes in TMEM.
+// in main memory (base << 5) or TMEM (manually managed cache), palettes in TMEM;
+// RGBA8 in TMEM keeps AR and GB halves in two banks (TX_SETIMAGE1/2 lines), read as in
+// TextureDecoder_Common.cpp TexDecoder_DecodeTexelRGBA8FromTmem.
 // Indirect texture order in samples: S = alpha, T = blue, U = green (the
 // decoder outputs R, G, B, A).
 // Lines and points (Clipper.cpp ProcessLine/ProcessPoint): quads widened by
@@ -21,10 +23,12 @@
 // Z freeze (GENMODE bit 19): the depth of every pixel comes from the slope of
 // the last triangle drawn or culled before freezing (also lines/points), as in
 // Rasterizer.cpp UpdateZSlope and Clipper.cpp.
-// Not implemented yet (each stops with a message): the line/point aspect
-// ratio adjustment (BP 22 bit 22), fog,
-// RGBA8 textures in TMEM, pixel formats other than RGB8_Z24 / RGBA6_Z24 / RGB565_Z16 /
-// Z24, and skipped vertices (index 0xFF/0xFFFF).
+// The line/point aspect ratio bit (BP 22 bit 22) is ignored, as in Dolphin (the SDK sets it
+// with the field mode; its effect is not documented). Fog follows Tev.cpp with A and C decoded
+// as in BPMemory.cpp (11-bit mantissa floats, the infinite/NaN table).
+// Not implemented yet (each stops with a message): fog with B_SHF >= 32 or a zero denominator,
+// mipmapped RGBA8 textures in TMEM, pixel formats other than RGB8_Z24 / RGBA6_Z24 / RGB565_Z16 /
+// Z24.
 // Like Dolphin's software renderer, RGB565_Z16 keeps 8-bit colour and 24-bit
 // depth (not exact hardware behaviour).
 #pragma once

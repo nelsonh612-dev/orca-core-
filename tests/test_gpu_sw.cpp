@@ -482,6 +482,33 @@ TEST_CASE(sw_raster_fill_rule) {
     CHECK_EQ(bad, 0U);
 }
 
+TEST_CASE(sw_skipped_vertices) {
+    // positions indexed (8 bits) from array 0 at 0x4000: 0 (0,0), 1 (4,0), 2 (0,4), 3 (4,4);
+    // index 0xFF drops the vertex and the primitive uses the remaining ones
+    Scene s;
+    std::vector<u8> arr;
+    const float pts[4][3] = {{0, 0, -0.5f}, {4, 0, -0.5f}, {0, 4, -0.5f}, {4, 4, -0.5f}};
+    for (const auto& p : pts)
+        for (float f : p) { const u32 v = std::bit_cast<u32>(f); for (int k = 3; k >= 0; --k) arr.push_back(static_cast<u8>(v >> (8 * k))); }
+    CHECK(s.bus.dma_write(0x4000, arr) == mem::BusStatus::Ok);
+    s.cpl(0x50, (vcf::INDEX8 << 9) | (vcf::DIRECT << 13));
+    s.cpl(0xA0, 0x4000);
+    s.cpl(0xB0, 12);
+    auto prim = [&](u8 op, std::initializer_list<u8> idx, u32 rgba) {
+        s.cmd.push_back(op); s.cmd.push_back(0); s.cmd.push_back(static_cast<u8>(idx.size()));
+        for (u8 i : idx) { s.cmd.push_back(i); s.be32(rgba); }
+    };
+    prim(0x98, {0, 1, 0xFF, 2, 3}, 0x10FF10FFU);   // strip 0,1,2,3: the 4x4 square
+    CHECK(s.flush());
+    CHECK_EQ(count_color(s, 16, 16, 0x10FF10U), 16U);
+    prim(0x90, {0, 0xFF, 1, 2}, 0x2020F0FFU);       // triangle 0,1,2: x + y <= 2 -> 6 pixels
+    CHECK(s.flush());
+    CHECK_EQ(count_color(s, 16, 16, 0x2020F0U), 6U);
+    prim(0x90, {0xFF, 0xFF, 0xFF}, 0x777777FFU);    // all dropped: nothing, no error
+    CHECK(s.flush());
+    CHECK_EQ(count_color(s, 16, 16, 0x777777U), 0U);
+}
+
 TEST_CASE(sw_raster_strip_fan_and_culling) {
     Scene s;
     // strip of 4 vertices = the same 4x4 square as two triangles; fan likewise
@@ -889,6 +916,121 @@ TEST_CASE(sw_indirect_alpha_bump) {
     CHECK_EQ(s.c24(11, 1), 0x606060U);
 }
 
+TEST_CASE(sw_texture_rgba8_in_tmem) {
+    // RGBA8 4x4 preloaded into TMEM: AR half to the even bank (line 0x10), GB half to the odd
+    // bank (line 0x800); texel i: A = 16i, R = i, G = 100 + i, B = 200 - i
+    TexScene s(6, 4, 4);
+    std::vector<u8> img(64);
+    for (u32 i = 0; i < 16; ++i) {
+        img[2 * i] = static_cast<u8>(16U * i); img[2 * i + 1] = static_cast<u8>(i);
+        img[32 + 2 * i] = static_cast<u8>(100U + i); img[33 + 2 * i] = static_cast<u8>(200U - i);
+    }
+    CHECK(s.bus.dma_write(0x5000, img) == mem::BusStatus::Ok);
+    s.bpw(bp::PRELOAD_ADDR, 0x5000U >> 5);
+    s.bpw(bp::PRELOAD_TMEM_EVEN, 0x10);
+    s.bpw(bp::PRELOAD_TMEM_ODD, 0x800);
+    s.bpw(bp::PRELOAD_MODE, (3U << 15) | 1U);
+    s.bpw(0x8C, 0x10U | (1U << 21));   // image1: even line, manually managed
+    s.bpw(0x90, 0x800U);                // image2: odd line
+    s.bpw(0x94, 0x7F000U >> 5);         // RAM base points elsewhere (must not be used)
+    s.square(0, 0, 4, 1, 1);
+    CHECK(s.flush());
+    unsigned bad = 0;
+    for (u32 y = 0; y < 4; ++y)
+        for (u32 x = 0; x < 4; ++x) {
+            const u32 i = y * 4 + x;
+            bad += s.c24(x, y) != ((i << 16) | ((100U + i) << 8) | (200U - i)) ? 1U : 0U;
+        }
+    CHECK_EQ(bad, 0U);
+    // 8x8: 2x2 blocks, AR/GB lines alternate in RAM per block (count 4); block b adds 16b to
+    // R and G and subtracts it from B. Pixel (25,5) = texel (5,5): block 3, i = 5
+    std::vector<u8> img2(256);
+    for (u32 b = 0; b < 4; ++b)
+        for (u32 i = 0; i < 16; ++i) {
+            img2[64 * b + 2 * i] = static_cast<u8>(16U * i); img2[64 * b + 2 * i + 1] = static_cast<u8>(i + 16U * b);
+            img2[64 * b + 32 + 2 * i] = static_cast<u8>(100U + i + 16U * b); img2[64 * b + 33 + 2 * i] = static_cast<u8>(200U - i - 16U * b);
+        }
+    CHECK(s.bus.dma_write(0x6000, img2) == mem::BusStatus::Ok);
+    s.bpw(bp::PRELOAD_ADDR, 0x6000U >> 5);
+    s.bpw(bp::PRELOAD_MODE, (3U << 15) | 4U);
+    s.bpw(0x88, 7U | (7U << 10) | (6U << 20));
+    s.bpw(bp::SU_SSIZE, 7); s.bpw(bp::SU_TSIZE, 7);
+    s.square(20, 0, 8, 1, 1);
+    CHECK(s.flush());
+    CHECK_EQ(s.c24(25, 5), (53U << 16) | (153U << 8) | 147U);
+    CHECK_EQ(s.c24(25, 1), (21U << 16) | (121U << 8) | 179U);   // block 1
+    CHECK_EQ(s.c24(21, 5), (37U << 16) | (137U << 8) | 163U);   // block 2
+    // a second level would be needed: stops
+    s.bpw(0x80, 1U << 5);
+    s.bpw(0x84, 16U | (16U << 8));
+    s.square(10, 0, 4, 1, 1);
+    CHECK(!s.gpu.feed(s.cmd));
+    CHECK(s.gpu.error().find("mipmapped RGBA8 textures in TMEM") != std::string::npos);
+}
+
+TEST_CASE(sw_fog) {
+    // red pixels at z = -0.5 (depth 8388607), fog colour blue. Orthographic: ze = A * z / 16777215.
+    // A = 1.5 (exp 127, mant 0x400), C = (1 + 409/2048) / 4 = 0.29992676 -> ze - C = 0.45007318
+    Scene s;
+    s.bpw(bp::FOG_COLOR, 0x0000FF);
+    s.bpw(bp::FOG_PARAM0, (127U << 11) | 0x400U);
+    const u32 c3 = (125U << 11) | 409U | (1U << 20);
+    // fsel -> fog * 256 (worked out with float32): linear 115, exp 234, exp2 172, back exp 12, back exp2 47
+    const u32 fsel[5] = {2, 4, 5, 6, 7}, f8[5] = {115, 234, 172, 12, 47};
+    for (unsigned i = 0; i < 5; ++i) {
+        s.bpw(bp::FOG_PARAM3, c3 | (fsel[i] << 21));
+        const float x0 = static_cast<float>(10 * i);
+        s.prim(0x90, {{x0, 0, -0.5f, 0xFF0000FFU}, {x0 + 8, 0, -0.5f, 0xFF0000FFU}, {x0, 8, -0.5f, 0xFF0000FFU}});
+    }
+    CHECK(s.flush());
+    for (unsigned i = 0; i < 5; ++i)
+        CHECK_EQ(s.c24(10 * i + 1, 1), (((255U * (256U - f8[i])) >> 8) << 16) | ((f8[i] * 255U) >> 8));
+    // perspective: A = 1/32, B_MAG 0x100000, B_SHF 4: ze = A * 16777215 / (1048576 - 524287) = 0.99999803;
+    // C = 0.25 -> 191 (191.9995)
+    s.bpw(bp::FOG_PARAM0, 122U << 11);
+    s.bpw(bp::FOG_B_MAGNITUDE, 0x100000);
+    s.bpw(bp::FOG_B_EXPONENT, 4);
+    s.bpw(bp::FOG_PARAM3, (125U << 11) | (2U << 21));
+    s.prim(0x90, {{60, 0, -0.5f, 0xFF0000FFU}, {68, 0, -0.5f, 0xFF0000FFU}, {60, 8, -0.5f, 0xFF0000FFU}});
+    CHECK(s.flush());
+    CHECK_EQ(s.c24(61, 1), (((255U * 65U) >> 8) << 16) | ((191U * 255U) >> 8));
+    // range adjustment: centre at EFB x 0 (342 - 342), all K = 256/256 * 4 = 4; pixel x 301:
+    // offset 301/320, ze 0.25 * sqrt(offset^2 + 16) / 4 = 0.25681928 -> 65 (63 without range)
+    s.bpw(bp::FOG_PARAM0, 126U << 11);
+    s.bpw(bp::FOG_PARAM3, (1U << 20) | (2U << 21));
+    s.bpw(bp::FOG_RANGE + 1, (256U << 12) | 256U);
+    s.prim(0x90, {{300, 0, -0.5f, 0xFF0000FFU}, {308, 0, -0.5f, 0xFF0000FFU}, {300, 8, -0.5f, 0xFF0000FFU}});
+    s.bpw(bp::FOG_RANGE, 342U | (1U << 10));
+    s.prim(0x90, {{300, 20, -0.5f, 0xFF0000FFU}, {308, 20, -0.5f, 0xFF0000FFU}, {300, 28, -0.5f, 0xFF0000FFU}});
+    CHECK(s.flush());
+    CHECK_EQ(s.c24(301, 1) & 0xFFU, (63U * 255U) >> 8);
+    CHECK_EQ(s.c24(301, 21) & 0xFFU, (65U * 255U) >> 8);
+    s.bpw(bp::FOG_RANGE, 0);
+    // A and C both infinite (exponent 255): same signs -> fogged, otherwise unfogged
+    s.bpw(bp::FOG_PARAM0, 255U << 11);
+    s.bpw(bp::FOG_PARAM3, (255U << 11) | (1U << 20) | (2U << 21));
+    s.prim(0x90, {{80, 0, -0.5f, 0xFF0000FFU}, {88, 0, -0.5f, 0xFF0000FFU}, {80, 8, -0.5f, 0xFF0000FFU}});
+    s.bpw(bp::FOG_PARAM3, (255U << 11) | (1U << 19) | (1U << 20) | (2U << 21));
+    s.prim(0x90, {{90, 0, -0.5f, 0xFF0000FFU}, {98, 0, -0.5f, 0xFF0000FFU}, {90, 8, -0.5f, 0xFF0000FFU}});
+    CHECK(s.flush());
+    CHECK_EQ(s.c24(81, 1), 0x0000FFU);
+    CHECK_EQ(s.c24(91, 1), 0xFF0000U);
+    // stops: shift of 32, zero denominator
+    s.bpw(bp::FOG_PARAM3, (125U << 11) | (2U << 21));
+    s.bpw(bp::FOG_PARAM0, 122U << 11);
+    s.bpw(bp::FOG_B_EXPONENT, 32);
+    s.prim(0x90, {{100, 0, -0.5f, 0xFF0000FFU}, {108, 0, -0.5f, 0xFF0000FFU}, {100, 8, -0.5f, 0xFF0000FFU}});
+    CHECK(!s.gpu.feed(s.cmd));
+    CHECK(s.gpu.error().find("fog b shift 32") != std::string::npos);
+    Scene t;
+    t.bpw(bp::FOG_PARAM3, (125U << 11) | (2U << 21));
+    t.bpw(bp::FOG_B_MAGNITUDE, 524287);
+    t.bpw(bp::FOG_B_EXPONENT, 4);
+    t.prim(0x90, {{0, 0, -0.5f, 0xFF0000FFU}, {8, 0, -0.5f, 0xFF0000FFU}, {0, 8, -0.5f, 0xFF0000FFU}});
+    CHECK(!t.gpu.feed(t.cmd));
+    CHECK(t.gpu.error().find("zero denominator") != std::string::npos);
+}
+
 TEST_CASE(sw_z_texture) {
     TexScene s(6, 4, 4); // RGBA8: every texel A 12, R 34, G 56, B 78
     std::vector<u8> img(64);
@@ -1014,11 +1156,12 @@ TEST_CASE(sw_lines_and_points) {
     CHECK_EQ(s.c24(29, 29), 0xAA0000U); CHECK_EQ(s.c24(30, 30), 0xAA0000U);
     CHECK_EQ(count_color(s, 64, 64, 0x00AA00U), 2U);
     CHECK_EQ(s.c24(39, 29), 0x00AA00U); CHECK_EQ(s.c24(43, 29), 0x00AA00U);
-    // the aspect ratio adjustment stops
+    // the aspect ratio bit is ignored (as in Dolphin): same single pixel
     s.bpw(bp::LINE_PT_WIDTH, (6U << 8) | (1U << 22));
     s.prim(0xB8, {{40, 40, -0.5f, 0x00AA00FFU}});
-    CHECK(!s.gpu.feed(s.cmd));
-    CHECK(s.gpu.error().find("aspect ratio") != std::string::npos);
+    CHECK(s.flush());
+    CHECK_EQ(count_color(s, 64, 64, 0x00AA00U), 3U);
+    CHECK_EQ(s.c24(39, 39), 0x00AA00U);
 }
 
 TEST_CASE(sw_line_point_texture_offsets) {
@@ -1116,9 +1259,7 @@ TEST_CASE(sw_z_freeze) {
 
 TEST_CASE(sw_raster_stops) {
     const std::vector<std::pair<std::function<void(Scene&)>, const char*>> cases = {
-        {[](Scene& s) { s.bpw(bp::GENMODE, (1U << 4) | 1U); s.bpw(0x28, 1U << 6); s.bpw(0x88, 6U << 20); s.bpw(0x8C, 1U << 21); }, "RGBA8 textures in TMEM"},
         {[](Scene& s) { s.bpw(bp::GENMODE, (1U << 4) | 1U); s.bpw(0x28, 1U << 6); s.bpw(0x94, 0x100000U); }, "outside RAM"},
-        {[](Scene& s) { s.bpw(bp::FOG_PARAM3, 2U << 21); }, "fog"},
         {[](Scene& s) { s.bpw(bp::ZCOMPARE, 4); }, "pixel format 4"},
     };
     unsigned bad = 0;

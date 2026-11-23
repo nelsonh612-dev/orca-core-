@@ -1,6 +1,6 @@
 // orca_run: headless runner. Loads a DOL/ELF, boots it (HLE) and runs for a
 // number of cycles, then prints why it stopped and the CPU state.
-// Usage: orca_run [--ipl-rom=FILE] [--rtc=SECONDS] [--dsp-irom=FILE] [--dsp-coef=FILE] [--card-a=FILE] [--card-b=FILE] [--list-files] file.(dol|elf|iso|gcm) [cycles] [gc|wii]
+// Usage: orca_run [--ipl-rom=FILE] [--rtc=SECONDS] [--dsp-irom=FILE] [--dsp-coef=FILE] [--card-a=FILE] [--card-b=FILE] [--dump-xfb=FILE.ppm] [--list-files] file.(dol|elf|iso|gcm) [cycles] [gc|wii]
 //   --ipl-rom: IPL ROM image (descrambled, as the CPU reads it) for EXI0/CS1
 //   --rtc:     initial RTC counter value (seconds); default 0
 //   --list-files: print the disc FST (.iso/.gcm) and exit
@@ -11,6 +11,7 @@
 // .iso/.gcm images are booted through the HLE IPL + apploader path.
 #include "orca/disc/fst.hpp"
 #include "orca/system/system.hpp"
+#include "orca/video/xfb.hpp"
 
 #include <cstdio>
 #include <cstdlib>
@@ -26,6 +27,7 @@ int main(int argc_in, char** argv_in) {
     bool list_files = false;
     std::string irom_path, coef_path;
     std::string card_path[2];
+    std::string xfb_path;
     for (int i = 0; i < argc_in; ++i) {
         if (std::strncmp(argv_in[i], "--ipl-rom=", 10) == 0) ipl_path = argv_in[i] + 10;
         else if (std::strncmp(argv_in[i], "--rtc=", 6) == 0) rtc = std::strtoul(argv_in[i] + 6, nullptr, 0);
@@ -34,6 +36,7 @@ int main(int argc_in, char** argv_in) {
         else if (std::strncmp(argv_in[i], "--dsp-coef=", 11) == 0) coef_path = argv_in[i] + 11;
         else if (std::strncmp(argv_in[i], "--card-a=", 9) == 0) card_path[0] = argv_in[i] + 9;
         else if (std::strncmp(argv_in[i], "--card-b=", 9) == 0) card_path[1] = argv_in[i] + 9;
+        else if (std::strncmp(argv_in[i], "--dump-xfb=", 11) == 0) xfb_path = argv_in[i] + 11;
         else args.push_back(argv_in[i]);
     }
     const int argc = static_cast<int>(args.size());
@@ -116,6 +119,21 @@ int main(int argc_in, char** argv_in) {
         out.write(reinterpret_cast<const char*>(card->image().data()), static_cast<std::streamsize>(card->image().size()));
         if (!out) std::fprintf(stderr, "cannot save memory card %s\n", card_path[slot].c_str());
         else std::printf("memory card %c saved: %s\n", slot == 0 ? 'A' : 'B', card_path[slot].c_str());
+    }
+    if (!xfb_path.empty()) {
+        // the top field as the VI would scan it out, converted to RGB (binary PPM)
+        const orca::hw::XfbField f = sys.vi().xfb_field(false);
+        std::vector<orca::u8> raw(f.height == 0U ? 0U : static_cast<std::size_t>(f.height - 1U) * f.stride + f.width * 2U), rgba;
+        if (f.width == 0U || f.height == 0U) std::fprintf(stderr, "XFB not configured by the program (width %u, height %u)\n", f.width, f.height);
+        else if (sys.bus().dma_read(f.address & 0x03FFFFFFU, raw) != orca::mem::BusStatus::Ok) std::fprintf(stderr, "XFB at %08X is outside RAM\n", f.address);
+        else if (!orca::video::decode_xfb(raw, f.width, f.height, f.stride, rgba)) std::fprintf(stderr, "cannot decode the XFB\n");
+        else {
+            std::ofstream out(xfb_path, std::ios::binary);
+            out << "P6\n" << f.width << ' ' << f.height << "\n255\n";
+            for (std::size_t i = 0; i < rgba.size(); i += 4) out.write(reinterpret_cast<const char*>(&rgba[i]), 3);
+            if (!out) std::fprintf(stderr, "cannot write %s\n", xfb_path.c_str());
+            else std::printf("XFB %ux%u at %08X written to %s\n", f.width, f.height, f.address, xfb_path.c_str());
+        }
     }
     const auto& s = sys.cpu().state();
     std::printf("stop: %s after %llu cycles, %llu instructions\n", orca::ppc::to_string(r.stop),

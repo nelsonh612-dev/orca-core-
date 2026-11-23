@@ -55,9 +55,19 @@ bool VideoInterface::bottom_field() const {
 }
 
 u32 VideoInterface::xfb_address(bool bottom) const {
-    const u32 r = reg32(bottom ? vi::BFBL : vi::TFBL);
-    const u32 fbb = r & 0x00FFFFFFU;
-    return (r & 0x10000000U) != 0U ? (fbb << 5U) : fbb; // PGOFF: address in 32-byte units
+    const u32 fbb = reg32(bottom ? vi::BFBL : vi::TFBL) & 0x00FFFFFFU;
+    // PGOFF (address in 32-byte units): the bottom field uses the top register's bit
+    return (reg32(vi::TFBL) & 0x10000000U) != 0U ? (fbb << 5U) : fbb;
+}
+
+XfbField VideoInterface::xfb_field(bool bottom) const {
+    const u16 pic = reg(vi::PICCONF);
+    XfbField f;
+    f.address = xfb_address(bottom);
+    f.width = ((pic >> 8U) & 0x7FU) * 16U;
+    f.stride = (pic & 0xFFU) * 32U;
+    f.height = (reg(vi::VTR) >> 4U) & 0x3FFU;
+    return f;
 }
 
 void VideoInterface::update_interrupt() {

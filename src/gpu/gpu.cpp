@@ -125,13 +125,17 @@ bool Gpu::on_primitive(Primitive prim, u8 vat, u16 count, u32 vertex_size, std::
     for (unsigned i = 0; i < 8; ++i)
         scale[i] = {static_cast<float>((bp_.reg(static_cast<u8>(bp::SU_SSIZE + 2U * i)) & 0xFFFFU) + 1U),
                     static_cast<float>((bp_.reg(static_cast<u8>(bp::SU_TSIZE + 2U * i)) & 0xFFFFU) + 1U)};
-    std::vector<sw::OutputVertex> out(count);
+    std::vector<sw::OutputVertex> out;
+    out.reserve(count);
     for (u32 i = 0; i < count; ++i) {
         sw::InputVertex in;
         if (!decoder_.decode(cp_, xf_, bus_, phys_mask_, vat, data.subspan(static_cast<std::size_t>(i) * vertex_size, vertex_size), in, error))
             return false;
-        if (in.skip) { error = "skipped vertices (index 0xFF/0xFFFF) are not implemented yet"; return false; }
-        sw::transform_vertex(xf_, in, scale, out[i]);
+        // an indexed position of 0xFF / 0xFFFF drops the vertex: the primitive is assembled from
+        // the remaining ones (VertexLoader.cpp SkipVertex / RunVertices)
+        if (in.skip) continue;
+        out.emplace_back();
+        sw::transform_vertex(xf_, in, scale, out.back());
     }
     const sw::TexSource src{&bus_, phys_mask_, tmem_};
     return renderer_.draw(prim, out, bp_, xf_, tev_, src, error);

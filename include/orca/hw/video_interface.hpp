@@ -22,7 +22,10 @@
 //     to INT clears it (writing 1 does not set it).
 // Timing runs while DCR[ENB]=1 and restarts from position (1,1) whenever ENB
 // goes 0 -> 1 or a timing register changes (approximation: real hardware
-// double-buffers some fields). XFB addresses come from TFBL/BFBL.
+// double-buffers some fields). XFB addresses come from TFBL/BFBL; the page-offset bit
+// (address in 32-byte units) of TFBL also applies to BFBL, as Dolphin notes.
+// Picture configuration (0x48): STD bits 0-7 (stride, 16-byte units per half line),
+// WPL bits 8-14 (width, 16-pixel units).
 #pragma once
 #include "orca/core/scheduler.hpp"
 #include "orca/hw/processor_interface.hpp"
@@ -37,10 +40,21 @@ namespace vi {
 inline constexpr u32 kBase = 0x0C002000U;
 inline constexpr u32 VTR = 0x00, DCR = 0x02, HTR0 = 0x04, HTR1 = 0x08, VTO = 0x0C, VTE = 0x10;
 inline constexpr u32 BBOI = 0x14, BBEI = 0x18, TFBL = 0x1C, TFBR = 0x20, BFBL = 0x24, BFBR = 0x28;
+inline constexpr u32 PICCONF = 0x48;
 inline constexpr u32 DPV = 0x2C, DPH = 0x2E, DI0 = 0x30, DI1 = 0x34, DI2 = 0x38, DI3 = 0x3C, DL0 = 0x40, VICLK = 0x6C;
 inline constexpr u16 DCR_ENB = 0x0001, DCR_RST = 0x0002, DCR_NIN = 0x0004;
 inline constexpr u32 DI_INT = 0x80000000U, DI_ENB = 0x10000000U;
 } // namespace vi
+
+// What the VI scans out for one field (Dolphin VideoInterface.cpp OutputField, without its
+// "force progressive" option): width = WPL * 16 pixels, bytes between lines = STD * 32,
+// lines = ACV; the bottom (even) field reads BFBL, the top (odd) field TFBL.
+struct XfbField {
+    u32 address{0};
+    u32 width{0};
+    u32 stride{0};
+    u32 height{0};
+};
 
 struct VideoTiming {
     bool valid{false};
@@ -61,6 +75,7 @@ public:
     bool bottom_field() const;      // true while the even (second) field is scanned
     u64 cycles_per_line() const;    // CPU cycles per video line, 0 when timing is off
     u32 xfb_address(bool bottom) const; // physical address of the field's frame buffer
+    XfbField xfb_field(bool bottom) const;
 
     // Called at the start of every field (for a frontend to present a frame).
     void set_field_listener(std::function<void(bool bottom)> f) { field_listener_ = std::move(f); }
