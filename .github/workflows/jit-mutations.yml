@@ -1,7 +1,10 @@
-# Mutation test of the JIT on real ARM64 (manual): tools/jit_mutations.py.
+# Mutation test of the JIT on real ARM64: tools/jit_mutations.py. Runs when the
+# branch orca-core-0.1-mutations is pushed (a copy of orca-core-0.1 to test).
 name: jit mutations
 
 on:
+  push:
+    branches: [orca-core-0.1-mutations]
   workflow_dispatch:
 
 jobs:
