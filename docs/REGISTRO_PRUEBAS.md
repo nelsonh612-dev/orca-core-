@@ -1,4 +1,4 @@
-# Registro de pruebas — Milestones 018-021
+# Registro de pruebas — Milestones 018-021 e integración final
 
 Todos los resultados son de ejecuciones reales del 2026-11-22 en este entorno, sobre una copia limpia de los fuentes de la rama `orca-core-0.1`.
 
@@ -8,11 +8,12 @@ Todos los resultados son de ejecuciones reales del 2026-11-22 en este entorno, s
 
 | Configuración | Compilación | Advertencias (`-Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion -Wshadow -Werror`) | CTest |
 |---|---|---|---|
-| GCC Release (`-DORCA_WERROR=ON`) | OK | 0 | 19/19 pasan |
-| Clang Release (`-DORCA_WERROR=ON`) | OK | 0 | 19/19 pasan |
-| GCC Debug + ASan + UBSan (`-fno-sanitize-recover=all`, `-DORCA_WERROR=ON`) | OK | 0 | 19/19 pasan |
-| Clang + ASan/UBSan | **NO EJECUTADO**: falta `compiler-rt` en el entorno | — | — |
-| Android NDK arm64-v8a | **NO EJECUTADO**: no hay NDK ni sysroot AArch64 | — | — |
+| GCC Release (`-DORCA_WERROR=ON`), x86-64 | OK | 0 | 28/28 pasan (2026-11-23, 847dbaa) |
+| Clang Release (`-DORCA_WERROR=ON`), x86-64 | OK | 0 | 28/28 pasan |
+| GCC Debug + ASan + UBSan (`-fno-sanitize-recover=all`, `-DORCA_WERROR=ON`), x86-64 | OK | 0 | 28/28 pasan |
+| ARM64 real (GitHub `ubuntu-24.04-arm`): GCC, Clang, ASan+UBSan | Ver "Integración final" (resultado por commit en GitHub Actions) | 0 | — |
+| Android NDK arm64-v8a (núcleo y app) | GitHub Actions | 0 | — |
+| Clang + ASan/UBSan en x86-64 | **NO EJECUTADO**: falta `compiler-rt` en el entorno | — | — |
 
 ## Detalle por suite (GCC + ASan + UBSan)
 
@@ -63,6 +64,20 @@ Todos los resultados son de ejecuciones reales del 2026-11-22 en este entorno, s
 - **Mutaciones del JIT en ARM64** (`tools/jit_mutations.py`, rama `orca-core-0.1-mutations`): 22 mutaciones. Primera ejecución: 15 detectadas (dos colgaban la prueba: se añadió un tiempo límite). Las 7 restantes llevaron a cinco pruebas dirigidas (segundo slot de paired singles, división de números diminutos, almacenamiento en un bloque enlazado, página de datos que pasa a ser código, enlaces desde una página igual en dos contextos); dos son equivalentes (documentado en el script). Segunda ejecución: 19 de 22, quedando las dos equivalentes y la división, cuya prueba se reforzó con operandos desnormales (el modelo del algoritmo sin esa comprobación da 777 diferencias en esa distribución).
 - **Tercera y cuarta ejecución de mutaciones:** en 2725008 añadí una comprobación (camino lento < mitad de las instrucciones) que era incorrecta: con dividendos menores que 2^-767 el camino lento es el esperado, así que esa ejecución "detectó" las 22 mutaciones por una prueba rota (la validación de ese commit se canceló y no lo mostró). La causa real de la supervivencia de la división: `fdivs` se ejecutaba después de `fdiv` y su segundo redondeo pone FI por sí solo, ocultando el FI/FR de `fdiv`. Corregido en 7b0de24 (`fdiv` al final, comprobación eliminada). Ejecución de 7b0de24: **20 de 22 detectadas**; sobreviven solo las dos equivalentes.
 - **Error en mis expectativas:** en la prueba de DTK esperé que, tras pedir "parar al final de la pista", sonara la pista encolada; la orden para al terminar la pista actual.
+
+### Integración final: Bluetooth, Wii Remote, NAND nueva, frontend, app Android y optimización
+
+Ejecutado el 2026-11-23 en x86-64: GCC Release, Clang Release y GCC Debug + ASan + UBSan, **28/28 suites en las tres, 0 advertencias** (commit 847dbaa).
+
+- `ios` (22 pruebas, 2.709 comprobaciones; +4): Bluetooth con un anfitrión guionizado (`BtHost`): inicialización HCI, conexión del mando, L2CAP en los dos sentidos (PSM 0x11 y 0x13, configuración), HID SET_REPORT y DATA, informes a 200 Hz desde el planificador, desconexión, y SDP que se detiene con el motivo; mandos emparejados leídos del SYSCONF; NAND nueva (SYSCONF, setting.txt descifrado, uid.sys, dueños); directorio de datos del título creado por `/dev/di`.
+- `wiimote` (6 pruebas, 110 comprobaciones): informes de salida y modos de datos, botones y acelerómetro empaquetados, IR en los tres formatos, lectura/escritura de memoria y sus errores, altavoz ADPCM, puntero → puntos IR, Nunchuk (identificación, calibración, cifrado con clave cero y parada con otra clave).
+- `frontend` (3 pruebas, 19 comprobaciones): rechazo de lo que no se puede cargar, volcados del DSP de tamaño incorrecto que dan error, y `gpu_draw` ejecutado por cuadros con su imagen capturada.
+- `programs`: `busy_wait_skip_changes_nothing` compara resultado, ciclos e instrucciones retiradas con y sin el salto de bucles de espera.
+- `gles` (14 pruebas, 2.820 comprobaciones): idéntico al software con las copias del EFB limitadas al área.
+- **Medidas del salto de bucles de espera (x86-64, mismo binario, mismos resultados):** av_suite 2034 → 397 ms; hardware_suite 3,8 → 0,0 ms; dvd_suite 175 s → 0,17 s; integer_suite (sin esperas) 161 → 171 ms (coste de la comprobación). No son medidas del teléfono.
+- **App Android:** el flujo `android-app.yml` compila Java y la biblioteca nativa con Gradle 8.9 y el NDK 30.0.16248370 y comprueba que `liborca_android.so` es AArch64 (correcto en 847dbaa). **No se ha ejecutado en un dispositivo.**
+- **Errores encontrados:** (1) carrera en las respuestas diferidas de Bluetooth: se respondía a un búfer antes de que el kernel lo registrara como pendiente; ahora solo se rellena al instante si no hay otro pendiente; (2) la NAND nueva cambiaba el dueño de archivos ya escritos (-115): ahora se asigna con el archivo vacío; (3) volcados del DSP no válidos caían al HLE en silencio: ahora dan error; (4) Clang `-Wsign-conversion` en wiimote.cpp, bluetooth.cpp y nand_setup.cpp, detectados por la verificación antes del commit; (5) en mis pruebas: tamaño de ACL (16 en vez de 20), un paquete SDP mal formado, estrechamiento en listas de inicialización; (6) la prueba del salto con dvd_suite tardaba 175 s sin el salto y se quitó de la suite.
+- **Error de proceso:** el commit 907ff30 se hizo antes de ejecutar la verificación (contra mi propia regla); la verificación posterior pasó.
 
 ### Sistema Wii: Hollywood, IOS, NAND y arranque de discos Wii (M021)
 

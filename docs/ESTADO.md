@@ -1,4 +1,4 @@
-# Estado del proyecto — Milestone 021 en curso (rama `orca-core-0.1`)
+# Estado del proyecto — ORCA CORE 0.1, integración final (rama `orca-core-0.1`)
 
 ## Funciones implementadas (todas con pruebas)
 
@@ -167,6 +167,25 @@
 - `System::boot_wii_disc`: partición de juego, valores de memoria baja de la versión de IOS que pide el TMD (tabla de valores medidos), ID del disco, modelo de placa, relojes, modo de video, tipo y desplazamiento de partición, setting.txt de la NAND en 0x3800, BAT de MEM2 con HID4[SBE] y el apploader desde la partición. Las claves comunes las aporta el usuario (`SystemConfig::wii_keys`).
 - Falta del sistema Wii: Bluetooth (`/dev/usb/oh1/57e/305`), Wii Remote y Nunchuk, red, SD, USB, WC24, el almacén de títulos de ES y la creación de SYSCONF/setting.txt para una NAND nueva.
 
+**Bluetooth, Wii Remote y Nunchuk (M021)** — fuentes: WiiBrew ("Wiimote", "Wiimote/Extension Controllers", "Bluetooth", "/dev/usb/oh1"), especificación Bluetooth 2.0 (HCI, L2CAP) y Dolphin (`BTEmu.cpp`, `WiimoteDevice.cpp`, `WiimoteEmu*.cpp`, `Encryption.cpp`) como información; el código es propio:
+- `/dev/usb/oh1/57e/305` (`BluetoothDevice`): ioctlv 0 (comando HCI por transferencia de control), 1 (ACL por bulk 0x02/0x82) y 2 (eventos por interrupción 0x81). Comandos HCI de inicialización, búsqueda, conexión (handle 0x100 + índice), desconexión, nombres y enlace; las peticiones se quedan pendientes y se responden en orden sin adelantarse al kernel.
+- L2CAP: el mando abre PSM 0x11 (control) y luego 0x13 (datos) con MTU 185, configuración en los dos sentidos; HID SET_REPORT y DATA; informes a 200 Hz desde el planificador. SDP: **parada explícita**.
+- `Wiimote`: informes de salida 0x10-0x1A (rumble, LED, modo, IR, estado, memoria, altavoz), entradas 0x20/0x21/0x22 y modos 0x30-0x37 y 0x3D; botones (máscara 0x1F9F) y acelerómetro de 10 bits con los bits bajos en los bytes de botones; IR básico/extendido/completo con 4 puntos (`pointer_points` simula la barra de sensores); EEPROM con calibración; altavoz Yamaha ADPCM (paso 127 al reiniciar) con su frecuencia por divisor; batería.
+- Nunchuk: ID 00 00 A4 20 00 00, calibración con suma de comprobación, palanca, acelerómetro y botones C/Z; cifrado de la extensión con la clave cero, `(x − 0x17) ^ 0x17` (derivado ejecutando fuera del proyecto el generador de claves de Dolphin, solo como información). **Cualquier otra clave se detiene.** MotionPlus y otras extensiones: no implementados (parada).
+
+**NAND nueva y arranque Wii (M021)**:
+- `create_nand`: SYSCONF (SCv0, tipos 1/2/3/4/5/7, "SCed" en 0x4000) con región, idioma, panorámico, progresivo, EURGB60, barra de sensores, apodo y BT.DINF (0x461 bytes) con los mandos emulados 02:4F:52:43:41:0n; setting.txt cifrado (XOR con 0x73B5DBFA rotando 1 bit por byte); uid.sys (uids desde 0x1000). Cada archivo recibe su dueño mientras está vacío.
+- `/dev/di` al abrir la partición crea `/title/<hi>/<lo>/data` con el uid del título y el gid del TMD.
+- `orca_run --nand=DIR --create-nand=usa|eur|jpn|kor --wii-keys=FILE`.
+
+**Frontend y app Android**:
+- `orca::frontend::Emulator`: carga de disco o ejecutable (GameCube o Wii según el disco), `run_frame` (porciones de 0,5 ms hasta que empieza un campo, como máximo 1/10 s), captura del XFB a RGBA, mando de GameCube, Wii Remote/Nunchuk, botones de la consola, audio a 48 kHz acotado. Con los dos volcados del DSP corre el DSP de bajo nivel; volcados de tamaño incorrecto dan error.
+- App `android/` (`org.orca.emu`, minSdk 26, arm64-v8a): selector de juego, clave, IROM y COEF; región; JIT y GLES opcionales. Hilo de emulación con contexto EGL pbuffer GLES 3.2 (vuelta al software si falla), copia del cuadro al `ANativeWindow`, AAudio 48 kHz estéreo, ritmo por el reloj real, superposición táctil GameCube/Wii con puntero y Nunchuk, mandos físicos. Los motivos de parada se muestran en pantalla.
+
+**Optimización para gama baja**:
+- Salto de bucles de espera (`idle_skip`, activo por defecto): solo para bucles hacia atrás de ≤ 64 bytes formados por instrucciones de una lista blanca; ejecuta una iteración de prueba y comprueba que no cambió estado, época del bus ni MMIO; luego salta (iteraciones − 1) × longitud, sin pasar del siguiente evento. Resultados, ciclos e instrucciones retiradas idénticos con y sin el salto.
+- GLES: las copias del EFB descargan/suben solo el rectángulo copiado ± 2 píxeles, con lectura RED_INTEGER cuando la implementación la ofrece.
+
 **GPU, parte 1 (M013)** — fuentes: archivos de Dolphin como información (ver README) y YAGCD; el código es propio:
 - `hw::CommandProcessor` (0x0C000000): STATUS calculado (marcas de agua, lectura y comando inactivos, breakpoint), CTRL (6 bits), CLEAR, PERF_SELECT (3 bits), registro 0x0A (8 bits), los ocho punteros del FIFO como pares LO/HI con máscaras 0xFFE0 / 0x03FF (GC) o 0x1FFF (Wii), métricas que leen 0 y 0x64 que lee 4.
 - FIFO enlazado: cada ráfaga del gather pipe avanza el puntero de escritura del CP (a la base cuando es igual al final, si no +32), suma 32 a la distancia y copia los punteros al PI; la GPU lee bloques de 32 bytes mientras la lectura está activada, hay distancia y no está en un breakpoint activado. Interrupción CP (causa PI 0x800) por breakpoint, marca alta o marca baja con su habilitación, solo con la lectura activada.
@@ -214,11 +233,12 @@
 
 1. **Restos de M012 (sin hacer):** los demás comandos de la tarjeta que Dolphin nombra (ReadID, ReadErrorBuffer, WakeUp, Sleep, ArrayToBuffer, WriteBuffer, ExtraByteProgram, ChipErase; ahora con sus códigos de `EXI_DeviceMemoryCard.h`: 0x53, 0x82, 0x85, 0x86, 0x87, 0x88, 0xF3, 0xF4) y el ID del flash en la SRAM; la salida de audio (los bloques del DMA de audio ya se leen pero nadie los reproduce); la mezcla de streaming del AI. También quedan el puerto serie 1 (EXI0/CS2), el AD16 (EXI2/CS0), el mapeo de la ROM en el vector de reset 0xFFF00000, la aplicación de la protección del MI y los comandos restantes de la DI.
 2. **CPU, lo que queda detenido a propósito:** modo little-endian, modo traza (MSR[SE]/[BE]), breakpoints IABR/DABR activos, machine check, eciwx/ecowx con EAR[E] = 1, y los casos de FP que el PEM no fija (ver la tabla de verificación). Ningún juego conocido los usa; cada uno da una parada que explica el motivo. Sin TLB ni caché L1/L2 normal (solo la bloqueada).
-3. **M018 — rendimiento del backend GLES y app Android:** probar en el Redmi 15C (Mali-G52) que existen `GL_EXT_shader_framebuffer_fetch` y la lectura de adjuntos enteros, y medir; mover la transformación de vértices y las copias del EFB a la GPU; shaders especializados por estado (con el ubershader mientras compilan); caché de texturas sin hash por dibujo; ventana/superficie Android, entrada y audio. Después Vulkan (aquí solo compila: no hay controlador; hay que decidir glslang o un generador SPIR-V propio).
+3. **Rendimiento del backend GLES en el teléfono (app Android hecha):** probar en el Redmi 15C (Mali-G52) que existen `GL_EXT_shader_framebuffer_fetch` y la lectura de adjuntos enteros, y medir; mover la transformación de vértices y las copias del EFB a la GPU; shaders especializados por estado (con el ubershader mientras compilan); caché de texturas sin hash por dibujo y copias del EFB limitadas al área (hechos). Después Vulkan (aquí solo compila: no hay controlador; hay que decidir glslang o un generador SPIR-V propio).
 4. **Lo que queda de la GPU por software:** texturas RGBA8 en TMEM con mipmaps, anti-aliasing de RGB565_Z16, formatos de píxel 4-7 (YUV) y el contador de ciclos de copia del EFB (bounding box y contadores de quads hechos en M018).
 5. **(Hecho en M019: JIT ARM64 completo; ver arriba.)** Mejoras posibles medidas en el teléfono: asignación de FPR en registros, comprobación de MSR/FPSCR una vez por bloque, código del camino lento compartido para reducir el tamaño.
 6. **M020 — hardware, DSP/audio:** hecho: HLE del DSP (ROM, init, AX, AXWii). Falta: ucode Zelda en HLE (juegos de Nintendo) y la salida de audio de Android (fase de la app).
-7. **M021 en curso — sistema Wii:** hecho: IPC de Hollywood, kernel IOS, STM, ES (título activo), NAND y /dev/fs, /dev/di, arranque de discos Wii. Falta: Bluetooth HCI/L2CAP/HID, Wii Remote (botones, acelerómetro, IR, altavoz, memoria) y Nunchuk (con su cifrado), y la configuración inicial de una NAND nueva.
+7. **Sistema Wii:** hecho: IPC de Hollywood, kernel IOS, STM, ES (título activo), NAND y /dev/fs, /dev/di, arranque de discos Wii, Bluetooth HCI/L2CAP/HID, Wii Remote, Nunchuk, NAND nueva. Falta (todo se detiene con el motivo): SDP y emparejamiento, MotionPlus y otras extensiones, cifrado de extensión con clave distinta de cero, red/SD/USB/WC24, tienda de títulos de ES (instalar o lanzar canales), IOS reales (LLE de Starlet).
+8. **Pruebas en hardware real:** ninguna prueba en un teléfono ni con juegos comerciales todavía. Es lo siguiente que hay que hacer con la APK del CI.
 
 ## Pendiente de verificación en hardware real
 
@@ -350,7 +370,7 @@ Son comportamientos que el PEM deja indefinidos o que el manual del 750CL no det
 | 11 | Coste fijo de 1 ciclo por instrucción: no hay modelo de pipeline ni de caché | El tiempo es determinista, no exacto al ciclo |
 | 12 | Existe el backend GLES (exacto en llvmpipe) pero sin optimizar: transformación en la CPU, ubershader, copias del EFB por la CPU y texturas con hash en cada dibujo; no hay Vulkan | Un juego puede detenerse en texturas RGBA8 en TMEM con mipmaps, niebla con parámetros degenerados o formatos de píxel YUV (o cuando su microcódigo DSP lee el IROM/COEF sin volcados, o al usar un comando de tarjeta no implementado), siempre con una parada que explica el motivo |
 | 13 | Rendimiento en el anfitrión x86: unos 20 M instr/s en enteros y unos 4 M instr/s en FP. El motor FP cambia el modo de redondeo del anfitrión en cada operación | Esperado: el intérprete es la referencia de precisión; la velocidad vendrá del JIT |
-| 14 | No se ha compilado para Android/ARM64 (no hay NDK en este entorno) | Hay que verificarlo |
+| 14 | (Resuelto: el CI compila y prueba en ARM64 real y compila el núcleo y la app con el NDK; falta ejecutarlo en un teléfono) | — |
 | 15 | `lswx`, `stswx`, `mcrxr` y todas las instrucciones paired-single y `psq` no se pueden verificar con LLVM. Se revisaron contra las tablas de opcodes del manual del 750CL | Medio: hace falta otra fuente (binutils con -m750cl o hardware) |
-| 16 | La imagen del XFB se puede obtener (`orca_run --dump-xfb`), pero no hay ventana ni app Android que la muestre, ni salida de audio | Sin frontend todavía |
-| 17 | DI: comandos de GameCube completos (M020) y los que usa IOS en Wii (M021); faltan la expulsión, los formatos comprimidos (CISO, GCZ, RVZ, WBFS) y la salida de audio real de Android | Parada clara con el comando |
+| 16 | (Resuelto: frontend y app Android con imagen, audio AAudio y controles; sin probar en un dispositivo) | — |
+| 17 | DI: comandos de GameCube completos (M020) y los que usa IOS en Wii (M021); faltan la expulsión, los formatos comprimidos (CISO, GCZ, RVZ, WBFS) | Parada clara con el comando |

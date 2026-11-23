@@ -1,8 +1,8 @@
-# Orca Core — Milestone 018 (rama `orca-core-0.1`)
+# Orca Core 0.1 — integración final (rama `orca-core-0.1`)
 
 Orca Core es un emulador independiente de GameCube/Wii escrito en C++20, con Android ARM64 como plataforma objetivo. **No contiene código de Dolphin** y no deriva de él. Desde M012, con permiso del usuario, se leyeron cuatro archivos de Dolphin solo como información de comportamiento del hardware (ver "Fuentes"); el código de Orca se escribió desde cero.
 
-> **Estado:** la CPU Gekko/Broadway está completa como intérprete de referencia: enteros, sistema, MMU, FPU, paired-singles, cuantización GQR y caché bloqueada. Además, el sistema arranca programas DOL/ELF y **discos GameCube (GCM/ISO) a través de su apploader**, con planificador de tiempo, interrupciones, gather pipe y Disc Interface. Desde M007 también tiene **Video Interface** (temporización NTSC/PAL e interrupciones de display), **Serial Interface con mando estándar** y **Audio Interface** (contador de muestras e interrupción). M008 añade el **External Interface (EXI)** con sus 3 canales y el chip **RTC/SRAM/ROM del IPL**. M009 añade el **Memory Interface**, el bloque de **interfaz del DSP** (buzones, CSR, **ARAM de 16 MiB con su DMA** y registros de DMA de audio) y el lector del **FST** del disco. M010 añade el **núcleo del DSP** (intérprete completo del juego de instrucciones documentado, con opcodes extendidos en paralelo, buzones, DMA del DSP y arranque del microcódigo como el SDK). M011 añade el **acelerador del DSP** para muestras ADPCM (el formato de audio de los juegos) y el acceso crudo de 16 bits a la ARAM, con sus excepciones de fin de rango. M012 completa el acelerador (PCM, lecturas de 8/4 bits y las reglas de fin de rango del hardware), añade el **DMA de audio** del AI y la **tarjeta de memoria** en las dos ranuras. M013 empieza la **GPU**: el FIFO CPU→GPU con el Command Processor, el lector de comandos, los estados CP/XF/BP, el Pixel Engine (tokens e interrupción de fin de dibujo) y el decodificador de todos los formatos de textura. M014 añade el **rasterizador por software de referencia**: carga de vértices, transformación e iluminación XF, recorte, triángulos, líneas y puntos, TEV completo con texturas indirectas, texturas con mipmaps, EFB (Z, mezcla, alpha test, dither, z freeze), **copias del EFB a textura y a XFB** con borrado, y precargas de TMEM. M015 completa esa referencia (niebla, texturas RGBA8 en TMEM, vértices descartados, escala vertical del XFB, copias revisadas con la ruta de hardware de Dolphin) y produce la **primera imagen**: la VI describe el XFB y `orca_run --dump-xfb=cuadro.ppm` lo guarda como imagen. **Todavía no es un emulador jugable.** El rasterizador por software es la referencia de precisión, no el renderizador para el teléfono: M016 añade el **backend OpenGL ES 3.2** (el renderizador para los teléfonos): la GPU rasteriza y un único shader reproduce la etapa por píxel del software con el EFB leído por *framebuffer fetch*; en llvmpipe es idéntico bit a bit al rasterizador por software en todas las escenas de prueba. M017 cierra los pendientes de la CPU que tienen documentación: **BAT 4-7 de Broadway** (HID4[SBE]), DSISR de alineación, DAR según el PEM al cruzar página, `eciwx`/`ecowx`, `mfspr 268/269`, **excepciones FP habilitadas (modo preciso)** y **resultados con OE/UE = 1** (exponente ajustado). Falta optimizar el backend GLES y probarlo en un teléfono real, una app con ventana, el audio, el JIT y los componentes de Wii.
+> **Estado (2026-11-23):** todas las fases de ORCA CORE 0.1 tienen código y pruebas: CPU Gekko/Broadway completa como intérprete de referencia (M003-M004, M017); GPU con rasterizador por software de referencia y backend OpenGL ES 3.2 idéntico bit a bit en las escenas de prueba (M013-M016, M018); **JIT nativo PowerPC → AArch64** que emite código ARM64 real (M019, 0 diferencias frente al intérprete en 3000 programas aleatorios en ARM64 real); memoria y hardware de GameCube (M005-M012); DSP con LLE completo y HLE de ROM/init/AX/AXWii (M010-M012, M020); sistema Wii con descifrado AES-CBC y hashes H0-H3, IPC de Hollywood, kernel IOS (STM, ES, NAND con /dev/fs, /dev/di), Bluetooth HCI/L2CAP/HID, Wii Remote y Nunchuk (M020-M021); arranque de discos GameCube y Wii por su apploader; frontend común, app Android (superficie, audio AAudio, controles táctiles y mandos físicos) y optimizaciones para gama baja. **Límites honestos:** nada se ha probado todavía en un teléfono real ni con juegos comerciales (en este entorno no hay imágenes de juegos ni dispositivo), así que no hay datos de compatibilidad ni de velocidad en el Redmi 15C. Lo que no está implementado (ucode Zelda en HLE, SDP/emparejamiento Bluetooth, MotionPlus, cifrado de extensiones con clave distinta de cero, red/SD/USB/WC24, tienda de títulos de ES) **detiene la emulación con el motivo**, nunca falla en silencio. Ver `docs/ESTADO.md`.
 
 ## Qué incluye este milestone
 
@@ -48,7 +48,14 @@ Orca Core es un emulador independiente de GameCube/Wii escrito en C++20, con And
 | **Bounding box y contadores del PE (M018)** | BP 0x55-0x57 y PE 0x10-0x2A en el software y en el backend GLES (storage buffer e imagen de ids de quad), comparados registro a registro |
 | **CPU, cierre de pendientes (M017)** | BAT 4-7 de Broadway con HID4[SBE], DSISR de alineación, DAR por segmento/área BAT, eciwx/ecowx, mfspr 268/269, excepción FP precisa (SRR1[11]), resultados ajustados con OE/UE comparados con el modelo exacto |
 | **Backend OpenGL ES 3.2 (M016)** | `orca_gles`: rasterización en la GPU con pendientes de atributos exactas por triángulo, ubershader del TEV/EFB, EFB R32UI con framebuffer fetch, texturas decodificadas con caché, copias/borrados por la CPU; comparado píxel a píxel con el software |
-| Pruebas | 19 suites; 268.917 casos diferenciales (enteros y FP contra referencias independientes, la de FP con aritmética racional exacta); 189 codificaciones verificadas con `llvm-mc`; 356 mutaciones detectadas; 9 programas C y un apploader compilados con clang, arrancados también desde discos sintéticos |
+| **Wii: disco y descifrado (M020)** | AES-128-CBC y SHA-1 propios; tabla de particiones, clave de título con la clave común del usuario, bloques de 0x8000 con verificación H0-H3; unidad de disco con streaming DTK |
+| **DSP HLE (M020)** | ROM, ucode init, AX y AXWii (tres disposiciones) identificados por hash; con volcados IROM/COEF del usuario corre el DSP de bajo nivel (cualquier ucode) |
+| **Sistema Wii (M021)** | IPC de Hollywood con sus tiempos, kernel IOS (24 fd, respuestas diferidas), STM, ES, NAND en un directorio del anfitrión con permisos, `/dev/fs`, `/dev/di`, valores de memoria de 41 IOS, `boot_wii_disc` |
+| **Bluetooth y Wii Remote (M021)** | `/dev/usb/oh1/57e/305`: HCI, L2CAP (PSM 0x11/0x13), HID; Wii Remote con botones, acelerómetro, IR (3 formatos), altavoz ADPCM, EEPROM, registros; Nunchuk con calibración y cifrado de clave cero |
+| **NAND nueva (M021)** | SYSCONF (con BT.DINF de los mandos emulados), setting.txt cifrado, uid.sys; `orca_run --create-nand=usa\|eur\|jpn\|kor` |
+| **Frontend y app Android** | `orca::frontend::Emulator` (cuadros, mandos, audio); app `android/` con SurfaceView, AAudio 48 kHz, contexto EGL/GLES 3.2 con vuelta al software, superposición táctil GameCube/Wii, mandos físicos |
+| **Optimización gama baja** | Salto exacto de bucles de espera (mismos resultados, ciclos e instrucciones): av_suite 2034 → 397 ms, dvd_suite 175 s → 0,17 s; copias EFB del GLES limitadas al rectángulo copiado |
+| Pruebas | 28 suites; 268.917 casos diferenciales (enteros y FP contra referencias independientes, la de FP con aritmética racional exacta); 189 codificaciones verificadas con `llvm-mc`; 402 mutaciones detectadas en el intérprete/GPU y 20 de 22 en el JIT (las 2 restantes, equivalentes); programas C y apploaders (GameCube y Wii) compilados con clang, arrancados también desde discos sintéticos |
 
 ## Compilar y probar
 
@@ -73,6 +80,7 @@ Ejecutar un DOL o ELF sin interfaz gráfica (imprime por qué se detuvo y los re
 ```sh
 ./build/orca_run programa.dol [ciclos] [gc|wii]
 ./build/orca_run juego.iso [ciclos]        # arranca un disco GameCube vía su apploader
+./build/orca_run --create-nand=usa --nand=nand/ --wii-keys=clave_comun.bin juego_wii.iso 7290000000 wii   # disco Wii (10 s emulados)
 ./build/orca_elf2dol programa.elf programa.dol
 ./build/orca_run --dump-xfb=cuadro.ppm programa.dol   # guarda el XFB del campo superior al terminar
 ```
@@ -88,12 +96,21 @@ Benchmark del intérprete. Mide el equipo anfitrión, no un teléfono:
 
 ### Android ARM64
 
-Todavía no se ha compilado ni probado en Android. Este entorno no tiene el Android NDK. El código no usa ensamblador ni intrínsecos de x86, y el orden big-endian se arma byte a byte, sin depender del anfitrión. El comando previsto es este (sin verificar):
+El CI (`.github/workflows/orca-core-0.1.yml`) compila y ejecuta todas las suites en ARM64 real (`ubuntu-24.04-arm`) con GCC, Clang y ASan+UBSan, y compila el núcleo con el NDK para arm64-v8a. Compilación manual del núcleo:
 
 ```sh
 cmake -S . -B build-android -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK/build/cmake/android.toolchain.cmake \
-      -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-29 -DORCA_BUILD_TESTS=ON
+      -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-26 -DORCA_BUILD_TESTS=OFF
+cmake --build build-android
 ```
+
+App (`android/`, Gradle 8.9, AGP 8.5.2, Java 17, NDK; solo arm64-v8a, Android 8.0+):
+
+```sh
+cd android && gradle assembleDebug     # app/build/outputs/apk/debug/app-debug.apk
+```
+
+La app pide el juego (imagen de disco ISO/GCM cruda de GameCube o Wii), y para Wii la clave común (`keys.bin` o 16 bytes) y la región de la NAND nueva. Los volcados IROM/COEF del DSP son opcionales (sin ellos se usa el HLE). **No incluye BIOS, claves ni juegos**: los aporta el usuario.
 
 ## Estructura
 
