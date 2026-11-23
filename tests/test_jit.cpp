@@ -38,6 +38,14 @@ struct Rng {
     u32 u(u32 n) { return next() % n; }
 };
 
+// Under ASan/UBSan (Debug) the randomised tests run a quarter of their cases: the
+// sanitizers look for memory and UB errors, the full counts run in the other builds.
+#ifdef ORCA_SANITIZED
+constexpr int kScale = 4;
+#else
+constexpr int kScale = 1;
+#endif
+
 constexpr u32 kCode = 0x00004000U, kData = 0x00010000U, kDataSize = 0x2000U;
 
 // A random instruction from the translated set (plus a few the JIT leaves to the
@@ -306,7 +314,7 @@ TEST_CASE(jit_matches_interpreter_on_random_programs) {
     Rng rng{0x0DDB1A5E5EEDULL};
     u64 total_steps = 0, block_steps = 0, programs = 0, interp_steps = 0, invalidations = 0;
     unsigned failures = 0;
-    for (int p = 0; p < 3000; ++p) {
+    for (int p = 0; p < 3000 / kScale; ++p) {
         const u32 len = 8U + rng.u(56);
         std::vector<u32> prog;
         for (u32 i = 0; i < len; ++i) prog.push_back(random_insn(rng, kCode + 4U * i, kCode + 4U * len));
@@ -494,7 +502,7 @@ TEST_CASE(native_fp_algorithm_matches_the_fpu_engine) {
     for (const F::Op op : ops) {
         for (int single = 0; single < 2; ++single) {
             if (op == F::Op::Round && single == 0) continue;
-            for (int k = 0; k < 150000; ++k) {
+            for (int k = 0; k < 150000 / kScale; ++k) {
                 const u64 A = fp_operand(g, 0), C = fp_operand(g, A);
                 u64 B = fp_operand(g, g.u(2) ? A : C);
                 if (op >= F::Op::MAdd && op <= F::Op::NMSub && g.u(3) == 0U) { // addend near -a*c: cancellation
@@ -531,7 +539,7 @@ TEST_CASE(jit_native_fp_matches_interpreter) {
     Rng rng{0xFEEDF00D5EEDULL};
     unsigned failures = 0;
     u64 steps = 0, helper = 0, native_blocks = 0;
-    for (int p = 0; p < 2000; ++p) {
+    for (int p = 0; p < 2000 / kScale; ++p) {
         // FP and paired-single arithmetic, moves, selects and compares only
         std::vector<u32> prog;
         const u32 len = 8U + rng.u(40);
@@ -626,9 +634,9 @@ TEST_CASE(jit_native_fp_matches_interpreter) {
         native_blocks += j.stats().blocks_compiled;
     }
     CHECK_EQ(failures, 0U);
-    std::printf("[jit] native FP: 2000 programs, %llu instructions in blocks, %llu of them by the interpreter call (slow path), "
+    std::printf("[jit] native FP: %d programs, %llu instructions in blocks, %llu of them by the interpreter call (slow path), "
                 "the rest native; identical to the interpreter\n",
-                static_cast<unsigned long long>(steps), static_cast<unsigned long long>(helper));
+                2000 / kScale, static_cast<unsigned long long>(steps), static_cast<unsigned long long>(helper));
     CHECK(helper < steps / 2U);
     (void)native_blocks;
 }
@@ -736,7 +744,8 @@ TEST_CASE(jit_directed_division_of_tiny_numbers) {
     if (!jit::host_can_execute()) return;
     // fdiv / fdivs where a and b are tiny (some subnormal) but the quotient is normal
     Rng r{4242};
-    for (int k = 0; k < 1500; ++k) {
+    u64 slow = 0, in_blocks = 0;
+    for (int k = 0; k < 1500 / kScale; ++k) {
         // mostly subnormal or barely normal operands: there the remainder a - q*b underflows
         const unsigned range = k % 3 == 0 ? 200U : 3U;
         const u64 a = (static_cast<u64>(r.next()) << 32 | r.next()) & 0x800FFFFFFFFFFFFFULL | static_cast<u64>(r.u(range)) << 52;
@@ -751,8 +760,15 @@ TEST_CASE(jit_directed_division_of_tiny_numbers) {
             m.s().fpr[1].ps0 = a;
             m.s().fpr[2].ps0 = b;
         };
-        CHECK(lockstep_same(init, 3, 3, nothing));
+        Jit::Stats st{};
+        CHECK(lockstep_same(init, 3, 3, nothing, &st));
+        slow += st.helper_steps;
+        in_blocks += st.block_steps;
     }
+    // the native path must really run here (otherwise the test checks nothing of it)
+    std::printf("[jit] tiny divisions: %llu instructions in blocks, %llu by the slow path\n",
+                static_cast<unsigned long long>(in_blocks), static_cast<unsigned long long>(slow));
+    CHECK(slow < in_blocks / 2U);
 }
 
 TEST_CASE(jit_directed_store_into_a_linked_block) {

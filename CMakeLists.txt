@@ -31,6 +31,7 @@ endif()
 
 if(ORCA_SANITIZE)
     add_compile_options(-fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer)
+    add_compile_definitions(ORCA_SANITIZED=1) # long randomised tests run a quarter of their cases
     add_link_options(-fsanitize=address,undefined)
 endif()
 
