@@ -15,6 +15,8 @@
 #include "orca/hw/serial_interface.hpp"
 #include "orca/hw/video_interface.hpp"
 #include "orca/hw/mmio_splitter.hpp"
+#include "orca/hw/external_interface.hpp"
+#include "orca/hw/exi_ipl.hpp"
 #include "orca/hw/processor_interface.hpp"
 #include "orca/loader/executable.hpp"
 #include "orca/memory/bus.hpp"
@@ -68,6 +70,9 @@ public:
     hw::VideoInterface& vi() noexcept { return *vi_; }
     hw::SerialInterface& si() noexcept { return *si_; }
     hw::AudioInterface& ai() noexcept { return *ai_; }
+    hw::ExternalInterface& exi() noexcept { return *exi_; }
+    // RTC/SRAM/IPL-ROM chip on EXI channel 0, CS1 (ROM image supplied by the user).
+    hw::IplRtcSram& ipl() noexcept { return *ipl_; }
     // Called at every VI field start (top = false / bottom = true), after the SI hook.
     void set_field_listener(std::function<void(bool)> f) { field_listener_ = std::move(f); }
     void insert_disc(std::unique_ptr<disc::DiscReader> d) { di_->insert(std::move(d)); }
@@ -132,6 +137,8 @@ private:
     std::unique_ptr<hw::VideoInterface> vi_;
     std::unique_ptr<hw::SerialInterface> si_;
     std::unique_ptr<hw::AudioInterface> ai_;
+    std::unique_ptr<hw::ExternalInterface> exi_;
+    std::unique_ptr<hw::IplRtcSram> ipl_;
     std::function<void(bool)> field_listener_;
     std::optional<u32> stop_pc_;
     u64 timebase_remainder_{0};

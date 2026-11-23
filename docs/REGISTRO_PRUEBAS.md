@@ -1,4 +1,4 @@
-# Registro de pruebas — Milestone 007
+# Registro de pruebas — Milestone 008
 
 Todos los resultados son de ejecuciones reales del 2026-11-14 en este entorno, sobre una copia limpia de los fuentes entregados.
 
@@ -8,9 +8,9 @@ Todos los resultados son de ejecuciones reales del 2026-11-14 en este entorno, s
 
 | Configuración | Compilación | Advertencias (`-Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion -Wshadow -Werror`) | CTest |
 |---|---|---|---|
-| GCC Release | OK | 0 | 12/12 pasan (3,9 s) |
-| Clang Release | OK | 0 | 12/12 pasan (2,7 s) |
-| GCC Debug + ASan + UBSan (`-fno-sanitize-recover=all`) | OK | 0 | 12/12 pasan (70,0 s) |
+| GCC Release | OK | 0 | 13/13 pasan (3,9 s) |
+| Clang Release | OK | 0 | 13/13 pasan (3,0 s) |
+| GCC Debug + ASan + UBSan (`-fno-sanitize-recover=all`) | OK | 0 | 13/13 pasan (71,8 s) |
 | Clang + ASan/UBSan | **NO EJECUTADO**: falta `compiler-rt` en el entorno | — | — |
 | Android NDK arm64-v8a | **NO EJECUTADO**: no hay NDK ni sysroot AArch64 | — | — |
 
@@ -29,7 +29,34 @@ Todos los resultados son de ejecuciones reales del 2026-11-14 en este entorno, s
 | **programs** (M005) | 3 | 34 | 0 |
 | **disc** (M006) | 12 | 145 | 0 |
 | **av** (M007) | 12 | 292 | 0 |
+| **exi** (M008) | 16 | 481 | 0 |
 | encodings (vs `llvm-mc`) | 189 instrucciones | 181 ensambladas + 8 desensambladas | 0 diferencias |
+
+### EXI y RTC/SRAM/ROM (M008)
+
+Unitarias:
+- Registros: estado de reset, paso 0x14 entre canales, bits 0-4 de MAR/LENGTH a cero, solo 32 bits, fin de la ventana en 0x3C.
+- CSR: máscaras, bits que se limpian escribiendo 1 (escribir 1 nunca los activa), EXT de solo lectura, ROMDIS permanente y solo en el canal 0, rechazo de dos bits CS y de CLK 110/111 sin cambiar nada.
+- Interrupciones: TCINT/EXIINT/EXTINT con y sin máscara hacia la causa EXI del PI.
+- Tiempos medidos con el planificador: 32 bits a 8 MHz = **1.944 ciclos**; 8 bits a 1 MHz = **3.888**; 64 bytes a 32 MHz = **7.776**; 8 bits a 32 MHz = 121,5 → **122** (redondeo hacia arriba).
+- Los resultados solo aparecen al terminar: DATA y la RAM del DMA no cambian antes.
+- Errores con motivo: sin CS, CS vacío, lectura+escritura, RW = 11, DMA de longitud 0 o fuera de RAM, CR o CS cambiados durante una transferencia.
+- RTC: cuenta segundos emulados (1000 → 1003 tras 3 s), escritura, vuelta a cero del contador de 32 bits, lectura por bytes.
+- SRAM: escritura del bias en el byte 0x0C con el comando 0x20000400 (el mismo que usa Linux), DMA de escritura y lectura de los 64 bytes, parada al pasar del final.
+- ROM: sin imagen → parada; con imagen (formato de dirección del 21C3) lectura inmediata y por DMA, parada al pasar del final de la imagen, escritura rechazada, parada tras ROMDIS mientras RTC/SRAM siguen funcionando.
+- Orden de bytes de las escrituras inmediatas de 1 a 4 bytes (MSB primero) con un dispositivo de prueba.
+
+Programa `exi_suite` compilado con clang para el 750 (polling de TSTART y de la causa EXI del PI, como hace el software de GameCube):
+
+| Valor | Esperado | Obtenido |
+|---|---|---|
+| RTC fijado a 0x12345678 por el anfitrión | 0x12345678 | 0x12345678 |
+| Ticks del time base de una transferencia de 4 bytes a 8 MHz (1.944 ciclos = 162 ticks + polling) | 162-175 | 163 |
+| CR tras el DMA | 0x2 (DMA, TSTART borrado) | 0x2 |
+| TCINT / causa del PI tras borrarlo | 8 / 0 | 8 / 0 |
+| SRAM por DMA: bytes 0-3 escritos por el programa, 4-7 y 60-63 del anfitrión | DEADBEEF, 04050607, 3C3D3E3F | iguales |
+| RTC escrito con 0x100 y leído de nuevo | 0x100 | 0x100 |
+| EXT de las ranuras A y B sin tarjeta | 0 / 0 | 0 / 0 |
 
 ### Video, entrada y audio (M007)
 
@@ -117,7 +144,16 @@ P13 (palabra alta de `fctiw`) sobrevivió como se esperaba, porque son bits inde
 
 **Video, entrada, audio y planificador (M007), 14 de 14 detectadas:** V1 fórmula de longitud de campo · V2 VCT empezando en 0 · **V3 el software puede activar INT: no se detectaba al principio** → se añadió `vi_software_cannot_set_int` · V4 VICLK ignorado · V5 PGOFF del XFB ignorado · V6 NIN ignorado · S1 falta el bit 7 del segundo byte de estado · S2 leer INBUF no borra RDST · S3 canal vacío sin NOREP · S4 orden de los bits EN invertido · A1 SCRESET ignorado · A2 AIINTVLD ignorado · A3 la coincidencia AIIT llega tarde · C1 los eventos ven el tiempo final del avance (el error real corregido en este hito).
 
-**Total: 68 mutaciones detectadas.**
+**EXI y RTC/SRAM (M008), 21 de 22 detectadas:** E1 escribir CSR borra todas las interrupciones · E2 se acepta CLK 110 · E3 duración sin redondeo hacia arriba · E4 bytes de DATA en orden inverso · E5 una lectura corta borra los bytes bajos de DATA · E6 TCINT ignora la máscara · E7 ROMDIS en cualquier canal · E8 DATA no se actualiza al terminar · E9 no se activa TCINT · E10 CS1 y CS2 intercambiados · E11 MAR sin alinear · E12 se aceptan dos bits CS · E13 EXT activo con cualquier dispositivo · E14 se permite cambiar CS durante una transferencia · I1 dirección desplazada 8 bits en vez de 6 · I2 ROMDIS ignorado · I3 el RTC no avanza · I4 se permite un byte de más · I6 se puede escribir la ROM · I7 el RTC se actualiza con el primer byte · I8 se aceptan datos durante una lectura.
+I5 (liberar CS no reinicia la secuencia) sobrevivió y es **equivalente**: cada nueva selección llama a `select()`, que ya reinicia la secuencia, así que no hay forma de observar la diferencia.
+
+**Total: 89 mutaciones detectadas.**
+
+## Errores encontrados durante M008
+
+- No apareció ningún error en el código del emulador.
+- **Errores en mis pruebas:** combiné la base de la SRAM con el desplazamiento usando OR (0x20000100 | 0x300 = 0x20000300) en lugar de sumarlos (0x20000400); esperé CR = 0 tras el DMA, cuando el bit DMA se conserva y solo se borra TSTART (CR = 0x2); y dos comprobaciones mal planteadas en la prueba de la ROM (una esperaba un fallo al escribir DATA y otra era siempre verdadera). Las cuatro se corrigieron antes de entregar.
+- `orca_run` con `exi_suite.dol` se para limpiamente en el primer acceso al puerto de pruebas (0x0E000000), que solo existe en las pruebas: es lo esperado.
 
 ## Errores encontrados durante M007
 

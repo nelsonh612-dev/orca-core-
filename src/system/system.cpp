@@ -28,7 +28,11 @@ System::System(SystemConfig config) : config_(config), clocks_(clocks_for(config
     });
     page_0c006_->attach(0x000, 0x40, *di_);
     page_0c006_->attach(hw::si::kOffsetInPage, 0x100, *si_);
-    page_0c006_->attach(hw::ai::kOffsetInPage, 0x20, *ai_); // EXI (0x800) not implemented yet
+    exi_ = std::make_unique<hw::ExternalInterface>(bus_, scheduler_, *pi_, clocks_.cpu_hz);
+    ipl_ = std::make_unique<hw::IplRtcSram>(scheduler_, clocks_.cpu_hz);
+    (void)exi_->attach(hw::exi::kIplChannel, hw::exi::kIplDevice, *ipl_);
+    page_0c006_->attach(hw::exi::kOffsetInPage, hw::exi::kWindowSize, *exi_);
+    page_0c006_->attach(hw::ai::kOffsetInPage, 0x20, *ai_);
     bus_.map_mmio("DI/SI/EXI/AI", hw::di::kBase, 0x1000, *page_0c006_);
     bus_.map_mmio("VI", hw::vi::kBase, 0x1000, *vi_);
 }

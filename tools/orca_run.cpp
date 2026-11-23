@@ -1,6 +1,8 @@
 // orca_run: headless runner. Loads a DOL/ELF, boots it (HLE) and runs for a
 // number of cycles, then prints why it stopped and the CPU state.
-// Usage: orca_run file.(dol|elf|iso|gcm) [cycles] [gc|wii]
+// Usage: orca_run [--ipl-rom=FILE] [--rtc=SECONDS] file.(dol|elf|iso|gcm) [cycles] [gc|wii]
+//   --ipl-rom: IPL ROM image (descrambled, as the CPU reads it) for EXI0/CS1
+//   --rtc:     initial RTC counter value (seconds); default 0
 // .iso/.gcm images are booted through the HLE IPL + apploader path.
 #include "orca/system/system.hpp"
 
@@ -11,13 +13,29 @@
 #include <iterator>
 #include <vector>
 
-int main(int argc, char** argv) {
+int main(int argc_in, char** argv_in) {
+    std::vector<char*> args;
+    std::string ipl_path;
+    unsigned long rtc = 0;
+    for (int i = 0; i < argc_in; ++i) {
+        if (std::strncmp(argv_in[i], "--ipl-rom=", 10) == 0) ipl_path = argv_in[i] + 10;
+        else if (std::strncmp(argv_in[i], "--rtc=", 6) == 0) rtc = std::strtoul(argv_in[i] + 6, nullptr, 0);
+        else args.push_back(argv_in[i]);
+    }
+    const int argc = static_cast<int>(args.size());
+    char** argv = args.data();
     if (argc < 2) { std::fprintf(stderr, "usage: %s file.(dol|elf|iso|gcm) [cycles] [gc|wii]\n", argv[0]); return 2; }
     const unsigned long long cycles = argc > 2 ? std::strtoull(argv[2], nullptr, 0) : 486000000ULL;
     orca::system::SystemConfig cfg;
     cfg.console = (argc > 3 && std::strcmp(argv[3], "wii") == 0) ? orca::system::Console::Wii : orca::system::Console::GameCube;
     orca::system::System sys(cfg);
     std::string error;
+    sys.ipl().set_rtc(static_cast<orca::u32>(rtc));
+    if (!ipl_path.empty()) {
+        std::ifstream rin(ipl_path, std::ios::binary);
+        std::vector<orca::u8> rom((std::istreambuf_iterator<char>(rin)), std::istreambuf_iterator<char>());
+        if (!sys.ipl().load_rom(std::move(rom))) { std::fprintf(stderr, "cannot use IPL ROM %s (empty or > 2 MiB)\n", ipl_path.c_str()); return 1; }
+    }
     const std::string path = argv[1];
     const auto ends_with = [&](const char* ext) { const std::size_t n = std::strlen(ext); return path.size() >= n && path.compare(path.size() - n, n, ext) == 0; };
     if (ends_with(".iso") || ends_with(".gcm") || ends_with(".ISO") || ends_with(".GCM")) {

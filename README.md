@@ -1,8 +1,8 @@
-# Orca Core — Milestone 007
+# Orca Core — Milestone 008
 
 Orca Core es un emulador independiente de GameCube/Wii escrito en C++20, con Android ARM64 como plataforma objetivo. **No contiene código de Dolphin** y no deriva de él.
 
-> **Estado:** la CPU Gekko/Broadway está completa como intérprete de referencia: enteros, sistema, MMU, FPU, paired-singles, cuantización GQR y caché bloqueada. Además, el sistema arranca programas DOL/ELF y **discos GameCube (GCM/ISO) a través de su apploader**, con planificador de tiempo, interrupciones, gather pipe y Disc Interface. Desde M007 también tiene **Video Interface** (temporización NTSC/PAL e interrupciones de display), **Serial Interface con mando estándar** y **Audio Interface** (contador de muestras e interrupción). **Todavía no es un emulador jugable.** Faltan EXI (tarjeta de memoria, RTC/SRAM), el DSP y la salida de audio, la GPU (CP/PE/XF/BP/TEV), el JIT y los componentes de Wii.
+> **Estado:** la CPU Gekko/Broadway está completa como intérprete de referencia: enteros, sistema, MMU, FPU, paired-singles, cuantización GQR y caché bloqueada. Además, el sistema arranca programas DOL/ELF y **discos GameCube (GCM/ISO) a través de su apploader**, con planificador de tiempo, interrupciones, gather pipe y Disc Interface. Desde M007 también tiene **Video Interface** (temporización NTSC/PAL e interrupciones de display), **Serial Interface con mando estándar** y **Audio Interface** (contador de muestras e interrupción). M008 añade el **External Interface (EXI)** con sus 3 canales y el chip **RTC/SRAM/ROM del IPL**. **Todavía no es un emulador jugable.** Faltan la tarjeta de memoria, el DSP y la salida de audio, la GPU (CP/PE/XF/BP/TEV), el JIT y los componentes de Wii.
 
 ## Qué incluye este milestone
 
@@ -30,7 +30,9 @@ Orca Core es un emulador independiente de GameCube/Wii escrito en C++20, con And
 | **Video Interface (M007)** | Registros 0x00-0x7F; temporización derivada de HTR0/VTR/VTO/VTE/DCR/VICLK (NTSC sale a 59,94 Hz y PAL a 50 Hz a partir de los valores documentados); DPV/DPH; DI0-DI3 → PI; campos y direcciones de XFB |
 | **Serial Interface (M007)** | Transferencias SICOMCSR con buffer de E/S, SISR con errores por canal, sondeo automático SIPOLL cada X líneas de video; mando estándar: identificación (0x09 0x00), poll en modo analógico 3, origin y calibrate |
 | **Audio Interface (M007)** | AICR/AIVR/AISCNT/AIIT; contador exacto a 48/32 kHz; interrupción AIIT → PI. Sin salida de sonido todavía |
-| Pruebas | 12 suites; 268.917 casos diferenciales (enteros y FP contra referencias independientes, la de FP con aritmética racional exacta); 189 codificaciones verificadas con `llvm-mc`; 68 mutaciones detectadas; 5 programas C y un apploader compilados con clang, arrancados también desde discos sintéticos |
+| **EXI (M008)** | 3 canales con CSR/MAR/LENGTH/CR/DATA, transferencias inmediatas y por DMA asíncronas (duración = bits / reloj EXI), TCINT/EXIINT/EXTINT → PI, ROMDIS permanente; cualquier caso sin comportamiento documentado da una parada clara |
+| **RTC/SRAM/ROM del IPL (M008)** | Dispositivo en EXI0/CS1: palabra de comando de 32 bits (bit 31 = escritura, dirección << 6); contador RTC que avanza con el tiempo emulado; 64 bytes de SRAM; ROM opcional que aporta el usuario (`orca_run --ipl-rom=`). No se incluye ninguna ROM |
+| Pruebas | 13 suites; 268.917 casos diferenciales (enteros y FP contra referencias independientes, la de FP con aritmética racional exacta); 189 codificaciones verificadas con `llvm-mc`; 89 mutaciones detectadas; 6 programas C y un apploader compilados con clang, arrancados también desde discos sintéticos |
 
 ## Compilar y probar
 
@@ -117,6 +119,9 @@ docs/AUDITORIA_M002.md  docs/REGISTRO_PRUEBAS.md  docs/ESTADO.md
 - YAGCD (*Yet Another GameCube Documentation*, capítulos 5 y 9; espejo hitmen.c02.at): registros de VI, SI, AI, DI y PI, y protocolo Joy-Bus.
 - NetBSD `sys/arch/evbppc/wii/dev/vireg.h` (licencia BSD): campos de bits de la VI, derivados de YAGCD.
 - libjoybus (loopj): longitudes de los comandos 0x00/0x40/0x41/0x42 y formato del estado del mando.
+- WiiBrew, "Hardware/External Interface" y "MX23L4005": registros EXI, mapa de dispositivos y direcciones del RTC/SRAM.
+- NetBSD `sys/arch/evbppc/wii/dev/rtcsram.c` (licencia BSD) y Linux `drivers/rtc/rtc-gamecube.c`: protocolo del RTC/SRAM (comando 0x20000000 / 0x20000100, bit de escritura 0x80000000, registro del bias = byte 0x0C de la SRAM).
+- "GameCube Hacking" (21C3, 2004): formato de la dirección de lectura de la ROM (`00000AAA ... AAxxxxxx`).
 - Patentes de Nintendo US6609977 / US7976392: descripción de los registros de display de la VI.
 
 No se usó código de Dolphin.

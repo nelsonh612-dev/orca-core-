@@ -1,4 +1,4 @@
-# Estado del proyecto — Milestone 007
+# Estado del proyecto — Milestone 008
 
 ## Funciones implementadas (todas con pruebas)
 
@@ -38,7 +38,7 @@
 
 **Discos y arranque (M006)**
 - `disc::MemoryDisc` y `disc::FileDisc` (acceso aleatorio, sin cargar la imagen entera). Cabecera: ID del juego, nombre, número de disco, versión, magic GC/Wii, offset del DOL principal y FST. Cabecera del apploader: fecha, entry, tamaño y trailer, con su punto de entrada validado dentro de la imagen cargada. Los discos Wii se rechazan y se explica el motivo.
-- `hw::MmioSplitter`: reparte la página 0x0C006000 (DI en 0x000; SI, EXI y AI todavía sin dispositivo). Los accesos a un sub-rango vacío dan una parada clara.
+- `hw::MmioSplitter`: reparte la página 0x0C006000 (DI en 0x000, SI en 0x400, EXI en 0x800 y AI en 0xC00). Los accesos a un sub-rango vacío dan una parada clara.
 - `hw::DiscInterface`: DISR (máscaras más bits de interrupción que se limpian escribiendo 1), DICVR (tapa cerrada), CMDBUF0-2, DIMAR, DILENGTH, DICR, DIIMMBUF. Comando 0xA8 (lectura por DMA, offset = CMDBUF1 << 2) con finalización asíncrona en el planificador: DIMAR avanza, DILENGTH queda en 0, se borra TSTART y se activa TCINT. Leer fuera de la imagen activa DEINT. TCINT/DEINT/BRKINT/CVRINT con sus máscaras levantan la causa DI del PI.
 - Los motivos de las paradas de la CPU ahora nombran el dispositivo MMIO y su explicación (por ejemplo "[MMIO device DI rejected the access: DI: command 0x12 not implemented]").
 - `System::call_guest` y `run_until`: llamadas a funciones invitadas con una dirección de retorno que nunca se ejecuta.
@@ -51,10 +51,15 @@
 - `hw::AudioInterface` (0x0C006C00): AICR (PSTAT, AFR, AIINTMSK, AIINT que se limpia escribiendo 1, AIINTVLD, SCRESET), AIVR, AISCNT exacto respecto del tiempo de CPU (10.125 ciclos por muestra a 48 kHz en GC) y AIIT con interrupción vía PI.
 - Planificador: ahora cada evento se dispara con `now` igual a su tiempo previsto. Antes veía el tiempo final del avance, y un dispositivo que se reprogramaba de forma relativa perdía eventos intermedios. Lo detectó la prueba de campos de la VI.
 
+**External Interface y RTC/SRAM/ROM (M008)**
+- `hw::ExternalInterface` (0x0C006800, ventana 0x40): 3 canales × CSR/MAR/LENGTH/CR/DATA (paso 0x14), solo accesos de 32 bits. CSR: ROMDIS (solo canal 0, permanente hasta el reset), EXT de solo lectura (dispositivo externo en CS0), EXTINT/TCINT/EXIINT que se limpian escribiendo 1, máscaras, CS (como mucho un bit) y CLK 1-32 MHz (110/111 reservados → parada). MAR y LENGTH con los bits 0-4 a cero. CR: TLEN, RW, DMA y TSTART. Transferencias inmediatas (1-4 bytes, MSB primero) y DMA (múltiplos de 32 bytes, solo a RAM), terminadas por el planificador tras bits / reloj EXI: se borra TSTART y se activa TCINT. Cualquier (estado & máscara) de un canal levanta la causa EXI del PI. Interfaz `ExiDevice` para conectar dispositivos, más `set_device_interrupt` (línea INT) y `notify_slot_change` (EXTINT).
+- `hw::IplRtcSram` en EXI0/CS1: palabra de comando (bit 31 = escritura; dirección = (comando & 0x7FFFFFFF) >> 6) y después un flujo de datos con autoincremento hasta liberar CS. ROM 0x000000-0x1FFFFF (imagen opcional del usuario, tal como la lee la CPU con el descifrador activo), RTC en 0x800000 (comando 0x20000000) y SRAM de 64 bytes en 0x800004 (comando 0x20000100). El RTC cuenta segundos de tiempo emulado desde el valor que fije el anfitrión o el invitado.
+- `System::exi()` / `System::ipl()`; `orca_run --ipl-rom=ARCHIVO --rtc=SEGUNDOS`.
+
 ## Funciones pendientes (en orden)
 
-1. **M008 — EXI y tiempos finos:** EXI (3 canales, DMA, tarjeta de memoria, RTC/SRAM, ROM de fuentes del IPL), MI, comandos restantes de la DI, FST y dispositivos de Wii básicos. Hay que investigarlos antes, igual que en M007.
-2. **M009 — JIT ARM64:** emisor ARM64 verificado con el desensamblador de LLVM, bloques básicos, asignación de registros, caché de bloques conectada a la invalidación del bus, y pruebas diferenciales intérprete vs JIT, que tienen que correr en un dispositivo ARM64.
+1. **Resto de M008 (pasa a M009):** tarjeta de memoria en EXI0/CS0 y EXI1/CS0. No se implementó porque las fuentes accesibles no fijan dos datos: el número de bytes de espera de la lectura 0x52 (depende del reloj EXI) y el formato de la respuesta de identificación (tamaño de la tarjeta). Una fuente (gc-memcard-adapter, licencia MIT, capturas de un bus real), todavía sin contrastar con otra, da los códigos 0x52 lectura, 0xF2 escritura, 0xF1 borrado de sector, 0x83 estado, 0x89 borrar estado, 0x81 interrupciones y 0x87 despertar, con la dirección empaquetada en 4 bytes (>> 17, >> 9, (>> 7) & 3, & 0x7F). También quedan el puerto serie 1 (EXI0/CS2), el AD16 (EXI2/CS0), el mapeo de la ROM en el vector de reset 0xFFF00000, el MI, los comandos restantes de la DI y el FST.
+2. **M010 — JIT ARM64:** emisor ARM64 verificado con el desensamblador de LLVM, bloques básicos, asignación de registros, caché de bloques conectada a la invalidación del bus, y pruebas diferenciales intérprete vs JIT, que tienen que correr en un dispositivo ARM64.
 3. **Después:** GPU (CP/FIFO, XF, BP, TEV, EFB/XFB → Vulkan para Mali), DSP y audio, DI y discos, SI y controles, EXI, AI y los componentes de Wii (Hollywood, IOS, Bluetooth).
 
 ## Pendiente de verificación en hardware real
@@ -89,6 +94,15 @@ Son comportamientos que el PEM deja indefinidos o que el manual del 750CL no det
 | SI: solo el modo analógico 3 del mando (el que usa el SDK); los modos 0-2 y 4 dan una parada clara | El orden exacto de los nibbles en esos modos no está confirmado |
 | SI: las transferencias terminan en el siguiente paso del planificador (sin el tiempo real del bus Joy-Bus) | Aproximación |
 | SI: bit 7 del segundo byte de estado = 1 (USE_ORIGIN) | Coinciden dos fuentes independientes; YAGCD lo marca como "unused" |
+| EXI: duración de una transferencia | Bits / reloj EXI, redondeado hacia arriba en ciclos de CPU, sin sobrecoste de protocolo |
+| EXI: momento del intercambio de datos | Con el dispositivo al escribir TSTART (así un error para la CPU en ese store); DATA, la RAM del DMA, TSTART y TCINT cambian al terminar |
+| EXI: lectura inmediata de N < 4 bytes | Solo se reemplazan los N bytes altos de DATA |
+| EXI: DATA tras una escritura inmediata; MAR/LENGTH tras un DMA | No cambian |
+| EXI: DMA con LENGTH = 0, transferencias lectura+escritura, CS sin dispositivo | Parada clara (no hay comportamiento documentado) |
+| RTC/SRAM: escritura parcial del RTC (menos de 4 bytes antes de liberar CS) | Se descarta |
+| RTC/SRAM: pasar del final del RTC o de la SRAM en un mismo flujo | Parada clara |
+| RTC: valor inicial | 0 o el que fije el anfitrión; la SRAM empieza a ceros. El IPL real la valida con sus checksums |
+| ROM del IPL con ROMDIS = 1 (datos sin descifrar) | Parada clara: no se modelan los datos cifrados |
 
 ## Problemas conocidos
 
@@ -105,7 +119,7 @@ Son comportamientos que el PEM deja indefinidos o que el manual del 750CL no det
 | 9 | `lmw/stmw`, instrucciones de cadena y `lwarx/stwcx.` no pasan por la caché bloqueada | Bajo |
 | 10 | El DMA de la caché bloqueada y las ráfagas del gather pipe terminan al instante | Falta conectarlos al planificador con tiempos reales |
 | 11 | Coste fijo de 1 ciclo por instrucción: no hay modelo de pipeline ni de caché | El tiempo es determinista, no exacto al ciclo |
-| 12 | Existen PI, gather pipe, DI, VI, SI y AI; EXI, DSP, MI y CP/PE dan `MemoryFault` al tocarse | Un juego comercial se detiene al acceder a la tarjeta de memoria/RTC (EXI), al DSP o a la GPU |
+| 12 | Existen PI, gather pipe, DI, VI, SI, AI y EXI (con RTC/SRAM/ROM); DSP, MI y CP/PE dan `MemoryFault` al tocarse | Un juego comercial se detiene al acceder a la tarjeta de memoria (CS sin dispositivo, parada clara), al DSP o a la GPU |
 | No hay salida de video (no se convierte el XFB a imagen) ni de audio | Sin frontend todavía |
 | DI: solo existe la lectura 0xA8 por DMA; los discos Wii, el audio streaming y los formatos comprimidos no están implementados | Parada clara con el comando |
 | 13 | Rendimiento en el anfitrión x86: unos 20 M instr/s en enteros y unos 4 M instr/s en FP. El motor FP cambia el modo de redondeo del anfitrión en cada operación | Esperado: el intérprete es la referencia de precisión; la velocidad vendrá del JIT |
