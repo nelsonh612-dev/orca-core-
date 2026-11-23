@@ -80,6 +80,26 @@ System::System(SystemConfig config) : config_(config), clocks_(clocks_for(config
                 ios_->add_device(std::make_unique<ios::FsDevice>(*nand_));
             }
         }
+        // Bluetooth: the remotes the console was paired with (SYSCONF BT.DINF)
+        {
+            std::vector<ios::BdAddr> remotes;
+            if (nand_) {
+                const s32 h = nand_->open(0, 0, "/shared2/sys/SYSCONF", ios::kFsRead);
+                if (h >= 0) {
+                    u32 size = 0, pos = 0;
+                    nand_->status(h, size, pos);
+                    std::vector<u8> sc(size);
+                    if (nand_->read(h, sc) == static_cast<s32>(size)) remotes = ios::paired_remotes_from_sysconf(sc, bt_error_);
+                    nand_->close(h);
+                } else {
+                    bt_error_ = "/shared2/sys/SYSCONF is not on the NAND";
+                }
+            }
+            // controller address: fixed for the emulated module
+            auto bt = std::make_unique<ios::BluetoothDevice>(ios::BdAddr{0x4F, 0x52, 0x43, 0x41, 0x00, 0x01}, remotes);
+            bluetooth_ = bt.get();
+            ios_->add_device(std::move(bt));
+        }
         di_->set_wii_mode(); // the drive belongs to Starlet
         auto di_dev = std::make_unique<ios::DiDevice>(*di_, *es_, nand_.get(), config_.wii_keys);
         di_dev_ = di_dev.get();

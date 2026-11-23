@@ -8,6 +8,7 @@
 #include "orca/ios/nand_fs.hpp"
 #include "orca/ios/di_device.hpp"
 #include "orca/ios/memory_values.hpp"
+#include "orca/ios/bluetooth.hpp"
 #include "orca/disc/disc_image.hpp"
 #include "test_port.hpp"
 #include "wii_disc_builder.hpp"
@@ -18,6 +19,7 @@
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -980,6 +982,9 @@ TEST_CASE(wii_disc_boot_runs_the_integer_suite) {
     CHECK((sys.cpu().state().hid4 & ppc::HID4_SBE) != 0U);
     CHECK_EQ(sys.cpu().state().dbat[5].upper, 0xD0001FFFU);
     CHECK(sys.ios()->ppc_credentials().has_value());
+    CHECK(sys.bluetooth() != nullptr);
+    CHECK_EQ(sys.bluetooth()->remote_count(), 0U); // this NAND has no SYSCONF
+    CHECK(sys.bluetooth_error().find("SYSCONF") != std::string::npos);
     CHECK(sys.es()->active_title().has_value());
     const auto res = sys.run(4000000000ULL);
     CHECK(res.stop == ppc::StepResult::Halted);
@@ -1001,5 +1006,304 @@ TEST_CASE(wii_disc_boot_failures_are_explicit) {
     CHECK(error.find("NAND") != std::string::npos);
 }
 #endif
+
+namespace {
+// A scripted Bluetooth host: keeps one HCI event buffer and one ACL buffer
+// pending, as the Wii's stack does, and records what arrives.
+struct BtHost {
+    Rig& r;
+    std::set<u32> replied;
+    std::deque<std::vector<u8>> events, acl;
+    static constexpr u32 kEvBlock = 0x6000, kEvBuf = 0x6400, kAclBlock = 0x6100, kAclBuf = 0x6800;
+    u32 scratch = 0x7000; // request blocks and their data
+    explicit BtHost(Rig& rig) : r(rig) {}
+
+    void on_reply(u32 a) {
+        replied.insert(a);
+        const auto n = static_cast<std::size_t>(static_cast<s32>(r.mem32(a + 4)));
+        if (a == kEvBlock) { events.push_back(read_mem(r, kEvBuf, n)); post(true); }
+        if (a == kAclBlock) { acl.push_back(read_mem(r, kAclBuf, n)); post(false); }
+    }
+    void submit(u32 a) {
+        r.send(a);
+        for (;;) {
+            const auto x = r.service(20000000);
+            CHECK(x.has_value());
+            if (!x) return;
+            if (*x == 0U) return;
+            on_reply(*x);
+        }
+    }
+    void pump(u64 ticks = 2000) {
+        for (;;) {
+            const auto x = r.service(ticks);
+            if (!x) return;
+            if (*x != 0U) on_reply(*x);
+        }
+    }
+    void wait(u32 a) {
+        while (replied.count(a) == 0U) {
+            const auto x = r.service(20000000);
+            CHECK(x.has_value());
+            if (!x) return;
+            if (*x != 0U) on_reply(*x);
+        }
+    }
+    // ioctlv on fd 0 with the given vectors, using a fresh block and table
+    u32 ioctlv_block(u32 n, std::vector<std::pair<u32, u32>> in, std::vector<std::pair<u32, u32>> io, u32 block) {
+        const u32 table = block + 0x40;
+        u32 i = 0;
+        for (auto& v : in) { r.bus.write32(table + 8 * i, v.first); r.bus.write32(table + 8 * i + 4, v.second); ++i; }
+        for (auto& v : io) { r.bus.write32(table + 8 * i, v.first); r.bus.write32(table + 8 * i + 4, v.second); ++i; }
+        r.block(block, 7, 0, {n, static_cast<u32>(in.size()), static_cast<u32>(io.size()), table});
+        return block;
+    }
+    void post(bool event) {
+        const u32 blk = event ? kEvBlock : kAclBlock;
+        const u32 ep = blk + 0x200, len = blk + 0x204;
+        r.bus.write8(ep, event ? 0x81 : 0x82);
+        r.bus.write16(len, 0x400);
+        ioctlv_block(event ? 2 : 1, {{ep, 1}, {len, 2}}, {{event ? kEvBuf : kAclBuf, 0x400}}, blk);
+        submit(blk);
+    }
+    // HCI command; returns the control transfer's result
+    s32 hci(u16 op, std::vector<u8> params) {
+        const u32 blk = next(), data = blk + 0x100;
+        std::vector<u8> cmd{static_cast<u8>(op), static_cast<u8>(op >> 8), static_cast<u8>(params.size())};
+        cmd.insert(cmd.end(), params.begin(), params.end());
+        write_mem(r, data, cmd);
+        const u32 f = blk + 0x200;
+        r.bus.write8(f, 0x20);
+        r.bus.write8(f + 1, 0);
+        r.bus.write16(f + 2, 0);
+        r.bus.write16(f + 4, 0);
+        r.bus.write8(f + 6, static_cast<u8>(cmd.size()));
+        r.bus.write8(f + 7, 0);
+        ioctlv_block(0, {{f, 1}, {f + 1, 1}, {f + 2, 2}, {f + 4, 2}, {f + 6, 2}, {f + 8, 1}}, {{data, static_cast<u32>(cmd.size())}}, blk);
+        submit(blk);
+        wait(blk);
+        pump();
+        return static_cast<s32>(r.mem32(blk + 4));
+    }
+    // L2CAP packet on a connection
+    s32 send_acl(u16 handle, u16 cid, std::vector<u8> payload) {
+        const u32 blk = next(), data = blk + 0x100;
+        std::vector<u8> pkt{static_cast<u8>(handle), static_cast<u8>(0x20 | handle >> 8)};
+        const u16 l2 = static_cast<u16>(payload.size() + 4);
+        pkt.insert(pkt.end(), {static_cast<u8>(l2), static_cast<u8>(l2 >> 8), static_cast<u8>(payload.size()),
+                               static_cast<u8>(payload.size() >> 8), static_cast<u8>(cid), static_cast<u8>(cid >> 8)});
+        pkt.insert(pkt.end(), payload.begin(), payload.end());
+        write_mem(r, data, pkt);
+        const u32 f = blk + 0x200;
+        r.bus.write8(f, 0x02);
+        r.bus.write16(f + 2, static_cast<u16>(pkt.size()));
+        ioctlv_block(1, {{f, 1}, {f + 2, 2}}, {{data, static_cast<u32>(pkt.size())}}, blk);
+        submit(blk);
+        wait(blk);
+        pump();
+        return static_cast<s32>(r.mem32(blk + 4));
+    }
+    u32 next() { const u32 b = scratch; scratch += 0x400; if (scratch >= 0xF000) scratch = 0x7000; return b; }
+    std::optional<std::vector<u8>> event_with(u8 code) {
+        for (auto it = events.begin(); it != events.end(); ++it)
+            if ((*it)[0] == code) { auto e = *it; events.erase(it); return e; }
+        return std::nullopt;
+    }
+    // next ACL payload (L2CAP payload after the 4-byte L2CAP header), with its CID
+    std::optional<std::pair<u16, std::vector<u8>>> next_l2cap() {
+        if (acl.empty()) return std::nullopt;
+        auto a = acl.front();
+        acl.pop_front();
+        const u16 cid = static_cast<u16>(a[6] | a[7] << 8);
+        return std::pair<u16, std::vector<u8>>{cid, std::vector<u8>(a.begin() + 8, a.end())};
+    }
+};
+
+std::vector<u8> sysconf_with_remotes(std::vector<ios::BdAddr> remotes) {
+    // SCv0, 1 entry at 0x0C: BT.DINF big array of 0x461 bytes; end marker
+    std::vector<u8> f(0x4000, 0);
+    f[0] = 'S'; f[1] = 'C'; f[2] = 'v'; f[3] = '0';
+    f[5] = 1;
+    f[6] = 0; f[7] = 0x0C;
+    f[0x0C] = static_cast<u8>(1 << 5 | (7 - 1));
+    std::copy_n("BT.DINF", 7, f.begin() + 0x0D);
+    f[0x14] = 0x04; f[0x15] = 0x60; // 0x461 - 1
+    const std::size_t data = 0x16;
+    f[data] = static_cast<u8>(remotes.size());
+    for (std::size_t i = 0; i < remotes.size(); ++i) {
+        std::reverse_copy(remotes[i].begin(), remotes[i].end(), f.begin() + static_cast<std::ptrdiff_t>(data + 1 + 10 * 70 + i * 70));
+    }
+    std::copy_n("SCed", 4, f.end() - 4);
+    return f;
+}
+} // namespace
+
+TEST_CASE(sysconf_paired_remotes) {
+    const ios::BdAddr a{1, 2, 3, 4, 5, 6}, b{0x11, 0x22, 0x33, 0x44, 0x55, 0x66};
+    std::string error;
+    const auto got = ios::paired_remotes_from_sysconf(sysconf_with_remotes({a, b}), error);
+    CHECK(got == std::vector<ios::BdAddr>({a, b}));
+    CHECK(ios::paired_remotes_from_sysconf(sysconf_with_remotes({}), error).empty());
+    CHECK(error.find("no active remote") != std::string::npos);
+    std::vector<u8> bad(16, 0);
+    CHECK(ios::paired_remotes_from_sysconf(bad, error).empty());
+    CHECK(error.find("SCv0") != std::string::npos);
+}
+
+TEST_CASE(bluetooth_hci_connection_l2cap_and_hid) {
+    Rig r;
+    const ios::BdAddr ctrl{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
+    const ios::BdAddr remote0{0x10, 0x20, 0x30, 0x40, 0x50, 0x60}, remote1{0x11, 0x21, 0x31, 0x41, 0x51, 0x61};
+    auto dev = std::make_unique<ios::BluetoothDevice>(ctrl, std::vector<ios::BdAddr>{remote0, remote1});
+    ios::BluetoothDevice* bt = dev.get();
+    r.kernel.add_device(std::move(dev));
+    r.set(PPC_IRQMASK, IRQ_IPC_BROADWAY);
+    r.set(PPCCTRL, CTRL_IY1 | CTRL_IY2);
+    r.put_string(0x2000, "/dev/usb/oh1/57e/305");
+    r.block(0x1000, 1, 0, {0x2000, 0});
+    CHECK_EQ(r.call(0x1000), 0);
+    BtHost h(r);
+    h.post(true);
+    h.post(false);
+    // controller setup
+    CHECK_EQ(h.hci(0x0C03, {}), 3);
+    auto e = h.event_with(0x0E);
+    CHECK(e && *e == std::vector<u8>({0x0E, 4, 1, 0x03, 0x0C, 0}));
+    CHECK_EQ(h.hci(0x1005, {}), 3);
+    e = h.event_with(0x0E);
+    CHECK(e && *e == std::vector<u8>({0x0E, 11, 1, 0x05, 0x10, 0, 0x53, 0x01, 64, 10, 0, 0, 0}));
+    h.hci(0x1009, {});
+    e = h.event_with(0x0E);
+    CHECK(e && std::vector<u8>(e->begin() + 6, e->end()) == std::vector<u8>(ctrl.begin(), ctrl.end()));
+    h.hci(0x0C0D, {0, 0, 0, 0, 0, 0, 1});
+    auto keys = h.event_with(0x15);
+    CHECK(keys.has_value() && (*keys)[2] == 2U && keys->size() == 3U + 2U * 22U);
+    CHECK(keys && std::equal(remote1.begin(), remote1.end(), keys->begin() + 3 + 22));
+    e = h.event_with(0x0E);
+    CHECK(e && (*e)[8] == 2U); // two keys read
+    // no page scan yet: a remote cannot connect
+    CHECK(!bt->connect(0));
+    h.hci(0x0C1A, {0x02});
+    h.event_with(0x0E);
+    CHECK(bt->connect(0));
+    h.pump();
+    e = h.event_with(0x04);
+    CHECK(e && std::equal(remote0.begin(), remote0.end(), e->begin() + 2) && (*e)[8] == 0x04 && (*e)[9] == 0x25);
+    // accept (become master): status, role change, connection complete
+    std::vector<u8> acc(remote0.begin(), remote0.end());
+    acc.push_back(0);
+    h.hci(0x0409, acc);
+    CHECK(h.event_with(0x0F).has_value());
+    CHECK(h.event_with(0x12).has_value());
+    e = h.event_with(0x03);
+    CHECK(e && (*e)[2] == 0 && (*e)[3] == 0x00 && (*e)[4] == 0x01);
+    CHECK(bt->remote_connected(0));
+    // authentication and remote information
+    h.hci(0x0411, {0x00, 0x01});
+    e = h.event_with(0x06);
+    CHECK(e && (*e)[2] == 0);
+    h.hci(0x041D, {0x00, 0x01});
+    e = h.event_with(0x0C);
+    CHECK(e && (*e)[5] == 0x02);
+    // the remote opens HID control: L2CAP connection request
+    bt->tick();
+    h.pump();
+    auto l = h.next_l2cap();
+    CHECK(l && l->first == 1U && l->second[0] == 0x02);
+    CHECK(l && l->second[4] == 0x11 && l->second[6] == 0x40);
+    const u8 ident = l ? l->second[1] : 0;
+    // host: connection response (our cid 0x70), then its configuration request
+    CHECK_EQ(h.send_acl(0x100, 1, {0x03, ident, 8, 0, 0x70, 0, 0x40, 0, 0, 0, 0, 0}), 20); // ACL + L2CAP headers + 12
+    CHECK(h.event_with(0x13).has_value()); // completed packets
+    l = h.next_l2cap();                    // remote's configuration request (MTU 185)
+    CHECK(l && l->second[0] == 0x04 && l->second[4] == 0x70 && l->second[8] == 0x01 && l->second[10] == 185);
+    const u8 cfg_ident = l ? l->second[1] : 0;
+    h.send_acl(0x100, 1, {0x05, cfg_ident, 6, 0, 0x40, 0, 0, 0, 0, 0});
+    h.send_acl(0x100, 1, {0x04, 9, 8, 0, 0x40, 0, 0, 0, 0x01, 0x02, 0x80, 0x02});
+    l = h.next_l2cap();
+    CHECK(l && l->second[0] == 0x05 && l->second[1] == 9 && l->second[4] == 0x70 && l->second[8] == 0 && l->second[10] == 0x01);
+    // then HID interrupt (our cid 0x71)
+    bt->tick();
+    h.pump();
+    l = h.next_l2cap();
+    CHECK(l && l->second[0] == 0x02 && l->second[4] == 0x13 && l->second[6] == 0x41);
+    h.send_acl(0x100, 1, {0x03, l ? l->second[1] : u8{0}, 8, 0, 0x71, 0, 0x41, 0, 0, 0, 0, 0});
+    l = h.next_l2cap();
+    h.send_acl(0x100, 1, {0x05, l ? l->second[1] : u8{0}, 6, 0, 0x41, 0, 0, 0, 0, 0});
+    h.send_acl(0x100, 1, {0x04, 10, 4, 0, 0x41, 0, 0, 0});
+    l = h.next_l2cap();
+    CHECK(l && l->second[0] == 0x05);
+    CHECK(bt->remote_ready(0));
+    // HID: first report period sends the core buttons on the interrupt channel
+    wiimote::InputState in;
+    in.buttons = wiimote::button::kA;
+    bt->set_input(0, in);
+    bt->tick();
+    h.pump();
+    l = h.next_l2cap();
+    CHECK(l && l->first == 0x71 && l->second == std::vector<u8>({0xA1, 0x30, 0x00, 0x08}));
+    // SET_REPORT on the control channel: LEDs with acknowledge -> handshake, then the ack report
+    h.send_acl(0x100, 0x40, {0x52, 0x11, 0x12});
+    l = h.next_l2cap();
+    CHECK(l && l->first == 0x70 && l->second == std::vector<u8>({0x00}));
+    CHECK_EQ(bt->remote(0).leds(), 1U);
+    bt->tick();
+    h.pump();
+    l = h.next_l2cap();
+    CHECK(l && l->first == 0x71 && l->second == std::vector<u8>({0xA1, 0x22, 0x00, 0x08, 0x11, 0x00}));
+    // DATA on the interrupt channel: continuous core reports
+    h.send_acl(0x100, 0x41, {0xA2, 0x12, 0x04, 0x30});
+    bt->tick();
+    bt->tick();
+    h.pump();
+    CHECK_EQ(h.acl.size(), 2U);
+    h.acl.clear();
+    // the 200 Hz tick runs by itself
+    r.ticks(ios::BluetoothDevice::kUpdateTicks * 3 + 10);
+    h.pump();
+    CHECK(h.acl.size() >= 3U);
+    // disconnect
+    h.hci(0x0406, {0x00, 0x01, 0x13});
+    e = h.event_with(0x05);
+    CHECK(e && (*e)[2] == 0 && (*e)[5] == 0x16);
+    CHECK(!bt->remote_connected(0));
+    // SDP is not emulated: explicit stop
+    CHECK(bt->connect(1));
+    h.pump();
+    std::vector<u8> acc1(remote1.begin(), remote1.end());
+    acc1.push_back(1);
+    h.hci(0x0409, acc1);
+    h.events.clear();
+    h.acl.clear();
+    const u32 blk = h.next(), data = blk + 0x100;
+    write_mem(r, data, {0x01, 0x21, 12, 0, 8, 0, 0x01, 0, 0x02, 0x50, 4, 0, 0x01, 0, 0x40, 0}); // connect to PSM 1
+    r.bus.write8(blk + 0x200, 0x02);
+    r.bus.write16(blk + 0x202, 16);
+    h.ioctlv_block(1, {{blk + 0x200, 1}, {blk + 0x202, 2}}, {{data, 16}}, blk);
+    r.send(blk);
+    r.ticks(600);
+    CHECK(r.kernel.stopped());
+    CHECK(r.kernel.stop_reason().find("SDP") != std::string::npos);
+}
+
+TEST_CASE(bluetooth_unknown_hci_command_stops) {
+    Rig r;
+    r.kernel.add_device(std::make_unique<ios::BluetoothDevice>(ios::BdAddr{}, std::vector<ios::BdAddr>{}));
+    r.set(PPC_IRQMASK, IRQ_IPC_BROADWAY);
+    r.set(PPCCTRL, CTRL_IY1 | CTRL_IY2);
+    r.put_string(0x2000, "/dev/usb/oh1/57e/305");
+    r.block(0x1000, 1, 0, {0x2000, 0});
+    CHECK_EQ(r.call(0x1000), 0);
+    BtHost h(r);
+    const u32 blk = h.next(), data = blk + 0x100;
+    write_mem(r, data, {0x34, 0x12, 0});
+    const u32 f = blk + 0x200;
+    r.bus.write8(f + 6, 3);
+    h.ioctlv_block(0, {{f, 1}, {f + 1, 1}, {f + 2, 2}, {f + 4, 2}, {f + 6, 2}, {f + 8, 1}}, {{data, 3}}, blk);
+    r.send(blk);
+    r.ticks(600);
+    CHECK(r.kernel.stopped());
+    CHECK(r.kernel.stop_reason().find("0x1234") != std::string::npos);
+}
 
 int main() { return orca::test::run_all("ios"); }

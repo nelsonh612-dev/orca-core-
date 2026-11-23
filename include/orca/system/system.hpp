@@ -34,6 +34,7 @@
 #include "orca/ios/es.hpp"
 #include "orca/ios/fs_device.hpp"
 #include "orca/ios/di_device.hpp"
+#include "orca/ios/bluetooth.hpp"
 #include "orca/ios/memory_values.hpp"
 #include "orca/disc/wii_disc.hpp"
 #include "orca/hw/processor_interface.hpp"
@@ -186,6 +187,10 @@ public:
     //     (BAT4 0x90000000, DBAT5 0xD0000000 uncached) and HID4[SBE].
     bool boot_wii_disc(std::string& error);
     ios::DiDevice* di_device() noexcept { return di_dev_; }
+    // Wii Bluetooth module and its remotes (one per active remote in the NAND's
+    // SYSCONF); bluetooth_error() says why there are none.
+    ios::BluetoothDevice* bluetooth() noexcept { return bluetooth_; }
+    const std::string& bluetooth_error() const noexcept { return bt_error_; }
 
     static constexpr u32 kGuestReturn = 0x81300000U;   // never executed
     static constexpr u32 kReportStub = 0x81300004U;    // blr (apploader OSReport)
@@ -232,6 +237,8 @@ private:
     std::unique_ptr<ios::NandFs> nand_;
     std::string nand_error_;
     ios::DiDevice* di_dev_{nullptr};
+    ios::BluetoothDevice* bluetooth_{nullptr};
+    std::string bt_error_;
     std::function<void(bool)> field_listener_;
     std::optional<u32> stop_pc_;
     u64 timebase_remainder_{0};
