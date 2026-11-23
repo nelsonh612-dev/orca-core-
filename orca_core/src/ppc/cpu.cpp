@@ -1189,10 +1189,15 @@ Cpu::Outcome Cpu::op_cache_x(u32 ins, unsigned xo, bool& handled) {
     case 54: case 86: { // dcbst / dcbf: no data cache modelled; memory is always up to date
         return translate_data(ea & ~31U, 32, false, lo, hi, split, wimg);
     }
-    case 470: { // dcbi (supervisor; treated as a store for protection)
+    case 470: { // dcbi (supervisor; invalidate a matching locked-cache line)
         if (problem_state()) return Outcome::privileged();
-        // Without a data-cache model there are no modified lines to discard.
-        return translate_data(ea & ~31U, 32, true, lo, hi, split, wimg);
+        Outcome o = translate_data(ea & ~31U, 32, true, lo, hi, split, wimg);
+        if (!o.ok()) return o;
+        // 750CL §9.2.2.3: a hit in the locked partition invalidates that
+        // line without a castout to L2 or the external bus. Do not notify
+        // write observers: dcbi discards the cache line; it is not a store.
+        locked_cache_.erase(lo);
+        return o;
     }
     case 982: { // icbi
         Outcome o = translate_data(ea & ~31U, 32, false, lo, hi, split, wimg);
