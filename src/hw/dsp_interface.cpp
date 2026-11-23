@@ -51,6 +51,30 @@ void DspInterface::dsp_reset(bool boot_from_ram) {
     }
 }
 
+void DspInterface::use_hle(bool on) {
+    ++hle_generation_;
+    if (!on) { hle_.reset(); return; }
+    ::orca::dsp::hle::Host& host = *this;
+    hle_ = std::make_unique<::orca::dsp::hle::Dsp>(host, wii_);
+    hle_->set_halted((csr_ & dsp::CSR_HALT) != 0U);
+    hle_tick();
+}
+
+void DspInterface::interrupt_cpu(u64 cycles) {
+    if (cycles == 0U) { raise_dspint(); return; }
+    scheduler_.schedule_in(cycles, "DSP HLE interrupt", [this](u64, u64) { raise_dspint(); });
+}
+
+// HLE: one update per millisecond of emulated time
+void DspInterface::hle_tick() {
+    const u64 gen = hle_generation_;
+    scheduler_.schedule_in(cpu_hz_ / 1000U, "DSP HLE update", [this, gen](u64, u64) {
+        if (gen != hle_generation_ || !hle_) return;
+        hle_->update();
+        hle_tick();
+    });
+}
+
 void DspInterface::kick_dsp() {
     if (slice_pending_ || core_.halted() || core_.failed()) return;
     slice_pending_ = true;
@@ -64,6 +88,15 @@ void DspInterface::run_slice() {
 }
 
 bool DspInterface::read16(u32 offset, u16& v) {
+    if (hle_) {
+        switch (offset) {
+        case dsp::DSPMBH: v = hle_->dsp_mailbox_high(); return true;
+        case dsp::DSPMBL: v = hle_->dsp_mailbox_low(); return true;
+        case dsp::CPUMBH: v = hle_->cpu_mailbox_high(); return true;
+        case dsp::CPUMBL: v = hle_->cpu_mailbox_low(); update_interrupt(); return true;
+        default: break;
+        }
+    }
     switch (offset) {
     case dsp::DSPMBH: v = core_.cpu_read_cmb_high(); return true; // bit 15: not yet read by the DSP
     case dsp::DSPMBL: v = core_.cpu_read_cmb_low(); return true;
@@ -88,6 +121,11 @@ bool DspInterface::read16(u32 offset, u16& v) {
 }
 
 bool DspInterface::write16(u32 offset, u16 v) {
+    if (hle_ && (offset == dsp::DSPMBH || offset == dsp::DSPMBL)) {
+        if (offset == dsp::DSPMBH) hle_->cpu_write_high(v);
+        else hle_->cpu_write_low(v);
+        return true;
+    }
     switch (offset) {
     case dsp::DSPMBH: core_.cpu_write_cmb_high(v); return true;
     case dsp::DSPMBL: core_.cpu_write_cmb_low(v); return true; // mail ready for the DSP
@@ -98,9 +136,15 @@ bool DspInterface::write16(u32 offset, u16 v) {
         csr_ = static_cast<u16>((csr_ & ~rw) | (v & rw));
         csr_ = static_cast<u16>(csr_ & ~(v & w1c));
         if ((v & dsp::CSR_RES) != 0U) {
-            dsp_reset((v & dsp::CSR_BIT11) != 0U); // completes at once (model)
+            if (hle_) hle_->reset((v & dsp::CSR_BIT11) != 0U);
+            else dsp_reset((v & dsp::CSR_BIT11) != 0U); // completes at once (model)
             aidma_ctrl_ = 0;                        // Dolphin: RES clears the AI DMA control
             ++aid_generation_;
+        }
+        if (hle_) { // PIINT wakes DSP code; the HLE ucodes react to mail only
+            hle_->set_halted((csr_ & dsp::CSR_HALT) != 0U);
+            update_interrupt();
+            return true;
         }
         if ((v & dsp::CSR_PIINT) != 0U) core_.request_external_interrupt();
         core_.set_halted((csr_ & dsp::CSR_HALT) != 0U);

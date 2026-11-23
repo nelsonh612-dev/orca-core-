@@ -132,6 +132,53 @@ TEST_CASE(dsp_mailboxes_connect_to_the_core) {
 }
 
 // ------------------------------------------------------------ ARAM DMA
+TEST_CASE(dsp_hle_boot_rom_and_init_protocol) {
+    // Ector's hash: crc ^= b; crc = rotl(crc, 3)
+    const u8 one[] = {1}, two[] = {1, 2};
+    CHECK_EQ(orca::dsp::hle::ucode_hash(one), 8U);
+    CHECK_EQ(orca::dsp::hle::ucode_hash(two), 80U);   // ((8 ^ 2) << 3)
+    const u8 wrap[] = {0xFF, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}; // 11 rotations by 3 = 33 = rotl 1 (mod 32)
+    CHECK_EQ(orca::dsp::hle::ucode_hash(wrap), 0x1FEU);
+
+    Rig r;
+    r.dsp.use_hle(true);
+    CHECK(r.dsp.hle());
+    // reset while halted: the boot ROM's mail stays invisible until HALT is cleared
+    CHECK(r.dw(0x0A, orca::hw::dsp::CSR_RES | orca::hw::dsp::CSR_HALT | orca::hw::dsp::CSR_DSPINTMASK));
+    CHECK_EQ(r.dr(0x04) & 0x8000U, 0U);
+    CHECK(r.dw(0x0A, orca::hw::dsp::CSR_DSPINTMASK));
+    CHECK_EQ(r.dr(0x04), 0x8071U);
+    CHECK_EQ(r.dr(0x06), 0xFEEDU);
+    CHECK_EQ(r.dr(0x04), 0x0071U);                    // taken: bit 15 clears, the rest stays
+    // a mail that is not a boot parameter is echoed as 0xFEEExxxx
+    CHECK(r.dw(0x00, 0x1234)); CHECK(r.dw(0x02, 0x5678));
+    CHECK_EQ(r.dr(0x00) & 0x8000U, 0U);               // taken at once by the HLE DSP
+    CHECK_EQ(r.dr(0x04), 0xFEEEU); CHECK_EQ(r.dr(0x06), 0x5678U);
+    // upload of a ucode Orca does not know: clear stop with its hash
+    std::vector<u8> code(64);
+    for (std::size_t i = 0; i < code.size(); ++i) code[i] = static_cast<u8>(i * 7U);
+    CHECK(r.bus.dma_write(0x00100000U, code) == mem::BusStatus::Ok);
+    auto mail = [&](u32 m) { CHECK(r.dw(0x00, static_cast<u16>(m >> 16))); CHECK(r.dw(0x02, static_cast<u16>(m))); };
+    mail(0x80F3A001U); mail(0x80100000U);
+    mail(0x80F3A002U); mail(64U);
+    mail(0x80F3C002U); mail(0U);
+    mail(0x80F3B002U); mail(0U);
+    CHECK(!r.dsp.dsp_failed());
+    mail(0x80F3D001U); mail(0x10U);
+    CHECK(r.dsp.dsp_failed());
+    char expect[16];
+    std::snprintf(expect, sizeof expect, "%08X", orca::dsp::hle::ucode_hash(code));
+    CHECK(r.dsp.dsp_error().find(expect) != std::string::npos);
+    // CSR bit 11 with RES: the init ucode answers 0x80544348; the failure is cleared
+    CHECK(r.dw(0x0A, orca::hw::dsp::CSR_RES | orca::hw::dsp::CSR_BIT11 | orca::hw::dsp::CSR_DSPINTMASK));
+    CHECK(!r.dsp.dsp_failed());
+    CHECK_EQ(r.dr(0x04), 0x8054U);
+    CHECK_EQ(r.dr(0x06), 0x4348U);
+    // the HLE is updated every millisecond of emulated time (one event pending)
+    CHECK(r.sched.next_event_time().has_value());
+    r.dsp.use_hle(false);
+}
+
 TEST_CASE(aram_dma_both_directions_with_register_updates) {
     Rig t;
     for (u32 i = 0; i < 0x100; i += 4) CHECK(t.bus.write32(0x1000 + i, 0xA0000000U + i) == mem::BusStatus::Ok);

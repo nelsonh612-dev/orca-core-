@@ -50,6 +50,7 @@
 #pragma once
 #include "orca/core/scheduler.hpp"
 #include "orca/dsp/dsp_core.hpp"
+#include "orca/dsp/hle.hpp"
 #include "orca/hw/processor_interface.hpp"
 
 #include <array>
@@ -74,7 +75,7 @@ inline constexpr u16 CSR_RES = 1U << 0, CSR_PIINT = 1U << 1, CSR_HALT = 1U << 2,
 inline constexpr u32 kCntToMain = 0x80000000U;
 } // namespace dsp
 
-class DspInterface final : public mem::MmioDevice, private ::orca::dsp::DspHost {
+class DspInterface final : public mem::MmioDevice, private ::orca::dsp::DspHost, private ::orca::dsp::hle::Host {
 public:
     // `has_aram` = false on Wii (no ARAM there).
     DspInterface(mem::Bus& bus, core::Scheduler& scheduler, ProcessorInterface& pi, bool has_aram,
@@ -90,8 +91,13 @@ public:
     bool aram_busy() const noexcept { return (csr_ & dsp::CSR_DMABUSY) != 0U; }
     u16 csr() const noexcept { return csr_; }
     ::orca::dsp::DspCore& core() noexcept { return core_; }
-    bool dsp_failed() const noexcept { return core_.failed(); }
-    const std::string& dsp_error() const noexcept { return core_.error(); }
+    // High-level emulation instead of the DSP core (orca/dsp/hle.hpp): mailboxes and
+    // CSR RES/HALT go to it, and it is updated every millisecond of emulated time.
+    void use_hle(bool on);
+    bool hle() const noexcept { return hle_ != nullptr; }
+    ::orca::dsp::hle::Dsp* hle_dsp() noexcept { return hle_.get(); }
+    bool dsp_failed() const noexcept { return hle_ ? hle_->failed() : core_.failed(); }
+    const std::string& dsp_error() const noexcept { return hle_ ? hle_->error() : core_.error(); }
     void raise_dspint() { csr_ |= dsp::CSR_DSPINT; update_interrupt(); }
     static constexpr u64 kCpuCyclesPerDspCycle = 6;
     static constexpr u64 kSliceInstructions = 100;
@@ -119,6 +125,14 @@ private:
     void dsp_halted() override { csr_ |= dsp::CSR_HALT; }
     bool dsp_aram_read8(u32 byte_address, u8& v) override;
     bool dsp_aram_write16(u32 byte_address, u16 v) override;
+    // hle::Host
+    bool ram_read(u32 physical, std::span<u8> out) override { return dsp_dma_read(physical, out); }
+    bool ram_write(u32 physical, std::span<const u8> in) override { return dsp_dma_write(physical, in); }
+    void interrupt_cpu(u64 cycles) override;
+    // aram() (public, above) also serves hle::Host
+    void hle_tick();
+    std::unique_ptr<::orca::dsp::hle::Dsp> hle_;
+    u64 hle_generation_{0};
 
     mem::Bus& bus_;
     core::Scheduler& scheduler_;

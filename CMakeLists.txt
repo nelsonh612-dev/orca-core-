@@ -43,6 +43,7 @@ add_library(orca_core
     src/disc/fst.cpp
     src/disc/wii_disc.cpp
     src/dsp/dsp_core.cpp
+    src/dsp/hle.cpp
     src/hw/audio_interface.cpp
     src/hw/disc_interface.cpp
     src/hw/dsp_interface.cpp
