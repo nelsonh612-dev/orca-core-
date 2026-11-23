@@ -111,7 +111,7 @@ StepResult Cpu::step() {
     cur_pc_ = state_.pc;
     if ((cur_pc_ & 3U) != 0U) return host_stop(StepResult::AlignmentFault, "PC not word aligned", 0, cur_pc_);
 
-    const Translation t = translate(state_, bus_, cur_pc_, AccessType::Fetch);
+    const Translation t = translate(state_, bus_, cur_pc_, AccessType::Fetch, config_.extended_bats);
     switch (t.status) {
     case TranslateStatus::Ok: break;
     case TranslateStatus::PageFault: deliver(Exception::ISI, cur_pc_, SRR1_ISI_NOT_FOUND); return StepResult::ExceptionTaken;
@@ -127,14 +127,23 @@ StepResult Cpu::step() {
         return host_stop(StepResult::MemoryFault, "instruction fetch from unmapped physical memory", 0, t.physical);
 
     next_pc_ = cur_pc_ + 4U;
+    fp_program_pending_ = false;
     const Outcome o = execute(ins);
     switch (o.kind) {
     case Outcome::Kind::Done:
-        state_.pc = next_pc_;
         ++retired_;
+        if (fp_program_pending_) { // precise FP enabled exception (see cpu_fpu.cpp)
+            fp_program_pending_ = false;
+            deliver(Exception::Program, cur_pc_, SRR1_PROGRAM_FP);
+            return StepResult::ExceptionTaken;
+        }
+        state_.pc = next_pc_;
         return StepResult::Executed;
     case Outcome::Kind::Exception:
-        if (o.set_dar) { state_.dar = o.dar; state_.dsisr = o.dsisr; }
+        if (o.set_dar) {
+            state_.dar = o.dar;
+            state_.dsisr = o.exc == Exception::Alignment ? alignment_dsisr(ins) : o.dsisr;
+        }
         deliver(o.exc, o.srr0_next ? cur_pc_ + 4U : cur_pc_, o.srr1_bits);
         if (o.srr0_next) ++retired_; // sc completes before the exception
         return StepResult::ExceptionTaken;
@@ -153,6 +162,25 @@ StepResult Cpu::step() {
     }
     }
     return StepResult::UnsupportedInstruction;
+}
+
+// DSISR of an alignment exception, built from the instruction as the
+// PowerPC architecture defines it (bit layout as in Linux
+// arch/powerpc/kernel/align.c, make_dsisr):
+//   DSISR[15:16] = ins[29:30], DSISR[17] = ins[25], DSISR[18:21] = ins[21:24]
+//   for X-form (primary opcode 31); DSISR[17] = ins[5], DSISR[18:21] = ins[1:4]
+//   for D-form; DSISR[22:31] = ins[6:15] (rD/rS and rA) for both.
+u32 alignment_dsisr(u32 ins) noexcept {
+    u32 d = (ins & 0x03FF0000U) >> 16U;
+    if ((ins >> 26U) == 31U) {
+        d |= (ins & 0x00000006U) << 14U;
+        d |= (ins & 0x00000040U) << 8U;
+        d |= (ins & 0x00000780U) << 3U;
+    } else {
+        d |= (ins & 0x04000000U) >> 12U;
+        d |= (ins & 0x78000000U) >> 17U;
+    }
+    return d;
 }
 
 StepResult Cpu::run(u64 budget) {
@@ -177,15 +205,23 @@ Cpu::Outcome Cpu::translate_data(u32 ea, u32 size, bool write, u32& pa_lo, u32& 
         default: return Outcome::unsupported("unexpected translation status");
         }
     };
-    const Translation first = translate(state_, bus_, ea, type);
+    const Translation first = translate(state_, bus_, ea, type, config_.extended_bats);
     if (first.status != TranslateStatus::Ok) return fail(first, ea);
     pa_lo = first.physical;
     wimg = first.wimg;
     const u32 last = ea + (size - 1U); // effective addresses wrap modulo 2^32
     if ((ea >> 12U) == (last >> 12U)) { split = size; pa_hi = 0; return Outcome::done(); }
     split = 0x1000U - (ea & 0xFFFU);
-    const Translation second = translate(state_, bus_, ea + split, type);
-    if (second.status != TranslateStatus::Ok) return fail(second, ea);
+    const Translation second = translate(state_, bus_, ea + split, type, config_.extended_bats);
+    // Fault in the second page. PEM (DSI, DAR): "a byte in the first word
+    // accessed in the segment or BAT area that caused the DSI exception". If
+    // both pages are in the same segment and neither went through a BAT, that
+    // first word is the original EA; otherwise the faulting area starts at the
+    // second page, so DAR = its first byte.
+    if (second.status != TranslateStatus::Ok) {
+        const bool same_segment = !first.bat && !second.bat && (ea >> 28U) == ((ea + split) >> 28U);
+        return fail(second, same_segment ? ea : ea + split);
+    }
     pa_hi = second.physical;
     return Outcome::done();
 }
@@ -439,6 +475,8 @@ Cpu::Outcome Cpu::op_19(u32 ins) {
     case 150: return Outcome::done();             // isync: in-order interpreter, no prefetch to discard
     case 50: // rfi
         if (problem_state()) return Outcome::privileged();
+        if (fp_enable_with_fex((state_.msr & ~MSR_SAVE_MASK) | (state_.srr1 & MSR_SAVE_MASK)))
+            return Outcome::unsupported("rfi sets MSR[FE0/FE1] while FPSCR[FEX]=1 (exception point not specified)");
         state_.msr = (state_.msr & ~MSR_SAVE_MASK) | (state_.srr1 & MSR_SAVE_MASK);
         next_pc_ = state_.srr0 & ~3U;
         return Outcome::done();
@@ -762,6 +800,8 @@ Cpu::Outcome Cpu::read_spr(unsigned n, u32& v) {
     auto& s = state_;
     if (n >= spr::IBAT0U && n < spr::IBAT0U + 8U) { const BatPair& b = s.ibat[(n - spr::IBAT0U) / 2U]; v = (n & 1U) ? b.lower : b.upper; return Outcome::done(); }
     if (n >= spr::DBAT0U && n < spr::DBAT0U + 8U) { const BatPair& b = s.dbat[(n - spr::DBAT0U) / 2U]; v = (n & 1U) ? b.lower : b.upper; return Outcome::done(); }
+    if (config_.extended_bats && n >= spr::IBAT4U && n < spr::IBAT4U + 8U) { const BatPair& b = s.ibat[4U + (n - spr::IBAT4U) / 2U]; v = (n & 1U) ? b.lower : b.upper; return Outcome::done(); }
+    if (config_.extended_bats && n >= spr::DBAT4U && n < spr::DBAT4U + 8U) { const BatPair& b = s.dbat[4U + (n - spr::DBAT4U) / 2U]; v = (n & 1U) ? b.lower : b.upper; return Outcome::done(); }
     if (n >= spr::GQR0 && n < spr::GQR0 + 8U) { v = s.gqr[n - spr::GQR0]; return Outcome::done(); }
     if (n >= spr::SPRG0 && n <= spr::SPRG3) { v = s.sprg[n - spr::SPRG0]; return Outcome::done(); }
     switch (n) {
@@ -803,6 +843,8 @@ Cpu::Outcome Cpu::write_spr(unsigned n, u32 v) {
     auto& s = state_;
     if (n >= spr::IBAT0U && n < spr::IBAT0U + 8U) { BatPair& b = s.ibat[(n - spr::IBAT0U) / 2U]; ((n & 1U) ? b.lower : b.upper) = v; return Outcome::done(); }
     if (n >= spr::DBAT0U && n < spr::DBAT0U + 8U) { BatPair& b = s.dbat[(n - spr::DBAT0U) / 2U]; ((n & 1U) ? b.lower : b.upper) = v; return Outcome::done(); }
+    if (config_.extended_bats && n >= spr::IBAT4U && n < spr::IBAT4U + 8U) { BatPair& b = s.ibat[4U + (n - spr::IBAT4U) / 2U]; ((n & 1U) ? b.lower : b.upper) = v; return Outcome::done(); }
+    if (config_.extended_bats && n >= spr::DBAT4U && n < spr::DBAT4U + 8U) { BatPair& b = s.dbat[4U + (n - spr::DBAT4U) / 2U]; ((n & 1U) ? b.lower : b.upper) = v; return Outcome::done(); }
     if (n >= spr::GQR0 && n < spr::GQR0 + 8U) { s.gqr[n - spr::GQR0] = v; return Outcome::done(); }
     if (n >= spr::SPRG0 && n <= spr::SPRG3) { s.sprg[n - spr::SPRG0] = v; return Outcome::done(); }
     switch (n) {
@@ -858,6 +900,7 @@ Cpu::Outcome Cpu::op_system_x(u32 ins, unsigned xo, bool& handled) {
         g[rt] = state_.msr; return Outcome::done();
     case 146: // mtmsr
         if (problem_state()) return Outcome::privileged();
+        if (fp_enable_with_fex(g[rt])) return Outcome::unsupported("mtmsr sets MSR[FE0/FE1] while FPSCR[FEX]=1 (exception point not specified)");
         state_.msr = g[rt]; return Outcome::done();
     case 595: // mfsr
         if (problem_state()) return Outcome::privileged();
@@ -873,6 +916,11 @@ Cpu::Outcome Cpu::op_system_x(u32 ins, unsigned xo, bool& handled) {
         state_.sr[g[rb] >> 28U] = g[rt]; return Outcome::done();
     case 339: { // mfspr
         const unsigned n = f_spr(ins);
+        // SPR 268/269 through mfspr (the encoding modern compilers emit for
+        // "mftb"): read the time base like mftb, also in problem state, as
+        // Dolphin's interpreter does. Not verified on hardware (see ESTADO).
+        if (n == spr::TBL_READ) { g[rt] = static_cast<u32>(state_.tb); return Outcome::done(); }
+        if (n == spr::TBU_READ) { g[rt] = static_cast<u32>(state_.tb >> 32U); return Outcome::done(); }
         if (spr::is_privileged(n) && problem_state()) return Outcome::privileged();
         u32 v = 0;
         Outcome o = read_spr(n, v);
@@ -896,8 +944,19 @@ Cpu::Outcome Cpu::op_system_x(u32 ins, unsigned xo, bool& handled) {
         return Outcome::done();
     case 598: case 854: // sync / eieio: single in-order interpreter, accesses already ordered
         return Outcome::done();
-    case 310: case 438:
-        return Outcome::unsupported("eciwx/ecowx external control (not implemented)");
+    case 310: case 438: { // eciwx / ecowx
+        // PEM: with EAR[E] = 0 the instruction takes a DSI with DSISR[11]
+        // (and DSISR[6] for the store); a non-word-aligned EA takes an
+        // alignment exception (750 manuals list both). With EAR[E] = 1 the
+        // access goes to the external-control device named by EAR[RID];
+        // nothing documents such a device on GameCube/Wii, so it stops.
+        const unsigned ra = f_ra(ins);
+        const u32 ea = (ra == 0U ? 0U : g[ra]) + g[rb];
+        if ((state_.ear & 0x80000000U) == 0U)
+            return Outcome::dsi(ea, DSISR_EAR_DISABLED | (xo == 438U ? DSISR_STORE : 0U));
+        if ((ea & 3U) != 0U) return Outcome::alignment(ea);
+        return Outcome::unsupported("eciwx/ecowx with EAR[E]=1 (no documented external-control device)");
+    }
     default:
         handled = false;
         return Outcome::done();

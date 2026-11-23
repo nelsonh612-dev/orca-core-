@@ -30,9 +30,10 @@ Perm page_perm(bool key, u32 pp) noexcept {
     }
 }
 
-bool try_bat(const std::array<BatPair, 4>& bats, bool problem_state, u32 ea, AccessType type,
-             Translation& out) {
-    for (const BatPair& bat : bats) {
+bool try_bat(const std::array<BatPair, 8>& bats, unsigned count, bool problem_state, u32 ea,
+             AccessType type, Translation& out) {
+    for (unsigned i = 0; i < count; ++i) {
+        const BatPair& bat = bats[i];
         const bool valid = problem_state ? (bat.upper & 1U) != 0U : (bat.upper & 2U) != 0U;
         if (!valid) continue;
         const u32 bl = (bat.upper >> 2U) & 0x7FFU;
@@ -42,6 +43,7 @@ bool try_bat(const std::array<BatPair, 4>& bats, bool problem_state, u32 ea, Acc
         const u32 pa = (bat.lower & 0xFFFE0000U) | (ea & ((bl << 17U) | 0x1FFFFU));
         out.physical = pa;
         out.wimg = static_cast<u8>((bat.lower >> 3U) & 0xFU);
+        out.bat = true;
         out.status = allowed(bat_perm(bat.lower & 3U), type) ? TranslateStatus::Ok : TranslateStatus::Protection;
         return true;
     }
@@ -104,7 +106,7 @@ Translation page_table(CpuState& st, mem::Bus& bus, u32 ea, AccessType type) {
 
 } // namespace
 
-Translation translate(CpuState& st, mem::Bus& bus, u32 ea, AccessType type) {
+Translation translate(CpuState& st, mem::Bus& bus, u32 ea, AccessType type, bool extended_bats) {
     const bool fetch = type == AccessType::Fetch;
     const bool enabled = fetch ? (st.msr & MSR_IR) != 0U : (st.msr & MSR_DR) != 0U;
     if (!enabled) {
@@ -112,7 +114,8 @@ Translation translate(CpuState& st, mem::Bus& bus, u32 ea, AccessType type) {
     }
     Translation out;
     const bool problem = (st.msr & MSR_PR) != 0U;
-    if (try_bat(fetch ? st.ibat : st.dbat, problem, ea, type, out)) return out;
+    const unsigned count = extended_bats && (st.hid4 & HID4_SBE) != 0U ? 8U : 4U;
+    if (try_bat(fetch ? st.ibat : st.dbat, count, problem, ea, type, out)) return out;
     return page_table(st, bus, ea, type);
 }
 

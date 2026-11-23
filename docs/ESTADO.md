@@ -1,4 +1,4 @@
-# Estado del proyecto — Milestone 016
+# Estado del proyecto — Milestone 017 (rama `orca-core-0.1`)
 
 ## Funciones implementadas (todas con pruebas)
 
@@ -96,6 +96,15 @@
 - DMA: lectura o escritura en la dirección actual, con 512 KiB/s de lectura y 96,1 KiB/s de escritura (f_CPU/524288 y f_CPU/98432 ciclos por byte).
 - Cualquier otro comando, y leer antes del byte de comando, detienen la emulación con el código. `orca_run --card-a=` / `--card-b=` cargan la imagen (o crean una de 16 Mbit) y la guardan si cambió.
 
+**CPU: cierre de pendientes (M017)** — fuentes: PEM de 32 bits (NXP MPCFPE, 6.4.6/6.4.7), manual del 750GX, Linux `align.c` (DSISR), Dolphin como información:
+- **BAT 4-7 de Broadway** (SPR 560-575): existen solo con `CpuConfig::extended_bats` (Wii) y se usan en la traducción cuando HID4[SBE] (bit 0x02000000) está activo, después de los BAT 0-3. En Gekko esas SPR se detienen.
+- **DSISR de las excepciones de alineación** a partir de la instrucción (X-form: bits 29-30, 25 y 21-24; D-form: bits 5 y 1-4; registros 6-15 en ambos).
+- **DAR al cruzar página:** "un byte de la primera palabra accedida en el segmento o área BAT que causó la DSI": EA original si las dos páginas están en el mismo segmento por tabla de páginas; primer byte de la segunda página si cambia el segmento o interviene un BAT.
+- **eciwx/ecowx:** DSI con DSISR[11] si EAR[E] = 0, alineación si no están alineadas; con EAR[E] = 1 parada (no hay dispositivo de control externo documentado).
+- **mfspr 268/269** leen la time base (también en modo usuario), como el intérprete de Dolphin.
+- **Excepción FP habilitada precisa:** con MSR[FE0|FE1] ≠ 0, una instrucción de cálculo (aritmética, redondeo, conversión, comparación) que deja FPSCR[FEX] = 1 termina (destino escrito salvo VE/ZE) y después se toma la excepción de programa con SRR0 = esa instrucción y SRR1[11]. El 750 trata los modos imprecisos como precisos.
+- **Resultados con FPSCR[OE]/[UE] = 1** (tablas 3-14 y 3-16 del PEM): el resultado exacto redondeado con el exponente ajustado en −/+1536 (doble) o −/+192 (simple), con FR/FI de ese redondeo, OX o UX y XX si es inexacto. Se calcula reescalando los operandos con potencias de dos exactas para que el motor existente redondee en rango.
+
 **GPU, parte 1 (M013)** — fuentes: archivos de Dolphin como información (ver README) y YAGCD; el código es propio:
 - `hw::CommandProcessor` (0x0C000000): STATUS calculado (marcas de agua, lectura y comando inactivos, breakpoint), CTRL (6 bits), CLEAR, PERF_SELECT (3 bits), registro 0x0A (8 bits), los ocho punteros del FIFO como pares LO/HI con máscaras 0xFFE0 / 0x03FF (GC) o 0x1FFF (Wii), métricas que leen 0 y 0x64 que lee 4.
 - FIFO enlazado: cada ráfaga del gather pipe avanza el puntero de escritura del CP (a la base cuando es igual al final, si no +32), suma 32 a la distancia y copia los punteros al PI; la GPU lee bloques de 32 bytes mientras la lectura está activada, hay distancia y no está en un breakpoint activado. Interrupción CP (causa PI 0x800) por breakpoint, marca alta o marca baja con su habilitación, solo con la lectura activada.
@@ -142,10 +151,11 @@
 ## Funciones pendientes (en orden)
 
 1. **Restos de M012 (sin hacer):** los demás comandos de la tarjeta que Dolphin nombra (ReadID, ReadErrorBuffer, WakeUp, Sleep, ArrayToBuffer, WriteBuffer, ExtraByteProgram, ChipErase; ahora con sus códigos de `EXI_DeviceMemoryCard.h`: 0x53, 0x82, 0x85, 0x86, 0x87, 0x88, 0xF3, 0xF4) y el ID del flash en la SRAM; la salida de audio (los bloques del DMA de audio ya se leen pero nadie los reproduce); la mezcla de streaming del AI. También quedan el puerto serie 1 (EXI0/CS2), el AD16 (EXI2/CS0), el mapeo de la ROM en el vector de reset 0xFFF00000, la aplicación de la protección del MI y los comandos restantes de la DI.
-2. **M017 — rendimiento del backend GLES y app Android:** probar en el Redmi 15C (Mali-G52) que existen `GL_EXT_shader_framebuffer_fetch` y la lectura de adjuntos enteros, y medir; mover la transformación de vértices y las copias del EFB a la GPU; shaders especializados por estado (con el ubershader mientras compilan); caché de texturas sin hash por dibujo; ventana/superficie Android, entrada y audio. Después Vulkan (aquí solo compila: no hay controlador; hay que decidir glslang o un generador SPIR-V propio).
-3. **Lo que queda de la GPU por software:** texturas RGBA8 en TMEM con mipmaps, anti-aliasing de RGB565_Z16, formatos de píxel 4-7 (YUV), contadores de rendimiento y bounding box del PE.
-4. **M018 — JIT ARM64:** emisor ARM64 verificado con el desensamblador de LLVM, bloques básicos, asignación de registros, caché de bloques conectada a la invalidación del bus, y pruebas diferenciales intérprete vs JIT, que tienen que correr en un dispositivo ARM64.
-5. **Después:** audio real, DI y discos, SI y controles, EXI, AI y los componentes de Wii (Hollywood, IOS, Bluetooth).
+2. **CPU, lo que queda detenido a propósito:** modo little-endian, modo traza (MSR[SE]/[BE]), breakpoints IABR/DABR activos, machine check, eciwx/ecowx con EAR[E] = 1, y los casos de FP que el PEM no fija (ver la tabla de verificación). Ningún juego conocido los usa; cada uno da una parada que explica el motivo. Sin TLB ni caché L1/L2 normal (solo la bloqueada).
+3. **M018 — rendimiento del backend GLES y app Android:** probar en el Redmi 15C (Mali-G52) que existen `GL_EXT_shader_framebuffer_fetch` y la lectura de adjuntos enteros, y medir; mover la transformación de vértices y las copias del EFB a la GPU; shaders especializados por estado (con el ubershader mientras compilan); caché de texturas sin hash por dibujo; ventana/superficie Android, entrada y audio. Después Vulkan (aquí solo compila: no hay controlador; hay que decidir glslang o un generador SPIR-V propio).
+4. **Lo que queda de la GPU por software:** texturas RGBA8 en TMEM con mipmaps, anti-aliasing de RGB565_Z16, formatos de píxel 4-7 (YUV), contadores de rendimiento y bounding box del PE.
+5. **M019 — JIT ARM64:** emisor ARM64 verificado con el desensamblador de LLVM, bloques básicos, asignación de registros, caché de bloques conectada a la invalidación del bus, y pruebas diferenciales intérprete vs JIT, que tienen que correr en un dispositivo ARM64.
+6. **Después:** audio real, DI y discos, SI y controles, EXI, AI y los componentes de Wii (Hollywood, IOS, Bluetooth).
 
 ## Pendiente de verificación en hardware real
 
@@ -164,8 +174,14 @@ Son comportamientos que el PEM deja indefinidos o que el manual del 750CL no det
 | Orden de las comprobaciones HID2[PSE/LSQE] frente a MSR[FP] | Primero HID2 (ilegal) y después MSR[FP] |
 | `stfs` de magnitudes menores que un denormal simple | Se guarda un cero con signo |
 | Modo no-IEEE FPSCR[NI]=1 | Se ignora: siempre se usa IEEE |
+| BAT 4-7 solapados con BAT 0-3 | Gana el primero que coincide (0-3 antes que 4-7); en Dolphin gana el último escrito en su tabla. El PEM no define solapamientos |
+| DSISR[27-31] de alineación en formas sin actualización | El PEM solo lo define para las formas con actualización; se pone rA siempre, como reconstruye Linux |
+| eciwx/ecowx: orden de las comprobaciones EAR[E] y alineación | Primero EAR[E] (como Dolphin) |
+| Excepción FP habilitada causada por mtfsf/mtfsfi/mtfsb1/mcrfs, o por mtmsr/rfi que activan FE con FEX = 1 | Parada clara: el PEM dice "antes del siguiente evento de sincronización" sin fijar SRR0 |
+| Paired singles con OE/UE = 1 | Parada clara: no está documentado cómo ajusta el Gekko cada slot |
+| Resultado con OE/UE = 1 que sigue fuera del formato tras el ajuste (p. ej. frsp de 2^400) | Parada clara (el PEM no lo define) |
 | Bits del FR/FI en estimaciones | Se ponen en 0 |
-| `mfspr rD,268/269` (alias moderno de `mftb`, el que genera clang) | Parada del anfitrión. El 750CL documenta `mftb` (XO 371) |
+| `mfspr rD,268/269` (alias moderno de `mftb`, el que genera clang) | Desde M017 lee la time base, también en modo usuario, como el intérprete de Dolphin. El 750CL documenta `mftb` (XO 371) |
 | DEC = 0 tras el arranque HLE (deja pendiente una excepción de decrementador) | Igual que se deja; falta saber qué valor deja el IPL real |
 | Escribir INTSR con bits distintos de RSW | Se ignora |
 | DI: DIMAR avanza y DILENGTH queda en 0 al terminar la lectura | Igual que se describe públicamente; sin verificar |
@@ -249,14 +265,14 @@ Son comportamientos que el PEM deja indefinidos o que el manual del 750CL no det
 
 | # | Problema | Impacto |
 |---|---|---|
-| 1 | DSISR de las excepciones de alineación queda en 0 | Bajo |
-| 2 | Si falla la segunda página de un acceso que cruza páginas, DAR guarda la EA original | Bajo |
+| 1 | (Resuelto en M017: DSISR de alineación) | — |
+| 2 | (Resuelto en M017: DAR al cruzar página según el PEM) | — |
 | 3 | Sin TLB: cada acceso recorre los BAT y la tabla de páginas | Rendimiento |
 | 4 | No se emulan las cachés normales de datos e instrucciones (el gather pipe sí existe desde M005) | — |
 | 5 | Modo little-endian, modo traza y breakpoints IABR/DABR activos: parada del anfitrión | No se ejecuta nada mal en silencio |
 | 6 | Machine check no modelado (`MemoryFault`) | Diagnóstico |
-| 7 | BAT extra de Broadway (HID4[SBE]) y `eciwx`/`ecowx` sin implementar | Wii pendiente |
-| 8 | Excepciones FP habilitadas con MSR[FE0/FE1] ≠ 0, o resultados escalados con OE=1/UE=1: parada clara | Los juegos suelen tener las excepciones FP desactivadas; falta verificarlo |
+| 7 | (Resuelto en M017: BAT 4-7 de Broadway y `eciwx`/`ecowx`; con EAR[E] = 1 se detiene) | — |
+| 8 | Excepciones FP habilitadas y resultados con OE/UE = 1 implementados en M017. Siguen deteniéndose: los casos que el PEM no fija (ver la tabla de verificación) | Muy bajo |
 | 9 | `lmw/stmw`, instrucciones de cadena y `lwarx/stwcx.` no pasan por la caché bloqueada | Bajo |
 | 10 | El DMA de la caché bloqueada y las ráfagas del gather pipe terminan al instante | Falta conectarlos al planificador con tiempos reales |
 | 11 | Coste fijo de 1 ciclo por instrucción: no hay modelo de pipeline ni de caché | El tiempo es determinista, no exacto al ciclo |

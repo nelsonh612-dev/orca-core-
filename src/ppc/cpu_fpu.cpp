@@ -52,20 +52,42 @@ Cpu::Outcome Cpu::fp_check_available(bool paired, bool quantized) {
     return Outcome::done();
 }
 
-Cpu::Outcome Cpu::fp_finish_control(u32 new_fpscr) {
+// Floating-point enabled exceptions (PEM 6.4.7, Table 6-14): the 750 family
+// implements both imprecise modes as precise ("enabled floating-point
+// exceptions are always precise", 750GX manual), so with MSR[FE0|FE1] != 0 a
+// computational instruction that leaves FPSCR[FEX] = 1 completes (the target
+// is written unless VE/ZE suppress it) and a program exception follows with
+// SRR0 = that instruction and SRR1[11] = 1. For the FPSCR control
+// instructions the PEM only says the exception happens "before the next
+// synchronizing event", without fixing SRR0, so that case stops clearly.
+Cpu::Outcome Cpu::fp_finish_control(u32 new_fpscr, bool computational) {
     const u32 n = summarize(new_fpscr);
-    if ((n & F::FEX) != 0U && (state_.msr & (MSR_FE0 | MSR_FE1)) != 0U)
-        return Outcome::unsupported("floating-point enabled exception with MSR[FE0/FE1] != 0 (not implemented)");
+    if ((n & F::FEX) != 0U && (state_.msr & (MSR_FE0 | MSR_FE1)) != 0U) {
+        if (!computational)
+            return Outcome::unsupported("FPSCR control instruction leaves FEX=1 with MSR[FE0/FE1] != 0 (exception point not specified)");
+        fp_program_pending_ = true;
+    }
     state_.fpscr = n;
     return Outcome::done();
 }
 
-Cpu::Outcome Cpu::fp_status(u32 exceptions, bool fr, bool fi, u32 fprf, bool set_fprf, bool tiny, bool& write) {
+Cpu::Outcome Cpu::fp_arith(F::Op op, u64 a, u64 b, u64 c, bool single, F::Result& r, bool& adjusted) {
     const u32 f = state_.fpscr;
-    if ((exceptions & F::OX) != 0U && (f & F::OE) != 0U)
-        return Outcome::unsupported("overflow with FPSCR[OE]=1: exponent-adjusted result not implemented");
-    if (tiny && (f & F::UE) != 0U)
-        return Outcome::unsupported("underflow with FPSCR[UE]=1: exponent-adjusted result not implemented");
+    bool unrepresentable = false;
+    r = F::arith_enabled(op, a, b, c, single, f & F::RN_MASK, (f & F::OE) != 0U,
+                         (f & F::UE) != 0U, adjusted, unrepresentable);
+    if (unrepresentable)
+        return Outcome::unsupported("OE/UE exponent-adjusted result outside the target format (undefined in the PEM)");
+    return Outcome::done();
+}
+
+Cpu::Outcome Cpu::fp_status(u32 exceptions, bool fr, bool fi, u32 fprf, bool set_fprf, bool tiny, bool& write,
+                            bool adjusted) {
+    const u32 f = state_.fpscr;
+    if (!adjusted && (exceptions & F::OX) != 0U && (f & F::OE) != 0U)
+        return Outcome::unsupported("paired-single overflow with FPSCR[OE]=1: Gekko behaviour not documented");
+    if (!adjusted && tiny && (f & F::UE) != 0U)
+        return Outcome::unsupported("paired-single underflow with FPSCR[UE]=1: Gekko behaviour not documented");
     // Enabled invalid-operation and zero-divide exceptions leave the target unchanged.
     const bool suppress = ((exceptions & F::VX_ALL) != 0U && (f & F::VE) != 0U) ||
                           ((exceptions & F::ZX) != 0U && (f & F::ZE) != 0U);
@@ -77,7 +99,7 @@ Cpu::Outcome Cpu::fp_status(u32 exceptions, bool fr, bool fi, u32 fprf, bool set
         if (fi) n |= F::FI;
         if (set_fprf) n = (n & ~F::FPRF_MASK) | (fprf << 12U);
     }
-    Outcome o = fp_finish_control(n);
+    Outcome o = fp_finish_control(n, true);
     if (!o.ok()) return o;
     write = !suppress;
     return o;
@@ -96,7 +118,7 @@ Cpu::Outcome Cpu::fp_compare(unsigned crf, u64 a, u64 b, bool ordered) {
     u32 n = state_.fpscr | exc;
     if ((exc & ~state_.fpscr & F::EXCEPTION_BITS) != 0U) n |= F::FX;
     n = (n & ~F::FPCC_MASK) | (code << 12U);
-    Outcome o = fp_finish_control(n);
+    Outcome o = fp_finish_control(n, true);
     if (!o.ok()) return o;
     set_cr_field(crf, code);
     return o;
@@ -179,9 +201,12 @@ Cpu::Outcome Cpu::op_fp59(u32 ins) {
     default: return Outcome::unsupported("unknown opcode 59 instruction");
     }
     const auto& fp = state_.fpr;
-    const F::Result r = F::arith(op, fp[f_ra(ins)].ps0, fp[f_rb(ins)].ps0, fp[f_rcf(ins)].ps0, true, state_.fpscr & F::RN_MASK);
+    F::Result r;
+    bool adjusted = false;
+    o = fp_arith(op, fp[f_ra(ins)].ps0, fp[f_rb(ins)].ps0, fp[f_rcf(ins)].ps0, true, r, adjusted);
+    if (!o.ok()) return o;
     bool write = false;
-    o = fp_status(r.exceptions, r.fr, r.fi, r.fprf, true, r.tiny, write);
+    o = fp_status(r.exceptions, r.fr, r.fi, r.fprf, true, r.tiny, write, adjusted);
     if (!o.ok()) return o;
     if (write) state_.fpr[f_rt(ins)].ps0 = state_.fpr[f_rt(ins)].ps1 = r.bits;
     if (f_rc(ins)) set_cr1();
@@ -220,9 +245,12 @@ Cpu::Outcome Cpu::op_fp63(u32 ins) {
     default: a_form = false; break;
     }
     if (a_form) {
-        const F::Result r = F::arith(op, A.ps0, B.ps0, C.ps0, false, rn);
+        F::Result r;
+        bool adjusted = false;
+        o = fp_arith(op, A.ps0, B.ps0, C.ps0, false, r, adjusted);
+        if (!o.ok()) return o;
         bool write = false;
-        o = fp_status(r.exceptions, r.fr, r.fi, r.fprf, true, r.tiny, write);
+        o = fp_status(r.exceptions, r.fr, r.fi, r.fprf, true, r.tiny, write, adjusted);
         if (!o.ok()) return o;
         if (write) D.ps0 = r.bits;
         if (f_rc(ins)) set_cr1();
@@ -235,9 +263,12 @@ Cpu::Outcome Cpu::op_fp63(u32 ins) {
     case 0: case 32: // fcmpu / fcmpo (Rc is reserved)
         return fp_compare((ins >> 23U) & 7U, A.ps0, B.ps0, xo == 32U);
     case 12: { // frsp
-        const F::Result r = F::arith(F::Op::Round, 0, B.ps0, 0, true, rn);
+        F::Result r;
+        bool adjusted = false;
+        o = fp_arith(F::Op::Round, 0, B.ps0, 0, true, r, adjusted);
+        if (!o.ok()) return o;
         bool write = false;
-        o = fp_status(r.exceptions, r.fr, r.fi, r.fprf, true, r.tiny, write);
+        o = fp_status(r.exceptions, r.fr, r.fi, r.fprf, true, r.tiny, write, adjusted);
         if (!o.ok()) return o;
         if (write) D.ps0 = D.ps1 = r.bits;
         break;

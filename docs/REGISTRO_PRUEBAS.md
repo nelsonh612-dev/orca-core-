@@ -1,6 +1,6 @@
-# Registro de pruebas — Milestone 016
+# Registro de pruebas — Milestone 017
 
-Todos los resultados son de ejecuciones reales del 2026-11-15 en este entorno, sobre una copia limpia de los fuentes entregados.
+Todos los resultados son de ejecuciones reales del 2026-11-22 en este entorno, sobre una copia limpia de los fuentes de la rama `orca-core-0.1`.
 
 **Entorno:** Linux x86-64 (Intel Xeon @ 2.10 GHz, 2 núcleos) · GCC 13.3.0 · Clang 18.1.3 · CMake 3.28.3 · Ninja · LLVM `llvm-mc` 18.1.3.
 
@@ -8,9 +8,9 @@ Todos los resultados son de ejecuciones reales del 2026-11-15 en este entorno, s
 
 | Configuración | Compilación | Advertencias (`-Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion -Wshadow -Werror`) | CTest |
 |---|---|---|---|
-| GCC Release (`-DORCA_WERROR=ON`) | OK | 0 | 19/19 pasan (12,5 s) |
-| Clang Release (`-DORCA_WERROR=ON`) | OK | 0 | 19/19 pasan (9,8 s) |
-| GCC Debug + ASan + UBSan (`-fno-sanitize-recover=all`, `-DORCA_WERROR=ON`) | OK | 0 | 19/19 pasan (201,9 s) |
+| GCC Release (`-DORCA_WERROR=ON`) | OK | 0 | 19/19 pasan |
+| Clang Release (`-DORCA_WERROR=ON`) | OK | 0 | 19/19 pasan |
+| GCC Debug + ASan + UBSan (`-fno-sanitize-recover=all`, `-DORCA_WERROR=ON`) | OK | 0 | 19/19 pasan |
 | Clang + ASan/UBSan | **NO EJECUTADO**: falta `compiler-rt` en el entorno | — | — |
 | Android NDK arm64-v8a | **NO EJECUTADO**: no hay NDK ni sysroot AArch64 | — | — |
 
@@ -20,11 +20,11 @@ Todos los resultados son de ejecuciones reales del 2026-11-15 en este entorno, s
 |---|---|---|---|
 | memory | 10 | 65 | 0 |
 | cpu_integer (incluye las 9 pruebas de M002) | 33 | 215 | 0 |
-| cpu_system | 23 | 221 | 0 |
-| mmu | 14 | 70 | 0 |
+| cpu_system (+2 en M017) | 25 | 237 | 0 |
+| mmu (+5 en M017) | 19 | 111 | 0 |
 | reference (diferencial de enteros) | 6 | 152.001 | 0 |
-| **fpu_engine** (M004) | 9 | 101.990 | 0 |
-| **cpu_fpu** (M004) | 28 | 30.751 | 0 |
+| **fpu_engine** (M004, +1 en M017) | 10 | 142.779 | 0 |
+| **cpu_fpu** (M004, +2 en M017) | 30 | 30.788 | 0 |
 | **system** (M005) | 13 | 109 | 0 |
 | **programs** (M005) | 3 | 34 | 0 |
 | **disc** (M006) | 12 | 145 | 0 |
@@ -37,6 +37,20 @@ Todos los resultados son de ejecuciones reales del 2026-11-15 en este entorno, s
 | **efb_copy** (M014 + M015) | 11 | 409 | 0 |
 | **gles** (M016, Mesa llvmpipe 25.2.8, GLES 3.2) | 10 | 76 | 0 |
 | encodings (vs `llvm-mc`) | 189 instrucciones | 181 ensambladas + 8 desensambladas | 0 diferencias |
+
+### CPU: cierre de los pendientes de la CPU (M017)
+
+Fuentes nuevas: manual *Programming Environments for 32-Bit Implementations* (NXP MPCFPE, secciones 6.4.6 y 6.4.7, leído en línea), manual del 750GX (excepciones FP siempre precisas), `arch/powerpc/kernel/align.c` de Linux (disposición del DSISR de alineación), y Dolphin como información (`Gekko.h`, `MMU.cpp`, `Interpreter_SystemRegisters.cpp`, `Interpreter_LoadStore.cpp`).
+- **BAT 4-7 de Broadway:** DBAT5 por `mtspr 570/571` y lectura con `mfspr`; con HID4[SBE] = 0 se ignora (DSI), con SBE = 1 (por `mtspr 1011`) traduce; IBAT7 para búsqueda de instrucciones (y ISI sin SBE); en Gekko las SPR 560-575 se detienen y BAT 4-7 nunca se buscan.
+- **DSISR de alineación:** lfd 0x2424, lfdx 0x1A424, lfdux 0x1E424 (bit 25 → DSISR[17]), lmw 0x1FA4, lwz 0x64; de punta a punta con `lfd` y `lmw` desalineados. Los valores se calcularon a mano y coinciden con las etiquetas de la tabla de Linux ("11 0 1001: lfdx", "00 0 0000: lwz").
+- **DAR al cruzar página:** mismo segmento por tabla de páginas → EA original; primera página por BAT y segunda por tabla (mismo segmento) → 0x10020000; cruce de segmento → 0x10000000.
+- **eciwx/ecowx:** EAR[E] = 0 → DSI con DSISR[11] (y [6] en ecowx), DAR = EA (también con rA = 0); EAR[E] = 1 desalineado → alineación; EAR[E] = 1 alineado → parada clara.
+- **mfspr 268/269:** leen la time base, también en modo usuario; `mtspr 268` sigue detenido.
+- **Excepción FP habilitada (precisa):** fsub inf−inf con VE y FE0 → excepción de programa, SRR0 = la instrucción, SRR1[11], MSR[FE0/FE1/FP] a 0, destino sin cambios, instrucción contada como retirada; fadd inexacto con XE y FE1 → resultado escrito y excepción; fcmpo con QNaN y VE → excepción con CR2 escrito; sin FE no hay excepción. mtfsfi que deja FEX = 1, mtmsr y rfi que activan FE con FEX = 1 → parada clara sin cambios.
+- **Resultados con OE/UE = 1:** 19 525 resultados ajustados (y 3826 no representables) comparados bit a bit con el modelo exacto de las pruebas (`fp_reference.hpp`, que no comparte código con el motor): suma, resta, multiplicación, división, las cuatro FMA y frsp, simple y doble, los 4 modos de redondeo, con operandos que fuerzan el desborde, el subdesborde y sumandos de cualquier magnitud. A nivel de CPU: fmul 2^1000·2^1000 → 2^464 con OX, FPRF normal y CR1 = 0xD; fmuls 2^-100·2^-100 con UE → 2^-8 en los dos slots y UX sin XX (exacto); frsp 2^200 → 256; frsp 2^400 → parada (no representable); ps_mul con OE → parada.
+- **Pruebas modificadas por cambio de comportamiento intencional (no se ocultó ninguna falla):** `invalid_operation_enabled_and_disabled` y `zero_divide_and_overflow_enables` comprobaban la parada "no implementado" de la excepción FP precisa y de OE; ahora comprueban la excepción y el resultado ajustado. `page_crossing_fault_writes_nothing` comprueba además el DAR.
+- **Errores encontrados:** (1) la primera versión del DAR seguía mi recuerdo del PEM ("primer byte de la página que falló"); el texto real dice "segmento o área BAT", así que se corrigió antes de entregar. (2) En los resultados ajustados, el operando sustituto que solo aporta el bit *sticky* se construía antes de escalar y desbordaba a infinito o se anulaba en los extremos: lo detectó la prueba diferencial (4452 fallos en FMA) y ahora se construye ya escalado. (3) Mi expectativa de CR1 (0xC) olvidaba que CR1 copia OX: el valor correcto es 0xD.
+- **Mutaciones (M017):** 17 sobre BAT extendidos, DSISR, DAR, eciwx, mfspr, la excepción precisa y los resultados ajustados: **17 detectadas** (C2 y C3 sobrevivieron al principio; se añadieron el cruce BAT → tabla en el mismo segmento y lfdux). Tres mutaciones se reescribieron porque `-Werror` impedía compilarlas. **Acumulado: 373.**
 
 ### Backend OpenGL ES 3.2 (M016)
 

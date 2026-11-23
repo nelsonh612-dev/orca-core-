@@ -167,6 +167,101 @@ TEST_CASE(engine_matches_exact_reference) {
     }
 }
 
+// --- OE/UE exponent-adjusted results (PEM tables 3-14/3-16) vs the exact model ---
+namespace {
+struct ExpectedAdj { bool adjusted{false}, unrepresentable{false}; Expected e{}; };
+
+ExpectedAdj reference_adjusted(F::Op op, u64 a, u64 b, u64 c, bool single, unsigned rn) {
+    ExpectedAdj out;
+    out.e = reference(op, a, b, c, single, rn);
+    const R::Exact A = R::decode(a), B = R::decode(b), C = R::decode(c);
+    const bool sub_b = op == F::Op::Sub || op == F::Op::MSub || op == F::Op::NMSub;
+    R::Exact x;
+    switch (op) {
+    case F::Op::Add: case F::Op::Sub: x = R::add(A, sub_b ? negate(B) : B); break;
+    case F::Op::Mul: x = R::mul(A, C); break;
+    case F::Op::Div: x = R::div(A, B); break;
+    case F::Op::Round: x = B; break;
+    default: x = R::add(R::mul(A, C), sub_b ? negate(B) : B); break;
+    }
+    if (x.m.zero()) return out;
+    const R::Rounded plain = R::round(x, single, rn);
+    const int k = single ? 192 : 1536;
+    if (plain.overflow) x.e -= k;
+    else if (plain.tiny) x.e += k;
+    else return out;
+    const R::Rounded adj = R::round(x, single, rn);
+    if (adj.overflow || adj.tiny) { out.unrepresentable = true; return out; }
+    out.adjusted = true;
+    out.e.bits = adj.bits;
+    if (op == F::Op::NMAdd || op == F::Op::NMSub) out.e.bits ^= F::kSignBit;
+    out.e.fi = adj.inexact;
+    out.e.fr = adj.up;
+    out.e.exceptions = (plain.overflow ? F::OX : F::UX) | (adj.inexact ? F::XX : 0U);
+    out.e.fprf = ref_class(out.e.bits, single);
+    return out;
+}
+
+// Operands biased to overflow (big) or underflow (small) for `op`.
+u64 rand_extreme(Rng& r, bool single, bool big) {
+    const int lo = single ? (big ? 60 : -150) : (big ? 480 : -1074), hi = single ? (big ? 127 : -40) : (big ? 1023 : -470);
+    const int e2 = lo + static_cast<int>(r.u(static_cast<u32>(hi - lo + 1)));
+    u64 frac = r.next() & 0x000FFFFFFFFFFFFFULL;
+    if (single) frac &= ~((1ULL << 29) - 1);
+    if (r.u(4) == 0) frac &= ~((1ULL << r.u(52)) - 1);
+    double v = std::ldexp(1.0 + static_cast<double>(frac) * 0x1p-52, e2);
+    if (r.u(2)) v = -v;
+    return dbits(v);
+}
+int g_adjusted = 0;
+} // namespace
+
+TEST_CASE(enabled_overflow_underflow_adjusted_results) {
+    Rng rng{0xADD5CA1EULL};
+    const F::Op ops[] = {F::Op::Add, F::Op::Sub, F::Op::Mul, F::Op::Div, F::Op::MAdd, F::Op::MSub,
+                         F::Op::NMAdd, F::Op::NMSub, F::Op::Round};
+    int reported = 0, unrep = 0;
+    for (F::Op op : ops) {
+        for (int single = 0; single < 2; ++single) {
+            if (op == F::Op::Round && single == 0) continue;
+            for (unsigned rn = 0; rn < 4; ++rn) {
+                for (int i = 0; i < 600; ++i) {
+                    const bool big = rng.u(2) != 0;
+                    u64 a = rand_extreme(rng, single != 0, big), b = rand_extreme(rng, single != 0, big),
+                        c = rand_extreme(rng, single != 0, big);
+                    if (op == F::Op::Div) b = rand_extreme(rng, single != 0, !big); // big/small or small/big
+                    if (rng.u(5) == 0) b = rand_double(rng); // any addend: exercises the sticky substitution
+                    if (op == F::Op::Round) b = rand_double(rng);
+                    if (op == F::Op::Div && F::is_zero(b)) continue;
+                    bool adjusted = false, unrepresentable = false;
+                    const F::Result got = F::arith_enabled(op, a, b, c, single != 0, rn, true, true, adjusted, unrepresentable);
+                    const ExpectedAdj want = reference_adjusted(op, a, b, c, single != 0, rn);
+                    bool ok = adjusted == want.adjusted && unrepresentable == want.unrepresentable;
+                    if (ok && (want.adjusted || !want.unrepresentable))
+                        ok = got.bits == want.e.bits && got.exceptions == want.e.exceptions && got.fr == want.e.fr &&
+                             got.fi == want.e.fi && got.fprf == want.e.fprf;
+                    if (want.adjusted) ++g_adjusted;
+                    if (want.unrepresentable) ++unrep;
+                    CHECK(ok);
+                    if (!ok && reported++ < 10)
+                        std::fprintf(stderr, "    %s%s rn=%u a=%016llx b=%016llx c=%016llx adj=%d/%d unrep=%d/%d\n      got  %016llx exc=%08x fr=%d fi=%d\n      want %016llx exc=%08x fr=%d fi=%d\n",
+                                     op_name(op), single ? "s" : "", rn, (unsigned long long)a, (unsigned long long)b, (unsigned long long)c,
+                                     adjusted, want.adjusted, unrepresentable, want.unrepresentable,
+                                     (unsigned long long)got.bits, got.exceptions, got.fr, got.fi,
+                                     (unsigned long long)want.e.bits, want.e.exceptions, want.e.fr, want.e.fi);
+                }
+            }
+        }
+    }
+    CHECK(g_adjusted > 10000); // the generator really reaches the adjusted paths
+    std::printf("[fpu_engine] %d exponent-adjusted results compared (%d unrepresentable)\n", g_adjusted, unrep);
+    // Disabled enables: arith_enabled == arith
+    bool adjusted = true, unrepresentable = true;
+    const F::Result r = F::arith_enabled(F::Op::Mul, dbits(1e300), 0, dbits(1e300), false, 0, false, false, adjusted, unrepresentable);
+    CHECK(!adjusted && !unrepresentable);
+    CHECK_EQ(r.bits, dbits(INFINITY));
+}
+
 TEST_CASE(nan_propagation_priority_and_quieting) {
     const u64 qa = 0x7FF8000000000AAAULL, sb = 0x7FF0000000000BBBULL, qc = 0xFFF8000000000CCCULL, one = 0x3FF0000000000000ULL;
     F::Result r = F::arith(F::Op::MAdd, qa, sb, qc, false, 0);

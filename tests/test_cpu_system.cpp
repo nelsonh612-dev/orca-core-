@@ -356,3 +356,46 @@ TEST_CASE(icbi_reports_physical_block_and_code_pages_invalidate) {
 }
 
 TEST_MAIN("cpu_system")
+
+// mfspr with SPR 268/269 reads the time base like mftb (Dolphin interpreter),
+// also in problem state.
+TEST_CASE(mfspr_time_base_alias) {
+    Machine m;
+    m.s().tb = 0x0123456789ABCDEFULL;
+    m.s().msr = MSR_PR;
+    m.code(0x1000, {A::mfspr(3, 268), A::mfspr(4, 269)});
+    CHECK(m.cpu->run(2) == StepResult::Executed);
+    CHECK_EQ(m.s().gpr[3], 0x89ABCDEFU);
+    CHECK_EQ(m.s().gpr[4], 0x01234567U);
+    // Writing them through mtspr is still not allowed (284/285 are the write SPRs).
+    m.s().msr = 0;
+    CHECK(m.exec(A::mtspr(268, 3)) == StepResult::UnsupportedInstruction);
+}
+
+namespace {
+constexpr u32 eciwx(u32 d, u32 a, u32 b) { return A::X(310, d, a, b); }
+constexpr u32 ecowx(u32 s, u32 a, u32 b) { return A::X(438, s, a, b); }
+} // namespace
+
+TEST_CASE(eciwx_ecowx_external_control) {
+    Machine m;
+    m.s().gpr[4] = 0x2000; m.s().gpr[5] = 0x10;
+    // EAR[E] = 0 -> DSI, DSISR[11], DAR = EA
+    CHECK(m.exec(eciwx(3, 4, 5)) == StepResult::ExceptionTaken);
+    CHECK(m.cpu->last_exception() == Exception::DSI);
+    CHECK_EQ(m.s().dsisr, DSISR_EAR_DISABLED);
+    CHECK_EQ(m.s().dar, 0x2010U);
+    m.s().pc = 0x1000;
+    CHECK(m.exec(ecowx(3, 0, 5)) == StepResult::ExceptionTaken); // rA = 0 -> EA = rB
+    CHECK_EQ(m.s().dsisr, DSISR_EAR_DISABLED | DSISR_STORE);
+    CHECK_EQ(m.s().dar, 0x10U);
+    // EAR[E] = 1, misaligned -> alignment exception
+    m.s().pc = 0x1000; m.s().ear = 0x80000000U; m.s().gpr[5] = 0x11;
+    CHECK(m.exec(eciwx(3, 4, 5)) == StepResult::ExceptionTaken);
+    CHECK(m.cpu->last_exception() == Exception::Alignment);
+    CHECK_EQ(m.s().dar, 0x2011U);
+    // EAR[E] = 1, aligned -> clear stop (no documented device)
+    m.s().pc = 0x1000; m.s().gpr[5] = 0x10;
+    CHECK(m.exec(ecowx(3, 4, 5)) == StepResult::UnsupportedInstruction);
+    CHECK_EQ(m.s().pc, 0x1000U);
+}

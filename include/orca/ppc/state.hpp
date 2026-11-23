@@ -41,8 +41,10 @@ struct CpuState {
     // Memory management
     u32 sdr1{0};
     std::array<u32, 16> sr{};
-    std::array<BatPair, 4> ibat{};
-    std::array<BatPair, 4> dbat{};
+    // BATs 0-3 exist on Gekko and Broadway; 4-7 only on Broadway, active with
+    // HID4[SBE] (CpuConfig::extended_bats).
+    std::array<BatPair, 8> ibat{};
+    std::array<BatPair, 8> dbat{};
 
     // Time base and decrementer
     u64 tb{0};

@@ -56,6 +56,7 @@ inline constexpr u32 SRR1_ISI_PROTECTION     = 0x08000000U; // 4
 inline constexpr u32 DSISR_NOT_FOUND    = 0x40000000U; // 1
 inline constexpr u32 DSISR_PROTECTION   = 0x08000000U; // 4
 inline constexpr u32 DSISR_STORE        = 0x02000000U; // 6
+inline constexpr u32 DSISR_EAR_DISABLED = 0x00100000U; // 11: eciwx/ecowx with EAR[E] = 0
 
 // --- SPR numbers (as used by mfspr/mtspr, after field swap) ---------------
 namespace spr {
@@ -66,6 +67,8 @@ inline constexpr unsigned SPRG0 = 272, SPRG1 = 273, SPRG2 = 274, SPRG3 = 275;
 inline constexpr unsigned EAR = 282, TBL_WRITE = 284, TBU_WRITE = 285, PVR = 287;
 inline constexpr unsigned IBAT0U = 528; // IBAT0U..IBAT3L = 528..535
 inline constexpr unsigned DBAT0U = 536; // DBAT0U..DBAT3L = 536..543
+inline constexpr unsigned IBAT4U = 560; // Broadway: IBAT4U..IBAT7L = 560..567
+inline constexpr unsigned DBAT4U = 568; // Broadway: DBAT4U..DBAT7L = 568..575
 inline constexpr unsigned GQR0 = 912;   // GQR0..GQR7 = 912..919 (Gekko paired-single quantisation)
 inline constexpr unsigned HID2 = 920, WPAR = 921, DMAU = 922, DMAL = 923;
 inline constexpr unsigned UMMCR0 = 936, UPMC1 = 937, UPMC2 = 938, USIA = 939;

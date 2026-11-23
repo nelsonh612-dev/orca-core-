@@ -32,6 +32,7 @@ struct Translation {
     TranslateStatus status{TranslateStatus::Ok};
     u32 physical{0};
     u8 wimg{0}; // W I M G (bit 3 = W ... bit 0 = G)
+    bool bat{false}; // decided by a BAT (otherwise segment/page table or real mode)
 };
 
 // Real-mode WIMG for data accesses (PEM 7.2: 0b0011, coherent + guarded)
@@ -42,6 +43,12 @@ inline constexpr u8 WIMG_W = 0x8U, WIMG_I = 0x4U, WIMG_M = 0x2U, WIMG_G = 0x1U;
 
 // Translates an effective address. May write the page table (R/C bits)
 // through `bus` when a PTE is used.
-Translation translate(CpuState& state, mem::Bus& bus, u32 ea, AccessType type);
+// `extended_bats`: the CPU is a Broadway, so BATs 4-7 are searched (after
+// 0-3) when HID4[SBE] is set.
+Translation translate(CpuState& state, mem::Bus& bus, u32 ea, AccessType type,
+                      bool extended_bats = false);
+
+// HID4[SBE] (Broadway "secondary BAT enable"; Dolphin Gekko.h bit 25 LSB0).
+inline constexpr u32 HID4_SBE = 0x02000000U;
 
 } // namespace orca::ppc

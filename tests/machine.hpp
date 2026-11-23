@@ -12,9 +12,10 @@ struct Machine {
     mem::Bus bus;
     std::unique_ptr<ppc::Cpu> cpu;
 
-    explicit Machine(u32 pc = 0x1000) {
+    // `broadway`: the CPU has the Wii extensions (BATs 4-7).
+    explicit Machine(u32 pc = 0x1000, bool broadway = false) {
         mem::map_gamecube_ram(bus);
-        cpu = std::make_unique<ppc::Cpu>(bus, ppc::CpuConfig{0xABCD1234U}); // arbitrary test PVR
+        cpu = std::make_unique<ppc::Cpu>(bus, ppc::CpuConfig{0xABCD1234U, broadway}); // arbitrary test PVR
         cpu->state().pc = pc;
     }
     ppc::CpuState& s() { return cpu->state(); }

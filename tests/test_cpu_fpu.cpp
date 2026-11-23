@@ -151,12 +151,74 @@ TEST_CASE(invalid_operation_enabled_and_disabled) {
     CHECK_EQ(e.s().fpr[1].ps0, d(5.0));
     CHECK((e.s().fpscr & (F::FEX | F::VX)) == (F::FEX | F::VX));
     CHECK_EQ((e.s().cr >> 24) & 0xFU, 0xEU); // FX FEX VX
-    FpMachine p; // ...and with MSR[FE0] the precise program exception is not implemented: clean stop
-    p.s().fpscr = F::VE; p.s().msr = MSR_FP | MSR_FE0;
-    p.s().fpr[2].ps0 = d(INFINITY); p.s().fpr[3].ps0 = d(INFINITY);
-    const CpuState before = p.s();
-    CHECK(p.exec(A::fsub(1, 2, 3)) == StepResult::UnsupportedInstruction);
-    CHECK(p.s() == before);
+    // ...and with MSR[FE0] (any non-zero mode is precise on the 750): the
+    // instruction completes (target suppressed by VE) and a program exception
+    // follows with SRR0 = the instruction and SRR1[11] (PEM 6.4.7, Table 6-14).
+    FpMachine p;
+    p.s().fpscr = F::VE; p.s().msr = MSR_FP | MSR_FE0 | MSR_ME;
+    p.s().fpr[2].ps0 = d(INFINITY); p.s().fpr[3].ps0 = d(INFINITY); p.s().fpr[1].ps0 = d(5.0);
+    CHECK(p.exec(A::fsub(1, 2, 3)) == StepResult::ExceptionTaken);
+    CHECK(p.cpu->last_exception() == Exception::Program);
+    CHECK_EQ(p.s().srr0, 0x1000U);
+    CHECK_EQ(p.s().srr1 & (SRR1_PROGRAM_FP | SRR1_PROGRAM_ILLEGAL | SRR1_PROGRAM_PRIVILEGED | SRR1_PROGRAM_TRAP), SRR1_PROGRAM_FP);
+    CHECK_EQ(p.s().srr1 & (MSR_FP | MSR_FE0), MSR_FP | MSR_FE0); // old MSR saved
+    CHECK_EQ(p.s().msr & (MSR_FE0 | MSR_FE1 | MSR_FP), 0U);
+    CHECK_EQ(p.s().pc, 0x700U);
+    CHECK_EQ(p.s().fpr[1].ps0, d(5.0));
+    CHECK((p.s().fpscr & (F::FEX | F::VXISI)) == (F::FEX | F::VXISI));
+    CHECK_EQ(p.cpu->instructions_retired(), 1U);
+}
+
+TEST_CASE(fp_enabled_exception_writes_result_for_inexact) {
+    // XE = 1, FE1 only: 1 + 2^-60 is inexact; the rounded result is written and
+    // the program exception is taken after it.
+    FpMachine m;
+    m.s().fpscr = F::XE; m.s().msr = MSR_FP | MSR_FE1;
+    m.s().fpr[2].ps0 = d(1.0); m.s().fpr[3].ps0 = d(std::ldexp(1.0, -60));
+    CHECK(m.exec(A::fadd(1, 2, 3)) == StepResult::ExceptionTaken);
+    CHECK(m.cpu->last_exception() == Exception::Program);
+    CHECK_EQ(m.s().srr1 & SRR1_PROGRAM_FP, SRR1_PROGRAM_FP);
+    CHECK_EQ(m.s().fpr[1].ps0, d(1.0));
+    CHECK((m.s().fpscr & (F::XX | F::FI | F::FEX)) == (F::XX | F::FI | F::FEX));
+    // fcmpo with a QNaN (VXVC) and VE=1 also raises it: compares are computational.
+    FpMachine c;
+    c.s().fpscr = F::VE; c.s().msr = MSR_FP | MSR_FE0 | MSR_FE1;
+    c.s().fpr[1].ps0 = F::kDefaultQNaN; c.s().fpr[2].ps0 = d(1.0);
+    CHECK(c.exec(A::fcmpo(2, 1, 2)) == StepResult::ExceptionTaken);
+    CHECK(c.cpu->last_exception() == Exception::Program);
+    CHECK_EQ((c.s().cr >> 20) & 0xFU, 1U); // CR2 = unordered was still written
+    // No exception when FE0 = FE1 = 0 (existing behaviour)
+    FpMachine n;
+    n.s().fpscr = F::XE;
+    n.s().fpr[2].ps0 = d(1.0); n.s().fpr[3].ps0 = d(std::ldexp(1.0, -60));
+    CHECK(n.exec(A::fadd(1, 2, 3)) == StepResult::Executed);
+    CHECK_EQ(n.s().fpscr & F::FEX, F::FEX);
+}
+
+TEST_CASE(fp_enabled_exception_unspecified_points_stop) {
+    // FPSCR control instruction that makes FEX = 1 with FE set: SRR0 is not
+    // fixed by the PEM -> clear stop, nothing changes.
+    FpMachine m;
+    m.s().fpscr = F::VXSNAN | F::VX | F::FX; m.s().msr = MSR_FP | MSR_FE0;
+    const CpuState before = m.s();
+    CHECK(m.exec(A::mtfsfi(6, 8)) == StepResult::UnsupportedInstruction); // field 6 = VE..XE nibble -> VE
+    CHECK(m.s() == before);
+    // mtmsr enabling FE while FEX = 1
+    Machine t;
+    t.s().fpscr = F::FEX | F::VE | F::VXSNAN | F::VX | F::FX;
+    t.s().gpr[3] = MSR_FP | MSR_FE0;
+    CHECK(t.exec(A::mtmsr(3)) == StepResult::UnsupportedInstruction);
+    CHECK_EQ(t.s().msr, 0U);
+    // rfi returning to an MSR with FE set while FEX = 1
+    Machine r;
+    r.s().fpscr = F::FEX | F::VE | F::VXSNAN | F::VX | F::FX;
+    r.s().srr1 = MSR_FP | MSR_FE1; r.s().srr0 = 0x3000;
+    CHECK(r.exec(A::rfi()) == StepResult::UnsupportedInstruction);
+    // With FEX = 0 both are fine
+    Machine ok;
+    ok.s().gpr[3] = MSR_FP | MSR_FE0;
+    CHECK(ok.exec(A::mtmsr(3)) == StepResult::Executed);
+    CHECK_EQ(ok.s().msr, MSR_FP | MSR_FE0);
 }
 
 TEST_CASE(zero_divide_and_overflow_enables) {
@@ -166,12 +228,42 @@ TEST_CASE(zero_divide_and_overflow_enables) {
     CHECK(m.exec(A::fdiv(1, 2, 3)) == StepResult::Executed);
     CHECK_EQ(m.s().fpr[1].ps0, d(9.0));
     CHECK((m.s().fpscr & (F::ZX | F::FEX)) == (F::ZX | F::FEX));
+    // OE = 1: exponent-adjusted result (PEM table 3-14): 2^1000 * 2^1000 * 2^-1536 = 2^464, exact.
     FpMachine o;
     o.s().fpscr = F::OE;
-    o.s().fpr[2].ps0 = d(1e300); o.s().fpr[3].ps0 = d(1e300);
-    const CpuState before = o.s();
-    CHECK(o.exec(A::fmul(1, 2, 3)) == StepResult::UnsupportedInstruction); // scaled result not implemented
-    CHECK(o.s() == before);
+    o.s().fpr[2].ps0 = d(std::ldexp(1.0, 1000)); o.s().fpr[3].ps0 = d(std::ldexp(1.0, 1000));
+    CHECK(o.exec(A::fmul(1, 2, 3, true)) == StepResult::Executed);
+    CHECK_EQ(o.s().fpr[1].ps0, d(std::ldexp(1.0, 464)));
+    CHECK_EQ(o.s().fpscr & (F::OX | F::XX | F::FI | F::FR | F::FX), F::OX | F::FX);
+    CHECK_EQ((o.s().fpscr >> 12) & 0x1FU, F::CLASS_POS_NORM);
+    CHECK_EQ((o.s().cr >> 24) & 0xFU, 0xDU); // CR1 = FPSCR[0:3] = FX FEX VX OX -> 1 1 0 1
+    // UE = 1, single: 2^-100 * 2^-100 = 2^-200 is tiny for single -> 2^-200 * 2^192 = 2^-8, both slots.
+    FpMachine u;
+    u.s().fpscr = F::UE;
+    u.s().fpr[2].ps0 = d(std::ldexp(1.0, -100)); u.s().fpr[3].ps0 = d(std::ldexp(1.0, -100));
+    CHECK(u.exec(A::fmuls(1, 2, 3)) == StepResult::Executed);
+    CHECK_EQ(u.s().fpr[1].ps0, d(std::ldexp(1.0, -8)));
+    CHECK_EQ(u.s().fpr[1].ps1, d(std::ldexp(1.0, -8)));
+    CHECK_EQ(u.s().fpscr & (F::UX | F::XX), F::UX); // exact but tiny: UX with UE = 1
+    // frsp of 2^200 with OE = 1: 2^200 * 2^-192 = 2^8
+    FpMachine r;
+    r.s().fpscr = F::OE;
+    r.s().fpr[2].ps0 = d(std::ldexp(1.0, 200));
+    CHECK(r.exec(A::frsp(1, 2)) == StepResult::Executed);
+    CHECK_EQ(r.s().fpr[1].ps0, d(256.0));
+    // Still outside the single format after adjusting (2^400 -> 2^208): undefined -> clear stop
+    FpMachine x;
+    x.s().fpscr = F::OE;
+    x.s().fpr[2].ps0 = d(std::ldexp(1.0, 400));
+    const CpuState before = x.s();
+    CHECK(x.exec(A::frsp(1, 2)) == StepResult::UnsupportedInstruction);
+    CHECK(x.s() == before);
+    // Paired singles keep the clear stop (Gekko behaviour not documented)
+    FpMachine ps;
+    ps.s().fpscr = F::OE;
+    ps.s().fpr[2].ps0 = ps.s().fpr[2].ps1 = d(std::ldexp(1.0, 100));
+    ps.s().fpr[3].ps0 = ps.s().fpr[3].ps1 = d(std::ldexp(1.0, 100));
+    CHECK(ps.exec(A::ps_mul(1, 2, 3)) == StepResult::UnsupportedInstruction);
     FpMachine n;
     n.s().fpr[2].ps0 = d(1e300); n.s().fpr[3].ps0 = d(1e300);
     CHECK(n.exec(A::fmul(1, 2, 3)) == StepResult::Executed);

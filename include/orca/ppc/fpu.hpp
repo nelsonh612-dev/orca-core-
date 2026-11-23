@@ -87,6 +87,17 @@ struct Result {
 // `rn` is FPSCR[RN]: 0 nearest-even, 1 toward zero, 2 toward +inf, 3 toward -inf.
 Result arith(Op op, u64 a, u64 b, u64 c, bool single, unsigned rn);
 
+// arith() plus the enabled overflow/underflow rules (PEM 3.3.6.2.1-2,
+// tables 3-14 and 3-16): with `oe` an overflowing result, and with `ue` a
+// tiny one, is replaced by the correctly rounded exact result with its
+// exponent adjusted by -1536 / +1536 (double) or -192 / +192 (single). The
+// adjusted value keeps FR/FI of that rounding; OX (or UX) is set, XX if
+// inexact. `adjusted` reports that this happened. `unrepresentable` is set
+// when the adjusted value still does not fit the target format (the PEM does
+// not define that case) - the caller must stop.
+Result arith_enabled(Op op, u64 a, u64 b, u64 c, bool single, unsigned rn, bool oe, bool ue,
+                     bool& adjusted, bool& unrepresentable);
+
 // FPRF class of a value; with `single` the denormal range is that of binary32.
 u32 classify(u64 bits, bool single) noexcept;
 

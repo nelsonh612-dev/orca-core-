@@ -27,7 +27,7 @@ struct Cpu::Outcome {
     static Outcome dsi(u32 ea, u32 dsisr) {
         Outcome o = exception(Exception::DSI); o.set_dar = true; o.dar = ea; o.dsisr = dsisr; return o;
     }
-    // DSISR for alignment exceptions is not populated yet (see README).
+    // DSISR is filled in by Cpu::step from the instruction (alignment_dsisr).
     static Outcome alignment(u32 ea) {
         Outcome o = exception(Exception::Alignment); o.set_dar = true; o.dar = ea; o.dsisr = 0; return o;
     }

@@ -3,6 +3,7 @@
 // the compiler does not fold or reorder arithmetic across rounding-mode changes.
 #include "orca/ppc/fpu.hpp"
 
+#include <algorithm>
 #include <cfenv>
 #include <cmath>
 #include <cstring>
@@ -197,6 +198,113 @@ Result arith(Op op, u64 a, u64 b, u64 c, bool single, unsigned rn) {
     r.tiny = tiny;
     if (inexact) r.exceptions |= XX;
     r.fprf = classify(r.bits, single);
+    return r;
+}
+
+namespace {
+
+// x = m * 2^e with |m| in [0.5, 1) (x finite, non-zero).
+int exponent_of(double x) noexcept { int e = 0; (void)std::frexp(x, &e); return e; }
+
+} // namespace
+
+// Exponent-adjusted results. The exact result R is rewritten as R' * 2^N with
+// operands rescaled by exact powers of two so R' is close to 1: the existing
+// engine then rounds R' correctly (same significand and rounding as R, since
+// both are normal), and the adjusted result is R' * 2^(N + k), an exact
+// scaling. Operands that can only affect the sticky bit are replaced by a
+// same-signed value that is also below the rounding position, so the scaled
+// operands never leave the normal range.
+Result arith_enabled(Op op, u64 a, u64 b, u64 c, bool single, unsigned rn, bool oe, bool ue,
+                     bool& adjusted, bool& unrepresentable) {
+    adjusted = false;
+    unrepresentable = false;
+    const Result plain = arith(op, a, b, c, single, rn);
+    const bool over = oe && (plain.exceptions & OX) != 0U;
+    const bool under = !over && ue && plain.tiny;
+    if (!over && !under) return plain;
+
+    const int k = (over ? -1 : 1) * (single ? 192 : 1536);
+    Op eff = op;
+    double fa = to_double(a), fb = to_double(b), fc = to_double(c);
+    if (op == Op::ReciprocalEstimate) { eff = Op::Div; fa = 1.0; } // estimate is 1/B rounded to single
+
+    double xa = 0.0, xb = 0.0, xc = 0.0;
+    int n = 0;
+    switch (eff) {
+    case Op::Mul: {
+        int ea = 0, ec = 0;
+        xa = std::frexp(fa, &ea); xc = std::frexp(fc, &ec);
+        n = ea + ec;
+        break;
+    }
+    case Op::Div: {
+        int ea = 0, eb = 0;
+        xa = std::frexp(fa, &ea); xb = std::frexp(fb, &eb);
+        n = ea - eb;
+        break;
+    }
+    case Op::Add: case Op::Sub: case Op::Round: {
+        double pa = eff == Op::Round ? 0.0 : fa, pb = fb;
+        int e = -100000;
+        if (pa != 0.0) e = std::max(e, exponent_of(pa));
+        if (pb != 0.0) e = std::max(e, exponent_of(pb));
+        // An operand more than 70 binades below the larger one only sets the
+        // sticky bit (the result keeps at least 53 bits above it).
+        // (The substitute is built already scaled: +-2^-71 relative to 2^e.)
+        auto scaled = [e](double v) {
+            if (v != 0.0 && exponent_of(v) < e - 70) return std::copysign(0x1p-71, v);
+            return std::ldexp(v, -e);
+        };
+        xa = scaled(pa); xb = scaled(pb);
+        n = e;
+        break;
+    }
+    case Op::MAdd: case Op::MSub: case Op::NMAdd: case Op::NMSub: {
+        int ea = 0, ec = 0;
+        double ma = std::frexp(fa, &ea), mc = std::frexp(fc, &ec);
+        const bool product_zero = fa == 0.0 || fc == 0.0;
+        int ep = ea + ec;
+        double pb = fb;
+        int e = -100000;
+        if (!product_zero) e = std::max(e, ep);
+        if (pb != 0.0) e = std::max(e, exponent_of(pb));
+        // The product has at most 106 significant bits: an addend 120 binades
+        // below it is sticky-only, and a product 70 binades below the addend too.
+        // Substitutes are built already scaled by 2^-e.
+        if (product_zero) { xa = std::copysign(0.0, fa); xc = std::copysign(1.0, fc); }
+        else if (pb != 0.0 && ep < exponent_of(pb) - 70) { xa = std::copysign(0.5, ma * mc); xc = 0x1p-70; } // +-2^-71
+        else { xa = ma; xc = std::ldexp(mc, ep - e); }
+        if (pb != 0.0 && !product_zero && exponent_of(pb) < ep - 120) xb = std::copysign(0x1p-121, pb);
+        else xb = std::ldexp(pb, -e);
+        n = e;
+        break;
+    }
+    default:
+        unrepresentable = true; // estimates other than fres never overflow or underflow
+        return plain;
+    }
+
+    const Result p = arith(eff, from_double(xa), from_double(xb), from_double(xc), single, rn);
+    if ((p.exceptions & (OX | UX)) != 0U || p.tiny || is_nan(p.bits) || is_inf(p.bits) || is_zero(p.bits)) {
+        unrepresentable = true;
+        return plain;
+    }
+    double value = to_double(p.bits);
+    if (op == Op::NMAdd || op == Op::NMSub) { /* sign already applied by arith(eff = op) */ }
+    const double scaled = std::ldexp(value, n + k);
+    const double fmag = std::fabs(scaled);
+    const bool fits = single ? (fmag >= 0x1p-126 && fmag <= 0x1.fffffep127) : (fmag >= 0x1p-1022 && !std::isinf(scaled));
+    if (!fits) { unrepresentable = true; return plain; }
+
+    Result r;
+    r.bits = from_double(scaled);
+    r.fr = p.fr;
+    r.fi = p.fi;
+    r.exceptions = (over ? OX : UX) | (p.fi ? XX : 0U);
+    r.tiny = under;
+    r.fprf = classify(r.bits, single);
+    adjusted = true;
     return r;
 }
 

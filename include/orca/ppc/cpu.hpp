@@ -13,6 +13,7 @@
 #pragma once
 #include "orca/memory/bus.hpp"
 #include "orca/ppc/mmu.hpp"
+#include "orca/ppc/fpu.hpp"
 #include "orca/ppc/registers.hpp"
 #include "orca/ppc/state.hpp"
 
@@ -40,7 +41,13 @@ struct CpuConfig {
     // Processor Version Register value. Supplied by the console layer; the
     // CPU module does not hard-code a Gekko or Broadway revision.
     u32 pvr{0};
+    // Broadway (Wii): IBAT4-7/DBAT4-7 (SPR 560-575) exist and are used for
+    // translation when HID4[SBE] is set. On Gekko those SPRs stop the CPU.
+    bool extended_bats{false};
 };
+
+// DSISR value the CPU writes on an alignment exception caused by `ins`.
+u32 alignment_dsisr(u32 ins) noexcept;
 
 struct StopInfo {
     StepResult result{StepResult::Executed};
@@ -116,8 +123,21 @@ private:
     Outcome branch_conditional(u32 ins, u32 target_kind);
     // Floating point / paired single (cpu_fpu.cpp)
     Outcome fp_check_available(bool paired, bool quantized);
-    Outcome fp_status(u32 exceptions, bool fr, bool fi, u32 fprf, bool set_fprf, bool tiny, bool& write);
-    Outcome fp_finish_control(u32 new_fpscr);
+    // `adjusted`: the result already carries the OE/UE exponent adjustment
+    // (fpu::arith_enabled); otherwise enabled overflow/underflow stop.
+    Outcome fp_status(u32 exceptions, bool fr, bool fi, u32 fprf, bool set_fprf, bool tiny, bool& write,
+                      bool adjusted = false);
+    // arith_enabled with this CPU's FPSCR; a result the PEM leaves undefined stops.
+    Outcome fp_arith(fpu::Op op, u64 a, u64 b, u64 c, bool single, fpu::Result& r, bool& adjusted);
+    // `computational`: the FPSCR update comes from an arithmetic, rounding,
+    // conversion or compare instruction (PEM: the only ones that raise
+    // floating-point enabled exceptions).
+    // A new MSR value that enables FP exceptions while FPSCR[FEX] = 1 (PEM
+    // Table 6-4 lists mtmsr/rfi for that case without fixing SRR0).
+    bool fp_enable_with_fex(u32 new_msr) const noexcept {
+        return (new_msr & (MSR_FE0 | MSR_FE1)) != 0U && (state_.fpscr & 0x40000000U) != 0U;
+    }
+    Outcome fp_finish_control(u32 new_fpscr, bool computational = false);
     Outcome fp_compare(unsigned crf, u64 a, u64 b, bool ordered);
     Outcome op_fp_load_store(u32 ins, unsigned kind, bool indexed);
     Outcome op_fp59(u32 ins);
@@ -149,6 +169,9 @@ private:
     std::size_t observer_id_{0};
     IcacheInvalidateHandler icbi_handler_;
     std::unordered_map<u32, std::array<u8, 32>> locked_cache_;
+    // Set when a computational FP instruction completes with FPSCR[FEX] = 1
+    // and MSR[FE0|FE1] != 0: step() then takes the program exception.
+    bool fp_program_pending_{false};
 };
 
 } // namespace orca::ppc

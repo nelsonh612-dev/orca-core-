@@ -231,7 +231,41 @@ TEST_CASE(page_crossing_fault_writes_nothing) {
     CHECK(m.exec(A::stw(6, 0, 4)) == StepResult::ExceptionTaken);
     CHECK(m.cpu->last_exception() == Exception::DSI);
     CHECK_EQ(m.s().dsisr, DSISR_NOT_FOUND | DSISR_STORE);
+    // Same segment: "first word accessed in the segment ... that caused the DSI" is the original EA.
+    CHECK_EQ(m.s().dar, 0x10005FFEU);
     CHECK_EQ(m.r16(0x00200FFEU), 0U);
+}
+
+TEST_CASE(page_crossing_fault_dar_in_other_area) {
+    // First page through a BAT, second page through the page table (not found):
+    // the faulting area starts at the second page.
+    Machine m;
+    setup_paging(m);
+    m.s().dbat[0] = {0x0FFE0002U, 0x00400002U}; // EA 0x0FFE0000-0x0FFFFFFF -> PA 0x00400000
+    m.s().gpr[4] = 0x0FFFFFFEU;
+    CHECK(m.exec(A::lwz(3, 0, 4)) == StepResult::ExceptionTaken);
+    CHECK(m.cpu->last_exception() == Exception::DSI);
+    CHECK_EQ(m.s().dsisr, DSISR_NOT_FOUND);
+    CHECK_EQ(m.s().dar, 0x10000000U);
+    // Crossing into another segment, both through the page table.
+    Machine s;
+    setup_paging(s);
+    s.s().sr[0] = kVsid + 1U;
+    // EA 0x0FFFF000 (segment 0): page index 0xFFFF, hash1 = 0x124 ^ 0xFFFF = 0xFEDB
+    //   -> PTEG 0x00100000 | (0xFEDB & 0x3FF) << 6 = 0x0010B6C0, API = 0xFFFF >> 10 = 0x3F
+    s.bus.write32(0x0010B6C0U, pte_w0(kVsid + 1U, false, 0x3FU));
+    s.bus.write32(0x0010B6C4U, 0x00200000U | 2U);
+    s.s().gpr[4] = 0x0FFFFFFEU;
+    CHECK(s.exec(A::lwz(3, 0, 4)) == StepResult::ExceptionTaken);
+    CHECK_EQ(s.s().dar, 0x10000000U); // segment 1 page 0 has no PTE
+    // Same segment, but the first page is a BAT area and the second goes to the
+    // page table: different areas -> DAR = first byte of the second page.
+    Machine b;
+    setup_paging(b);
+    b.s().dbat[0] = {0x10000002U, 0x00400002U}; // EA 0x10000000-0x1001FFFF -> PA 0x00400000
+    b.s().gpr[4] = 0x1001FFFEU;
+    CHECK(b.exec(A::lwz(3, 0, 4)) == StepResult::ExceptionTaken);
+    CHECK_EQ(b.s().dar, 0x10020000U);
 }
 
 TEST_CASE(dcbz_cache_inhibited_raises_alignment) {
@@ -258,3 +292,85 @@ TEST_CASE(mtsr_mfsrin_and_sdr1) {
 }
 
 TEST_MAIN("mmu")
+
+// --- Broadway extended BATs (HID4[SBE], SPR 560-575; Dolphin Gekko.h/MMU.cpp) ---
+TEST_CASE(broadway_extended_dbat_needs_sbe) {
+    Machine m(0x1000, true);
+    m.s().msr = MSR_DR;
+    m.bus.write32(0x00400010U, 0xCAFEF00DU);
+    // DBAT5: EA 0x90000000, BL=0 (128 KiB), Vs=1 -> PA 0x00400000, PP=10
+    m.s().gpr[5] = 0x90000002U; m.s().gpr[6] = 0x00400002U;
+    m.code(0x1000, {A::mtspr(570, 5), A::mtspr(571, 6), A::mfspr(7, 570), A::mfspr(8, 571)});
+    CHECK(m.cpu->run(4) == StepResult::Executed);
+    CHECK_EQ(m.s().dbat[5].upper, 0x90000002U);
+    CHECK_EQ(m.s().dbat[5].lower, 0x00400002U);
+    CHECK_EQ(m.s().gpr[7], 0x90000002U);
+    CHECK_EQ(m.s().gpr[8], 0x00400002U);
+    // HID4[SBE] = 0: BATs 4-7 are ignored -> DSI (no page table entry)
+    m.s().gpr[4] = 0x90000010U;
+    CHECK(m.exec(A::lwz(3, 0, 4)) == StepResult::ExceptionTaken);
+    CHECK(m.cpu->last_exception() == Exception::DSI);
+    CHECK_EQ(m.s().dar, 0x90000010U);
+    // HID4[SBE] = 1 (through mtspr 1011)
+    m.s().pc = 0x2000; m.s().msr = MSR_DR; m.s().gpr[9] = HID4_SBE;
+    m.code(0x2000, {A::mtspr(1011, 9), A::lwz(3, 0, 4)});
+    CHECK(m.cpu->run(2) == StepResult::Executed);
+    CHECK_EQ(m.s().hid4, HID4_SBE);
+    CHECK_EQ(m.s().gpr[3], 0xCAFEF00DU);
+}
+
+TEST_CASE(broadway_extended_ibat_fetch) {
+    Machine m(0x1000, true);
+    m.s().ibat[7] = {0xA0000002U, 0x00500002U}; // EA 0xA0000000 -> PA 0x00500000
+    m.s().hid4 = HID4_SBE;
+    m.s().msr = MSR_IR;
+    m.code(0x00500000U, {A::addi(3, 0, 42)});
+    m.s().pc = 0xA0000000U;
+    m.bus.write32(0x1000, 0); // not used
+    CHECK(m.cpu->step() == StepResult::Executed);
+    CHECK_EQ(m.s().gpr[3], 42U);
+    CHECK_EQ(m.s().pc, 0xA0000004U);
+    m.s().hid4 = 0; m.s().pc = 0xA0000000U;
+    CHECK(m.cpu->step() == StepResult::ExceptionTaken);
+    CHECK(m.cpu->last_exception() == Exception::ISI);
+}
+
+TEST_CASE(gekko_has_no_extended_bats) {
+    Machine m; // Gekko
+    m.s().gpr[5] = 0x90000002U;
+    CHECK(m.exec(A::mtspr(570, 5)) == StepResult::UnsupportedInstruction);
+    m.s().pc = 0x1000;
+    CHECK(m.exec(A::mfspr(3, 575)) == StepResult::UnsupportedInstruction);
+    // Even with SBE set, translation only searches BATs 0-3.
+    m.s().pc = 0x1000; m.s().hid4 = HID4_SBE; m.s().msr = MSR_DR;
+    m.s().dbat[4] = {0x90000002U, 0x00400002U};
+    m.s().gpr[4] = 0x90000000U;
+    CHECK(m.exec(A::lwz(3, 0, 4)) == StepResult::ExceptionTaken);
+    CHECK(m.cpu->last_exception() == Exception::DSI);
+}
+
+// --- DSISR of alignment exceptions (layout from Linux align.c make_dsisr) ---
+TEST_CASE(alignment_dsisr_from_instruction) {
+    // lfd f1,0(r4): D-form opcode 50 = 110010 -> DSISR[17]=0, [18:21]=1001, rD=1, rA=4
+    CHECK_EQ(alignment_dsisr(A::lfd(1, 0, 4)), 0x2424U);
+    // lfdx f1,r4,r5: X-form XO 599 -> [15:16]=11, [17]=0, [18:21]=1001 (Linux table: "11 0 1001: lfdx")
+    CHECK_EQ(alignment_dsisr(A::lfdx(1, 4, 5)), 0x1A424U);
+    // lfdux f1,r4,r5: XO 631 has instruction bit 25 set -> DSISR[17] = 1 ("11 1 1001")
+    CHECK_EQ(alignment_dsisr(A::lfdux(1, 4, 5)), 0x1E424U);
+    // lmw r29,0(r4): opcode 46 = 101110 -> [18:21]=0111, rD=29, rA=4
+    CHECK_EQ(alignment_dsisr(A::lmw(29, 0, 4)), 0x1FA4U);
+    // lwz r3,0(r4): opcode 32 -> only the register fields (Linux: "00 0 0000: lwz")
+    CHECK_EQ(alignment_dsisr(A::lwz(3, 0, 4)), 0x64U);
+
+    Machine m;
+    m.s().msr = MSR_FP;
+    m.s().gpr[4] = 0x2002U;
+    CHECK(m.exec(A::lfd(1, 0, 4)) == StepResult::ExceptionTaken);
+    CHECK(m.cpu->last_exception() == Exception::Alignment);
+    CHECK_EQ(m.s().dar, 0x2002U);
+    CHECK_EQ(m.s().dsisr, 0x2424U);
+    m.s().pc = 0x1000; m.s().msr = 0; m.s().gpr[4] = 0x2001U;
+    CHECK(m.exec(A::lmw(29, 0, 4)) == StepResult::ExceptionTaken);
+    CHECK(m.cpu->last_exception() == Exception::Alignment);
+    CHECK_EQ(m.s().dsisr, 0x1FA4U);
+}

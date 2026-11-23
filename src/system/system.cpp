@@ -12,7 +12,7 @@ System::System(SystemConfig config) : config_(config), clocks_(clocks_for(config
     if (config_.cycles_per_instruction == 0U) config_.cycles_per_instruction = 1U;
     if (config_.console == Console::GameCube) mem::map_gamecube_ram(bus_);
     else mem::map_wii_ram(bus_);
-    cpu_ = std::make_unique<ppc::Cpu>(bus_, ppc::CpuConfig{config_.pvr});
+    cpu_ = std::make_unique<ppc::Cpu>(bus_, ppc::CpuConfig{config_.pvr, config_.console == Console::Wii});
     pi_ = std::make_unique<hw::ProcessorInterface>(bus_, [this](bool level) { cpu_->set_external_interrupt(level); });
     gather_pipe_ = std::make_unique<hw::GatherPipe>(*pi_);
     bus_.map_mmio("PI", hw::pi::kBase, 0x1000, *pi_);
