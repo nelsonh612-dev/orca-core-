@@ -1,4 +1,4 @@
-# Estado del proyecto — Milestone 015
+# Estado del proyecto — Milestone 016
 
 ## Funciones implementadas (todas con pruebas)
 
@@ -129,12 +129,22 @@
 - **Primer cuadro de punta a punta:** el programa PowerPC `gpu_draw` dibuja un rectángulo y un triángulo por el FIFO real, copia el EFB al XFB, configura la VI, y la prueba lee la imagen por los registros de la VI.
 - El bit de aspecto de líneas y puntos (BP 22 bit 22) se ignora, como en Dolphin (el SDK siempre lo pone).
 
+**Backend OpenGL ES 3.2 (M016)** — `orca_gles` (opcional en CMake; se compila si hay EGL y GLES):
+- La etapa de geometría de referencia (transformación, recorte, culling, líneas/puntos, pendiente de z) sigue en la CPU y entrega triángulos en pantalla; la GPU solo rasteriza, con los vértices ajustados a 1/16 de píxel como el rasterizador por software.
+- Atributos exactos: por triángulo, la CPU escribe en un *texture buffer* el contexto y las pendientes (dfdx, dfdy, f0) de z, 1/w, los dos colores y las 8 coordenadas; el shader los lee con `gl_PrimitiveID` y los evalúa en el mismo orden (`precise`), incluido el LOD por bloque 2x2.
+- Un único programa (*ubershader*) que es la versión GLSL de la etapa por píxel del software (TEV completo, indirectas, texturas con filtrado entero, alpha test, z textura, niebla, Z, mezcla, lógica, dither, formatos del EFB), con los registros BP en uniforms: no hay compilación de shaders durante el juego.
+- EFB en dos texturas R32UI (color y profundidad de 24 bits, misma codificación que `sw::Efb`) leídas y escritas con `GL_EXT_shader_framebuffer_fetch`. En GPUs de mosaicos (Mali, Adreno, PowerVR) esto lee la memoria del mosaico.
+- Texturas decodificadas en la CPU a RGBA8 (todos los niveles en un atlas, con los tamaños del hardware) y caché por contenido.
+- Copias y borrados del EFB: el EFB se descarga a la CPU, se usa el código de referencia y se vuelve a subir si hubo borrado.
+- **Resultado en llvmpipe (Mesa 25.2.8): idéntico bit a bit al software** en las 9 escenas de prueba (cobertura, regla de relleno, profundidad, degradados, TEV, alpha test, mezcla, RGBA6 con dither, texturas con mipmaps y bilineal, niebla, líneas, puntos, z freeze, perspectiva, indirectas, z textura, offsets de scissor, copia y borrado) y en el XFB del programa `gpu_draw`.
+- Requisitos: OpenGL ES 3.2 con `GL_EXT_shader_framebuffer_fetch`; `init()` informa si faltan.
+
 ## Funciones pendientes (en orden)
 
 1. **Restos de M012 (sin hacer):** los demás comandos de la tarjeta que Dolphin nombra (ReadID, ReadErrorBuffer, WakeUp, Sleep, ArrayToBuffer, WriteBuffer, ExtraByteProgram, ChipErase; ahora con sus códigos de `EXI_DeviceMemoryCard.h`: 0x53, 0x82, 0x85, 0x86, 0x87, 0x88, 0xF3, 0xF4) y el ID del flash en la SRAM; la salida de audio (los bloques del DMA de audio ya se leen pero nadie los reproduce); la mezcla de streaming del AI. También quedan el puerto serie 1 (EXI0/CS2), el AD16 (EXI2/CS0), el mapeo de la ROM en el vector de reset 0xFFF00000, la aplicación de la protección del MI y los comandos restantes de la DI.
-2. **M016 — backend OpenGL ES 3.2** (el que usarán los teléfonos de gama baja): generación de shaders para TEV, caché de estados y de texturas, comparación píxel a píxel con el rasterizador por software sobre llvmpipe; después Vulkan (aquí solo compila: no hay controlador; hay que decidir glslang o un generador SPIR-V propio).
+2. **M017 — rendimiento del backend GLES y app Android:** probar en el Redmi 15C (Mali-G52) que existen `GL_EXT_shader_framebuffer_fetch` y la lectura de adjuntos enteros, y medir; mover la transformación de vértices y las copias del EFB a la GPU; shaders especializados por estado (con el ubershader mientras compilan); caché de texturas sin hash por dibujo; ventana/superficie Android, entrada y audio. Después Vulkan (aquí solo compila: no hay controlador; hay que decidir glslang o un generador SPIR-V propio).
 3. **Lo que queda de la GPU por software:** texturas RGBA8 en TMEM con mipmaps, anti-aliasing de RGB565_Z16, formatos de píxel 4-7 (YUV), contadores de rendimiento y bounding box del PE.
-4. **M017 — JIT ARM64:** emisor ARM64 verificado con el desensamblador de LLVM, bloques básicos, asignación de registros, caché de bloques conectada a la invalidación del bus, y pruebas diferenciales intérprete vs JIT, que tienen que correr en un dispositivo ARM64.
+4. **M018 — JIT ARM64:** emisor ARM64 verificado con el desensamblador de LLVM, bloques básicos, asignación de registros, caché de bloques conectada a la invalidación del bus, y pruebas diferenciales intérprete vs JIT, que tienen que correr en un dispositivo ARM64.
 5. **Después:** audio real, DI y discos, SI y controles, EXI, AI y los componentes de Wii (Hollywood, IOS, Bluetooth).
 
 ## Pendiente de verificación en hardware real
@@ -226,6 +236,9 @@ Son comportamientos que el PEM deja indefinidos o que el manual del 750CL no det
 | Bit de aspecto de líneas (BP 22 bit 22) | Se ignora, como Dolphin (TODO en su código) |
 | Conversión del XFB a RGB para mostrarlo | La de Dolphin (BT.601 inversa en float); Dolphin duda de que el hardware haga esta conversión |
 | Dirección del campo inferior del XFB | Usa el bit de página de TFBL ("POFF for XFB bottom is connected to POFF for XFB top", Dolphin) |
+| Backend GLES en GPUs reales | Solo se probó en llvmpipe (CPU). **No se ha probado en un Mali-G52**: hay que confirmar `GL_EXT_shader_framebuffer_fetch` (Mali-G57 lo anuncia según la documentación de MediaTek), la lectura de adjuntos R32UI y la precisión de división/exp2 |
+| Backend GLES: niebla con denominador 0 o factor NaN | Sigue IEEE en lugar de detenerse (el shader no puede informar errores) |
+| Backend GLES: varios rangos de scissor | Usan las pendientes del rango principal |
 | Precarga de TMEM: máscara de la dirección de origen | Orca aplica la máscara física de la consola (Dolphin lo marca como TODO) |
 | Líneas a 45° (\|dx\| = \|dy\|) | Remates horizontales, como Dolphin (que lo marca como FIXME) |
 | Puntos | No se recortan (el software de Dolphin tampoco; lo marca como TODO) |
@@ -247,7 +260,7 @@ Son comportamientos que el PEM deja indefinidos o que el manual del 750CL no det
 | 9 | `lmw/stmw`, instrucciones de cadena y `lwarx/stwcx.` no pasan por la caché bloqueada | Bajo |
 | 10 | El DMA de la caché bloqueada y las ráfagas del gather pipe terminan al instante | Falta conectarlos al planificador con tiempos reales |
 | 11 | Coste fijo de 1 ciclo por instrucción: no hay modelo de pipeline ni de caché | El tiempo es determinista, no exacto al ciclo |
-| 12 | La GPU dibuja solo con el rasterizador por software (la referencia de precisión, demasiado lento para un teléfono); no hay backend GLES/Vulkan todavía | Un juego puede detenerse en texturas RGBA8 en TMEM con mipmaps, niebla con parámetros degenerados o formatos de píxel YUV (o cuando su microcódigo DSP lee el IROM/COEF sin volcados, o al usar un comando de tarjeta no implementado), siempre con una parada que explica el motivo |
+| 12 | Existe el backend GLES (exacto en llvmpipe) pero sin optimizar: transformación en la CPU, ubershader, copias del EFB por la CPU y texturas con hash en cada dibujo; no hay Vulkan | Un juego puede detenerse en texturas RGBA8 en TMEM con mipmaps, niebla con parámetros degenerados o formatos de píxel YUV (o cuando su microcódigo DSP lee el IROM/COEF sin volcados, o al usar un comando de tarjeta no implementado), siempre con una parada que explica el motivo |
 | 13 | Rendimiento en el anfitrión x86: unos 20 M instr/s en enteros y unos 4 M instr/s en FP. El motor FP cambia el modo de redondeo del anfitrión en cada operación | Esperado: el intérprete es la referencia de precisión; la velocidad vendrá del JIT |
 | 14 | No se ha compilado para Android/ARM64 (no hay NDK en este entorno) | Hay que verificarlo |
 | 15 | `lswx`, `stswx`, `mcrxr` y todas las instrucciones paired-single y `psq` no se pueden verificar con LLVM. Se revisaron contra las tablas de opcodes del manual del 750CL | Medio: hace falta otra fuente (binutils con -m750cl o hardware) |

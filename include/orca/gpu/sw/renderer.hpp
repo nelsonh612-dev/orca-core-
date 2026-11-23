@@ -86,8 +86,31 @@ struct SlopeState {
     float xoff{0}, yoff{0};
 };
 
+// A vertex after clipping, perspective divide and viewport (screen coordinates before the
+// scissor offset), as handed to the rasterizer.
+struct ScreenVertex {
+    std::array<float, 4> clip;
+    std::array<float, 3> screen;
+    std::array<std::array<float, 4>, 2> color; // RGBA, 0..255
+    std::array<std::array<float, 3>, 8> tex;
+};
+
+// Receives the triangles of a draw instead of the software rasterizer (GPU backends). The
+// geometry stage (clipping, culling, lines/points, z slope tracking) stays the reference one.
+class TriangleSink {
+public:
+    virtual ~TriangleSink() = default;
+    virtual void triangle(const ScreenVertex& a, const ScreenVertex& b, const ScreenVertex& c) = 0;
+    // Called at the end of every draw with the state it used and the current z slope.
+    virtual bool flush(const BpMemory& bp, const XfMemory& xf, const TevState& tev, const TexSource& tex,
+                       const SlopeState& zslope, std::string& error) = 0;
+};
+
 class Renderer {
 public:
+    // With a sink, triangles go to it and the EFB of this renderer is not drawn.
+    void set_sink(TriangleSink* sink) noexcept { sink_ = sink; }
+    TriangleSink* sink() const noexcept { return sink_; }
     // Draws one primitive of already transformed vertices.
     bool draw(Primitive prim, std::span<const OutputVertex> verts, const BpMemory& bp, const XfMemory& xf,
               const TevState& tev, const TexSource& tex, std::string& error);
@@ -99,12 +122,8 @@ public:
     static void efb_color_rgba(u32 c24, u32 pixel_format, u8 out[4]);
 
 private:
-    struct Vtx {
-        std::array<float, 4> clip;
-        std::array<float, 3> screen;
-        std::array<std::array<float, 4>, 2> color; // RGBA
-        std::array<std::array<float, 3>, 8> tex;
-    };
+    using Vtx = ScreenVertex;
+    TriangleSink* sink_{nullptr};
     bool triangle(const Vtx& a, const Vtx& b, const Vtx& c);
     bool line(Vtx a, Vtx b);
     bool point(Vtx c);

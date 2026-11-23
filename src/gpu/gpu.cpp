@@ -61,7 +61,9 @@ bool Gpu::on_bp(u8 reg, u32 value, std::string& error) {
     case bp::PE_TOKEN_INT: pe_.set_token(static_cast<u16>(v & 0xFFFFU), true, into); return true;
     case bp::TRIGGER_EFB_COPY: {
         sw::CopyResult res;
+        if (renderer_.sink() != nullptr && download_) download_(renderer_.efb());
         if (!sw::efb_copy(v, bp_, renderer_.efb(), bus_, phys_mask_, res, error)) return false;
+        if (res.cleared && renderer_.sink() != nullptr && upload_) upload_(renderer_.efb());
         last_copy_ = res;
         ++copies_;
         return true;

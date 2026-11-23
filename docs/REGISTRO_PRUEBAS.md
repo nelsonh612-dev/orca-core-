@@ -1,4 +1,4 @@
-# Registro de pruebas — Milestone 015
+# Registro de pruebas — Milestone 016
 
 Todos los resultados son de ejecuciones reales del 2026-11-15 en este entorno, sobre una copia limpia de los fuentes entregados.
 
@@ -8,9 +8,9 @@ Todos los resultados son de ejecuciones reales del 2026-11-15 en este entorno, s
 
 | Configuración | Compilación | Advertencias (`-Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion -Wshadow -Werror`) | CTest |
 |---|---|---|---|
-| GCC Release (`-DORCA_WERROR=ON`) | OK | 0 | 18/18 pasan (4,4 s) |
-| Clang Release (`-DORCA_WERROR=ON`) | OK | 0 | 18/18 pasan (3,2 s) |
-| GCC Debug + ASan + UBSan (`-fno-sanitize-recover=all`, `-DORCA_WERROR=ON`) | OK | 0 | 18/18 pasan (81,3 s) |
+| GCC Release (`-DORCA_WERROR=ON`) | OK | 0 | 19/19 pasan (12,5 s) |
+| Clang Release (`-DORCA_WERROR=ON`) | OK | 0 | 19/19 pasan (9,8 s) |
+| GCC Debug + ASan + UBSan (`-fno-sanitize-recover=all`, `-DORCA_WERROR=ON`) | OK | 0 | 19/19 pasan (201,9 s) |
 | Clang + ASan/UBSan | **NO EJECUTADO**: falta `compiler-rt` en el entorno | — | — |
 | Android NDK arm64-v8a | **NO EJECUTADO**: no hay NDK ni sysroot AArch64 | — | — |
 
@@ -35,7 +35,18 @@ Todos los resultados son de ejecuciones reales del 2026-11-15 en este entorno, s
 | **gpu** (M013 + precargas M014 + programa `gpu_draw` M015) | 27 | 1.050 | 0 |
 | **gpu_sw** (M014 + M015) | 29 | 644 | 0 |
 | **efb_copy** (M014 + M015) | 11 | 409 | 0 |
+| **gles** (M016, Mesa llvmpipe 25.2.8, GLES 3.2) | 10 | 76 | 0 |
 | encodings (vs `llvm-mc`) | 189 instrucciones | 181 ensambladas + 8 desensambladas | 0 diferencias |
+
+### Backend OpenGL ES 3.2 (M016)
+
+Entorno: EGL "surfaceless" de Mesa 25.2.8, llvmpipe (LLVM 20.1.2), OpenGL ES 3.2. Cada escena se envía como bytes de comando reales a dos GPU (software y GLES) y se compara el EFB completo (640x528 colores y profundidades).
+- Resultados: **0 píxeles distintos en color y 0 en profundidad** en las 9 escenas: triángulos, tiras, abanicos, regla de relleno con aristas sobre las muestras (dos órdenes de vértices), triángulos grandes con pendientes irregulares, profundidad con planos que se cortan; degradados de color y TEV (lerp, resta con escala, comparación, dos etapas); alpha test, mezcla, resta, XOR, RGBA6 con alpha constante y dither; texturas nearest/repeat/mirror/bilinear, mipmaps point y lineal, quad rotado y minificado; niebla, líneas, puntos, z freeze; perspectiva con colores, texturas y niebla con rango, matriz indirecta en los 4 formatos, z textura, otro offset de scissor; escala/bias del TEV, z temprana con alpha test que falla, z sin actualización, z textura de 8/16/24 bits, sesgo de LOD y LOD por bloque en perspectiva con 3 niveles; copia del EFB + borrado + dibujo encima (también los bytes copiados a RAM).
+- Programa `gpu_draw` en el `System` completo con el backend GLES: el XFB es idéntico byte a byte al del software (614 400 bytes).
+- La primera versión interpolaba los atributos con la GPU y los corregía con derivadas: la profundidad difería en 1 en 2272 píxeles y, con perspectiva, 8113 píxeles diferían en 1-2 niveles. Por eso se pasó a evaluar las pendientes del software por triángulo (ver ESTADO); desde entonces, 0 diferencias.
+- Tiempo (solo informativo, llvmpipe corre en la CPU de este equipo): 64 quads texturizados a pantalla completa, 21,6 M píxeles: software 4451 ms, GLES/llvmpipe 2569 ms. **No dice nada sobre un teléfono.**
+- **Mutaciones (M016):** 17 sobre el shader y el backend (ajuste de vértices, tabla konst, dither, factores de mezcla, redondeo de escala, exp², sesgo de LOD, LOD por bloque, espejo, actualización de Z, alpha test, z textura, contexto de pendientes, 1/w, niveles de mip, caché de texturas, subida tras el borrado): **16 detectadas** tras añadir la escena "TEV scale/bias, z, ztex, LOD" y la z temprana sin actualización. G11 es equivalente (con `inout`, el color ya contiene el valor leído; restaurarlo no cambia nada). **Acumulado: 356.**
+- **No probado:** ninguna GPU real (Mali, Adreno, PowerVR), Android, rendimiento en teléfono.
 
 ### GPU, parte 3: referencia completa y primera imagen (M015)
 
@@ -280,6 +291,10 @@ I5 (liberar CS no reinicia la secuencia) sobrevivió y es **equivalente**: cada 
 **Total: 158 mutaciones detectadas.**
 
 
+### Mutaciones de M016 (17)
+
+`/tmp/mut/run15.py` sobre `gles`: 16 detectadas, 1 equivalente (G11). **Acumulado: 356.**
+
 ### Mutaciones de M015 (25)
 
 `/tmp/mut/run14.py` sobre `gpu_sw`, `efb_copy`, `gpu` y `av`: 23 detectadas, 2 que sobreviven (C1 equivalente, N3 no distinguible con los parámetros de 11 bits; ver la sección de M015). **Acumulado: 340.**
@@ -312,6 +327,13 @@ Cada mutación se aplicó al fuente, se recompiló y se ejecutó la suite corres
 | Acelerador (C1-C13) | 13 | 11 | 13 detectadas |
 
 Supervivientes iniciales y prueba añadida: M3 (programa sin datos), M4 (búfer de 128 bytes), M5 (primer byte 0x80 de la identificación), M10 (interruptor de interrupción apagado), C5 (escala de ganancia 2), C9 (bit 31 tras el desbordamiento de escritura). **Total acumulado: 195 mutaciones detectadas.**
+
+## Errores encontrados durante M016
+
+- Errores de compilación de shaders en llvmpipe: GLSL ES 3.20 no admite arrays como atributos de vértice (se separaron en 8 atributos; luego se eliminaron al pasar a pendientes por triángulo).
+- Una escena de prueba en perspectiva no dibujaba nada: los parámetros de proyección dejaban z fuera de [−w, 0]. Se corrigieron (cerca 1, lejos 10, como GX).
+- La escena de niebla con rango hacía que el software se detuviera (k = 0 en registros K sin escribir, factor NaN) y el GLES no: es una diferencia documentada; la prueba escribe los 5 registros K.
+- Las diferencias de interpolación descritas arriba (corregidas cambiando el diseño).
 
 ## Errores encontrados durante M015
 

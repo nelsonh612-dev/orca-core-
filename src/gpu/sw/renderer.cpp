@@ -124,6 +124,7 @@ bool Renderer::draw(Primitive prim, std::span<const OutputVertex> v, const BpMem
         break;
     }
     if (!ok) error = err_;
+    if (ok && sink_ != nullptr) ok = sink_->flush(bp, xf, tev, tex, zslope_, error);
     return ok;
 }
 
@@ -347,6 +348,7 @@ bool Renderer::raster(const Vtx& v0, const Vtx& v1, const Vtx& v2) {
             const SlopeCtx k = slope_ctx(v0, v1, v2, xo, yo);
             // the z slope is updated before the scissor rejection (z freeze depends on it)
             if (!zfreeze) zslope_ = to_state(Slope(v0.screen[2], v1.screen[2], v2.screen[2], k));
+            if (sink_ != nullptr) continue; // the backend rasterizes; only the z slope is tracked here
             if (minx >= maxx || miny >= maxy) continue;
             const Slope zs = from_state(zslope_);
             const float w[3] = {1.0f / v0.clip[3], 1.0f / v1.clip[3], 1.0f / v2.clip[3]};
@@ -413,6 +415,7 @@ bool Renderer::raster(const Vtx& v0, const Vtx& v1, const Vtx& v2) {
             }
         }
     }
+    if (sink_ != nullptr) sink_->triangle(v0, v1, v2);
     return true;
 }
 

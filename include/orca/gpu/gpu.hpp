@@ -35,6 +35,7 @@
 #include "orca/hw/pixel_engine.hpp"
 #include "orca/memory/bus.hpp"
 
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -60,6 +61,15 @@ public:
     const sw::TevState& tev() const noexcept { return tev_; }
     sw::Renderer& renderer() noexcept { return renderer_; }
     const std::vector<u8>& tmem() const noexcept { return tmem_; }
+    // Draws with a GPU backend instead of the software rasterizer (nullptr = software).
+    // `download` / `upload` move the EFB between the backend and renderer().efb() around
+    // EFB copies and clears, which run on the CPU.
+    void set_backend(sw::TriangleSink* sink, std::function<void(sw::Efb&)> download,
+                     std::function<void(const sw::Efb&)> upload) {
+        renderer_.set_sink(sink);
+        download_ = std::move(download);
+        upload_ = std::move(upload);
+    }
     // Result of the last BP 0x52 (EFB copy / clear) and how many there were.
     const sw::CopyResult& last_copy() const noexcept { return last_copy_; }
     u64 copies() const noexcept { return copies_; }
@@ -88,6 +98,8 @@ private:
     std::vector<u8> tmem_ = std::vector<u8>(1U << 20, 0); // 1 MiB texture memory
     std::vector<u8> pending_;
     sw::CopyResult last_copy_;
+    std::function<void(sw::Efb&)> download_;
+    std::function<void(const sw::Efb&)> upload_;
     u64 copies_{0};
     u64 cycles_{0};       // total GPU time
     u64 batch_start_{0};  // cycles_ at the start of the current feed()
