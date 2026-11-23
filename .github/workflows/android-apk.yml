@@ -1,0 +1,52 @@
+name: orca-core-0.1 Android APK
+
+on:
+  push:
+    branches: [orca-core-0.1]
+    paths: ['android/**', 'src/**', 'include/**', 'CMakeLists.txt', '.github/workflows/android-apk.yml']
+  workflow_dispatch:
+
+concurrency:
+  group: android-apk-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  apk:
+    name: Build the APK (arm64-v8a, release build signed with the debug key)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      - name: Assemble
+        run: |
+          export ORCA_NDK_VERSION=$(basename "$ANDROID_NDK_LATEST_HOME")
+          echo "NDK $ORCA_NDK_VERSION"
+          cd android
+          gradle --no-daemon --stacktrace :app:assembleRelease
+      - name: Check the APK
+        run: |
+          apk=android/app/build/outputs/apk/release/app-release.apk
+          ls -l "$apk"
+          unzip -l "$apk" | tee contents.txt
+          grep -q "lib/arm64-v8a/liborca_android.so" contents.txt
+          unzip -o -q "$apk" lib/arm64-v8a/liborca_android.so -d apkcheck
+          file apkcheck/lib/arm64-v8a/liborca_android.so | grep -q "ARM aarch64"
+          bt=$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)
+          "$ANDROID_HOME/build-tools/$bt/apksigner" verify --print-certs "$apk"
+          "$ANDROID_HOME/build-tools/$bt/aapt2" dump badging "$apk" | head -5
+          cp "$apk" "orca-core-0.1-${GITHUB_SHA::7}-arm64-v8a.apk"
+          sha256sum orca-core-0.1-*.apk | tee orca-core-0.1-apk.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: orca-core-0.1-apk-${{ github.sha }}
+          path: |
+            orca-core-0.1-*.apk
+            orca-core-0.1-apk.sha256
+          if-no-files-found: error

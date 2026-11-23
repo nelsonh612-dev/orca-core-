@@ -27,6 +27,9 @@ android {
     buildTypes {
         release {
             minifyEnabled false
+            // Test builds: optimised native code, signed with the SDK's debug key so the APK installs
+            // directly. Not for store distribution (that needs the owner's own release key).
+            signingConfig signingConfigs.debug
         }
     }
 
