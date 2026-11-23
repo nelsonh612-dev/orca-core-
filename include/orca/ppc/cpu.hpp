@@ -94,6 +94,8 @@ public:
     Exception last_exception() const noexcept { return last_exception_; }
     const StopInfo& last_stop() const noexcept { return last_stop_; }
     u64 instructions_retired() const noexcept { return retired_; }
+    // Counts instructions the system skipped as exact repeats (System's idle-loop skip).
+    void add_retired(u64 n) noexcept { retired_ += n; }
 
 private:
     struct Outcome;

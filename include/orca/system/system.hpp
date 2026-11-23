@@ -77,6 +77,9 @@ struct SystemConfig {
     std::string nand_root;
     // Wii: the common keys (supplied by the user) for decrypting disc partitions.
     disc::WiiKeys wii_keys;
+    // Skip exact repeats of busy-wait loops (see System::run). Results and timing
+    // are those of executing every iteration.
+    bool idle_skip{true};
 };
 
 struct RunResult {
@@ -149,7 +152,19 @@ public:
     // Runs for at most `max_cycles` cycles. Stops early on any host stop
     // (UnsupportedInstruction, InvalidForm, MemoryFault, Halted, ...) or when the
     // CPU is idle (MSR[POW]) and no event can ever wake it.
+    // Busy-wait loops: when the CPU runs a short loop (at most 16 instructions back
+    // to its start) whose instructions only load from RAM, compare, and branch
+    // (no stores, no SPR/time base reads, no MMIO, no system calls), one
+    // iteration is run and compared: if it changed nothing (registers, CR, XER,
+    // CTR, LR, MSR, no memory or device access other than RAM loads), every
+    // following iteration until the next scheduler event, decrementer
+    // underflow or the end of the run is the same, so the whole iterations
+    // that fit are accounted (time, time base, retired instructions) without
+    // being executed. The CPU then continues normally, at the same state and
+    // time as if it had run them.
     RunResult run(u64 max_cycles);
+    u64 idle_skips() const noexcept { return idle_skips_; }
+    u64 idle_skipped_instructions() const noexcept { return idle_skipped_; }
     // Like run(), but also stops (reached_stop_pc = true) when PC == stop_pc
     // before executing the instruction there.
     RunResult run_until(u32 stop_pc, u64 max_cycles);
@@ -203,6 +218,11 @@ private:
     // shifted left by `offset_shift` (2 on Wii). Returns the game's entry point.
     std::optional<u32> run_apploader(disc::DiscReader& d, unsigned offset_shift, std::string& error);
     void wii_boot_state();
+    // Tries the busy-wait skip at the CPU's current PC; true if time moved on.
+    bool try_idle_skip(u64 end);
+    bool idle_candidate(u32 pc, unsigned& length);
+    std::array<std::pair<u32, u32>, 64> idle_rejects_{}; // pc -> first instruction word of rejected loops
+    u64 idle_skips_{0}, idle_skipped_{0};
 
     SystemConfig config_;
     Clocks clocks_;

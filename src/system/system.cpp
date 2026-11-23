@@ -1,4 +1,5 @@
 #include "orca/system/system.hpp"
+#include "orca/ppc/mmu.hpp"
 
 #include "orca/memory/console_maps.hpp"
 
@@ -345,6 +346,7 @@ RunResult System::run(u64 max_cycles) {
         if (stop_pc_ && cpu_->state().pc == *stop_pc_) { r.reached_stop_pc = true; break; }
         ppc::StepResult s;
         u64 steps = 1;
+        const u32 pc_before = cpu_->state().pc;
         if (jit_ && !stop_pc_) {
             const ppc::Jit::Result jr = jit_->run(steps_until_next_event(end));
             s = jr.result;
@@ -354,6 +356,11 @@ RunResult System::run(u64 max_cycles) {
         }
         if (s == ppc::StepResult::Executed || s == ppc::StepResult::ExceptionTaken) {
             advance(cpi * steps);
+            // a backward jump of at most 16 instructions (or a block that looped onto itself)
+            const u32 pc_after = cpu_->state().pc;
+            if (config_.idle_skip && !stop_pc_ && s == ppc::StepResult::Executed && pc_after <= pc_before &&
+                pc_before - pc_after <= 64U && scheduler_.now() < end)
+                (void)try_idle_skip(end);
             continue;
         }
         if (s == ppc::StepResult::Idle) {
@@ -371,6 +378,103 @@ RunResult System::run(u64 max_cycles) {
     r.cycles = scheduler_.now() - start;
     r.instructions = cpu_->instructions_retired() - retired0;
     return r;
+}
+
+// Instructions a busy-wait loop may contain: loads from memory (no update forms),
+// compares, logical/rotate/add immediate operations, sync/isync, and branches
+// without link (the loop's own branches).
+static bool idle_safe(u32 ins) {
+    const u32 op = ins >> 26;
+    switch (op) {
+    case 32: case 34: case 40: case 42:          // lwz lbz lhz lha
+    case 10: case 11:                            // cmpli cmpi
+    case 14: case 15:                            // addi addis
+    case 21: case 24: case 25: case 26: case 27: // rlwinm ori oris xori xoris
+    case 28: case 29:                            // andi. andis.
+        return true;
+    case 16: case 18:                            // bc, b (no link)
+        return (ins & 1U) == 0U;
+    case 19:                                     // isync
+        return ((ins >> 1) & 0x3FFU) == 150U;
+    case 31: {
+        const u32 xo = (ins >> 1) & 0x3FFU;
+        switch (xo) {
+        case 0: case 32:                         // cmp cmpl
+        case 23: case 87: case 279: case 343:    // lwzx lbzx lhzx lhax
+        case 28: case 60: case 124: case 444: case 412: case 316: // and andc nor or orc xor
+        case 598:                                // sync
+            return true;
+        default: return false;
+        }
+    }
+    default:
+        return false;
+    }
+}
+
+bool System::idle_candidate(u32 pc, unsigned& length) {
+    auto& slot = idle_rejects_[(pc >> 2) & 63U];
+    ppc::CpuState& st = cpu_->state();
+    unsigned n = 0;
+    u32 first = 0;
+    for (; n < 16U; ++n) {
+        const u32 ea = pc + 4U * n;
+        ppc::Translation t;
+        if (!ppc::translate_without_page_table(st, ea, ppc::AccessType::Fetch, cpu_->config().extended_bats, t)) return false;
+        if (!bus_.is_ram(t.physical, 4)) return false;
+        u32 ins = 0;
+        (void)bus_.read32(t.physical, ins);
+        if (n == 0U) {
+            first = ins;
+            if (slot.first == pc && slot.second == ins) return false; // known not to be a busy-wait loop
+        }
+        if (!idle_safe(ins)) break;
+        // a branch back to the start closes the loop
+        const u32 op = ins >> 26;
+        if ((op == 16 || op == 18) && (ins & 2U) == 0U) {
+            const s32 disp = op == 18 ? static_cast<s32>((ins & 0x03FFFFFCU) << 6) >> 6 : static_cast<s32>(static_cast<s16>(ins & 0xFFFCU));
+            if (ea + static_cast<u32>(disp) == pc) { length = n + 1U; return true; }
+        }
+    }
+    slot = {pc, first};
+    return false;
+}
+
+bool System::try_idle_skip(u64 end) {
+    ppc::CpuState& st = cpu_->state();
+    const u32 pc = st.pc;
+    unsigned length = 0;
+    if (!idle_candidate(pc, length)) return false;
+    // one probe iteration, executed normally
+    const ppc::CpuState before = st;
+    const u64 epoch = bus_.write_epoch(), mmio = bus_.mmio_accesses();
+    const u64 cpi = config_.cycles_per_instruction;
+    u64 steps = 0;
+    for (; steps <= 16U * 4U; ++steps) {
+        if (scheduler_.now() >= end) return true;
+        const ppc::StepResult r = cpu_->step();
+        if (r != ppc::StepResult::Executed) {
+            if (r == ppc::StepResult::ExceptionTaken) advance(cpi);
+            return true; // the run loop sees the CPU where it is (results are those of normal execution)
+        }
+        advance(cpi);
+        if (st.pc == pc) { ++steps; break; }
+    }
+    if (st.pc != pc) return true;
+    const bool same = st.gpr == before.gpr && st.cr == before.cr && st.xer == before.xer && st.ctr == before.ctr &&
+                      st.lr == before.lr && st.msr == before.msr && bus_.write_epoch() == epoch &&
+                      bus_.mmio_accesses() == mmio && !cpu_->external_interrupt();
+    if (!same) return true;
+    // whole iterations that fit before anything else can happen
+    const u64 room = steps_until_next_event(end);
+    const u64 iterations = room / steps;
+    if (iterations < 2U) return true;
+    const u64 skipped = (iterations - 1U) * steps; // the last one runs normally
+    advance(skipped * cpi);
+    cpu_->add_retired(skipped);
+    ++idle_skips_;
+    idle_skipped_ += skipped;
+    return true;
 }
 
 bool System::press_console_button(bool power) {

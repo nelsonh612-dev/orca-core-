@@ -87,6 +87,7 @@ BusStatus Bus::read(u32 address, unsigned size, u64& value, AccessSource) {
     if (r->device != nullptr) {
         if (static_cast<u64>(address) + size > static_cast<u64>(r->base) + r->size) return BusStatus::CrossesRegion;
         u64 v = 0;
+        ++mmio_accesses_;
         if (!r->device->mmio_read(address - r->base, size, v)) return BusStatus::DeviceError;
         value = size == 8U ? v : (v & ((1ULL << (size * 8U)) - 1U));
         return BusStatus::Ok;
@@ -115,6 +116,7 @@ BusStatus Bus::write(u32 address, unsigned size, u64 value, AccessSource src) {
     if (r->device != nullptr) {
         if (static_cast<u64>(address) + size > static_cast<u64>(r->base) + r->size) return BusStatus::CrossesRegion;
         const u64 v = size == 8U ? value : (value & ((1ULL << (size * 8U)) - 1U));
+        ++mmio_accesses_;
         if (!r->device->mmio_write(address - r->base, size, v)) return BusStatus::DeviceError;
         after_write(address, size, src);
         return BusStatus::Ok;

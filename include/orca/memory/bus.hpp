@@ -104,6 +104,8 @@ public:
     // ranges beyond always count as changed.
     static constexpr u32 kEpochPages = 0x14000000U >> kPageShift;
     u64 write_epoch() const noexcept { return write_epoch_; }
+    // Accesses that reached an MMIO device (reads and writes, any source).
+    u64 mmio_accesses() const noexcept { return mmio_accesses_; }
     bool unchanged_since(u32 address, u32 size, u64 epoch) const noexcept;
 
     // Write observers are called after every successful write (CPU and DMA).
@@ -159,6 +161,7 @@ private:
     std::unique_ptr<u64[]> code_pages_;    // bitmap, kPageCount bits
     std::unique_ptr<u64[]> page_epoch_;    // kEpochPages write stamps
     u64 write_epoch_{0};
+    u64 mmio_accesses_{0};
     std::vector<std::pair<std::size_t, WriteObserver>> observers_;
     std::vector<std::size_t> cpu_observer_ids_;
     std::size_t cpu_observers_{0};

@@ -139,12 +139,13 @@ struct FullRun {
     u64 block_steps = 0, blocks = 0, helper_steps = 0;
     double ms = 0;
 };
-FullRun run_full(const char* path, bool jit) {
+FullRun run_full(const char* path, bool jit, bool idle_skip = true, u64* skipped = nullptr) {
     FullRun r;
     std::ifstream in(path, std::ios::binary);
     const std::vector<u8> file((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     system::SystemConfig cfg{};
     cfg.use_jit = jit;
+    cfg.idle_skip = idle_skip;
     system::System sys(cfg);
     TestPort port;
     port.cpu = &sys.cpu();
@@ -163,6 +164,7 @@ FullRun run_full(const char* path, bool jit) {
     u64 h = 0xCBF29CE484222325ULL;
     for (std::size_t i = 0; ram != nullptr && i < (24U << 20); ++i) { h ^= ram[i]; h *= 0x100000001B3ULL; }
     r.ram_hash = h;
+    if (skipped != nullptr) *skipped = sys.idle_skipped_instructions();
     if (sys.jit() != nullptr) {
         r.block_steps = sys.jit()->stats().block_steps;
         r.blocks = sys.jit()->stats().blocks_compiled;
@@ -195,6 +197,35 @@ TEST_CASE(programs_identical_with_the_jit) {
         std::printf("[programs] %-24s time (whole System, same machine): interpreter %.1f ms, JIT %.1f ms\n",
                     f + std::string(f).rfind('/') + 1, a.ms, b.ms);
     }
+}
+
+TEST_CASE(busy_wait_skip_changes_nothing) {
+    // The programs, with and without the busy-wait skip (and with the JIT on ARM64):
+    // (dvd_suite, which waits almost all the time, takes 175 s without the skip
+    // and 0.17 s with it on the x86 host; it is left out to keep the suite short)
+    // same results, state, RAM, cycles and retired instructions.
+    u64 total = 0;
+    for (const bool jit : {false, true}) {
+        if (jit && !jit::host_can_execute()) continue;
+        for (const char* f : {ORCA_PROGRAMS_DIR "/integer_suite.elf", ORCA_PROGRAMS_DIR "/float_suite.elf",
+                              ORCA_PROGRAMS_DIR "/hardware_suite.elf", ORCA_PROGRAMS_DIR "/av_suite.elf"}) {
+            std::ifstream probe(f);
+            if (!probe) continue;
+            u64 skipped = 0;
+            const FullRun a = run_full(f, jit, false), b = run_full(f, jit, true, &skipped);
+            CHECK(a.stop == b.stop);
+            CHECK_EQ(a.instructions, b.instructions);
+            CHECK_EQ(a.cycles, b.cycles);
+            CHECK(a.log == b.log);
+            CHECK(a.state == b.state);
+            CHECK_EQ(a.ram_hash, b.ram_hash);
+            total += skipped;
+            std::printf("[programs] %-20s %s busy-wait skip: %llu of %llu instructions not executed, %.1f ms -> %.1f ms\n",
+                        f + std::string(f).rfind('/') + 1, jit ? "JIT" : "interpreter",
+                        static_cast<unsigned long long>(skipped), static_cast<unsigned long long>(b.instructions), a.ms, b.ms);
+        }
+    }
+    CHECK(total > 0U); // at least one program waits in a loop the skip recognises
 }
 
 TEST_MAIN("programs")
