@@ -5,10 +5,18 @@ on:
     branches: [orca-core-0.1]
     paths: ['android/**', 'src/**', 'include/**', 'CMakeLists.txt', '.github/workflows/android-apk.yml']
   workflow_dispatch:
+    inputs:
+      prerelease:
+        description: 'Also publish the APK as a GitHub prerelease (tag orca-core-0.1-apk-<commit>)'
+        type: boolean
+        default: false
 
 concurrency:
   group: android-apk-${{ github.ref }}
   cancel-in-progress: false
+
+permissions:
+  contents: write
 
 jobs:
   apk:
@@ -50,3 +58,13 @@ jobs:
             orca-core-0.1-*.apk
             orca-core-0.1-apk.sha256
           if-no-files-found: error
+      - name: Publish a prerelease (manual runs only)
+        if: github.event_name == 'workflow_dispatch' && inputs.prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="orca-core-0.1-apk-${GITHUB_SHA::7}"
+          gh release create "$tag" orca-core-0.1-*.apk orca-core-0.1-apk.sha256 \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease \
+            --title "Orca Core 0.1 — APK de prueba (${GITHUB_SHA::7})" \
+            --notes "APK arm64-v8a (Android 8.0+), compilación release firmada con la clave de depuración del SDK: solo para pruebas, no para tiendas. No incluye BIOS, claves ni juegos. No se ha probado todavía en un teléfono real. Estado y límites: docs/ESTADO.md en la rama orca-core-0.1."
