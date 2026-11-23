@@ -41,6 +41,11 @@ struct CpuConfig {
     // Processor Version Register value. Supplied by the console layer; the
     // CPU module does not hard-code a Gekko or Broadway revision.
     u32 pvr{0};
+
+    // Hard upper bound for translated blocks. Each block currently owns at
+    // least one executable page, so this also bounds JIT virtual memory.
+    // A zero value disables native block caching and uses the interpreter.
+    std::size_t jit_max_cached_blocks{256};
 };
 
 struct StopInfo {
@@ -91,6 +96,7 @@ public:
     const StopInfo& last_stop() const noexcept { return last_stop_; }
     u64 instructions_retired() const noexcept { return retired_; }
     u64 jit_memory_fastpath_hits() const noexcept { return jit_memory_fastpath_hits_; }
+    std::size_t jit_cached_blocks() const noexcept { return jit_blocks_.size(); }
 
 private:
     struct Outcome;
