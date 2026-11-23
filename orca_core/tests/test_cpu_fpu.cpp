@@ -406,6 +406,26 @@ TEST_CASE(psq_update_indexed_and_undefined_type) {
 }
 
 // ------------------------------------------------------------ locked cache
+TEST_CASE(locked_cache_dcbi_invalidates_matching_line) {
+    FpMachine m;
+    m.s().hid2 |= HID2_LCE;
+    m.s().dbat[3] = {0xE0000002U, 0xE0000002U};
+    m.s().msr |= MSR_DR;
+    m.s().gpr[3] = 0xE0000000U;
+    m.s().gpr[4] = 0;
+    CHECK(m.exec(A::dcbz_l(3, 4)) == StepResult::Executed);
+    CHECK_EQ(m.cpu->locked_cache_lines(), 1U);
+    // dcbi r3,r4: primary opcode 31, XO 470.
+    const u32 dcbi = (31U << 26U) | (3U << 16U) | (4U << 11U) | (470U << 1U);
+    CHECK(m.exec(dcbi) == StepResult::Executed);
+    CHECK_EQ(m.cpu->locked_cache_lines(), 0U);
+    std::array<u8, 32> line{};
+    CHECK(!m.cpu->locked_cache_line(0xE0000000U, line));
+    // A miss must be harmless and must not allocate a locked-cache line.
+    CHECK(m.exec(dcbi) == StepResult::Executed);
+    CHECK_EQ(m.cpu->locked_cache_lines(), 0U);
+}
+
 TEST_CASE(locked_cache_dcbz_l_and_access) {
     FpMachine m;
     m.s().hid2 |= HID2_LCE;
