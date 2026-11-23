@@ -34,6 +34,7 @@
 #include "orca/disc/disc_image.hpp"
 #include "orca/hw/processor_interface.hpp"
 
+#include <functional>
 #include <memory>
 #include <span>
 #include <string>
@@ -81,6 +82,18 @@ public:
     std::size_t dtk_pull(std::span<s16> out, std::size_t frames);
 
     bool busy() const noexcept { return (dicr_ & di::DICR_TSTART) != 0U; }
+
+    // Wii: the DI belongs to Starlet (IOS). DMA addresses span MEM1 and MEM2, and
+    // the interrupt does not reach Broadway's PI; IOS learns of finished commands
+    // through the completion listener (called after the status bits are set).
+    void set_wii_mode() noexcept { wii_ = true; }
+    void set_completion_listener(std::function<void(bool ok)> f) { completion_ = std::move(f); }
+    // A read that IOS serves itself (decrypted partition data): the same drive
+    // checks and state change as a 0xA8 read; false sets the drive error.
+    bool begin_host_read();
+    // Drive reset (IOS DVDLowReset): registers cleared; with `spinup` the drive
+    // must read the disc ID again, otherwise its motor is stopped.
+    void reset_drive(bool spinup);
     const std::string& last_error() const noexcept { return last_error_; }
 
     bool mmio_read(u32 offset, unsigned size, u64& value) override;
@@ -110,6 +123,8 @@ private:
     u64 current_start_{0}, next_start_{0}, audio_position_{0};
     u32 current_length_{0}, next_length_{0};
     s32 hist_[4]{}; // left h1, h2, right h1, h2
+    std::function<void(bool)> completion_;
+    bool wii_{false};
     std::string last_error_;
 };
 

@@ -59,6 +59,7 @@ void DiscInterface::update_interrupt() {
     const bool de = (disr_ & di::DISR_DEINT) != 0U && (disr_ & di::DISR_DEINTMASK) != 0U;
     const bool br = (disr_ & di::DISR_BRKINT) != 0U && (disr_ & di::DISR_BRKINTMASK) != 0U;
     const bool cv = (dicvr_ & di::DICVR_CVRINT) != 0U && (dicvr_ & di::DICVR_CVRINTMASK) != 0U;
+    if (wii_) return; // Starlet's interrupt (see set_wii_mode)
     if (tc || de || br || cv) pi_.raise(pi::CAUSE_DI); else pi_.lower(pi::CAUSE_DI);
 }
 
@@ -95,7 +96,7 @@ bool DiscInterface::mmio_write(u32 offset, unsigned size, u64 value) {
         update_interrupt();
         return true;
     case 0x08: case 0x0C: case 0x10: cmd_[(offset - 0x08U) / 4U] = v; return true;
-    case 0x14: dimar_ = v & di::kAddressMask; return true;
+    case 0x14: dimar_ = v & (wii_ ? ~0x1FU : di::kAddressMask); return true;
     case 0x18: dilength_ = v & ~0x1FU; return true;
     case 0x1C:
         if (busy()) return fail("DI: DICR written while a transfer is in progress");
@@ -232,6 +233,27 @@ void DiscInterface::finish(bool ok, u32 from_disc, u64 offset) {
         disr_ |= di::DISR_DEINT;
     }
     dicr_ &= ~di::DICR_TSTART;
+    update_interrupt();
+    if (completion_) completion_(ok);
+}
+
+bool DiscInterface::begin_host_read() {
+    error_ = DriveError::None;
+    if (!read_preconditions()) return false;
+    if (state_ == DriveState::ReadyNoReadsMade) state_ = DriveState::Ready;
+    return true;
+}
+
+void DiscInterface::reset_drive(bool spinup) {
+    disr_ = 0;
+    dicvr_ = 0;
+    cmd_[0] = cmd_[1] = cmd_[2] = 0;
+    dimar_ = dilength_ = dicr_ = diimmbuf_ = 0;
+    error_ = DriveError::None;
+    stream_ = false;
+    stop_at_track_end_ = false;
+    dtk_enabled_ = false; // configured again after the disc ID is read
+    if (disc_) state_ = spinup ? DriveState::DiscIdNotRead : DriveState::MotorStopped;
     update_interrupt();
 }
 

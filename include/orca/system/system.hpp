@@ -33,6 +33,9 @@
 #include "orca/ios/stm.hpp"
 #include "orca/ios/es.hpp"
 #include "orca/ios/fs_device.hpp"
+#include "orca/ios/di_device.hpp"
+#include "orca/ios/memory_values.hpp"
+#include "orca/disc/wii_disc.hpp"
 #include "orca/hw/processor_interface.hpp"
 #include "orca/loader/executable.hpp"
 #include "orca/memory/bus.hpp"
@@ -71,6 +74,8 @@ struct SystemConfig {
     // Wii: host directory holding the NAND (orca/ios/nand_fs.hpp). Empty: no
     // NAND; any NAND access stops explicitly.
     std::string nand_root;
+    // Wii: the common keys (supplied by the user) for decrypting disc partitions.
+    disc::WiiKeys wii_keys;
 };
 
 struct RunResult {
@@ -166,6 +171,22 @@ public:
     // above) is not done. See docs/ESTADO.md.
     bool boot_disc(std::string& error);
 
+    // Boots the inserted Wii disc the way the system menu and IOS leave things,
+    // at a high level (see docs/ESTADO.md):
+    //   * the game partition (the first of type 0) is opened as /dev/di does:
+    //     ticket and TMD become ES's active title; Broadway's owner/group come
+    //     from /sys/uid.sys and the TMD (needs SystemConfig::nand_root and wii_keys);
+    //   * low memory: the values IOS writes for the IOS the TMD names
+    //     (ios/memory_values.hpp), the disc ID (0x00), boot magic, board model,
+    //     clocks, video mode (0xCC, from the region letter), the partition's
+    //     game ID (0x3180), partition type/offset (0x3194/0x3198), the devkit
+    //     boot program version (0x315E) and setting.txt from the NAND (0x3800);
+    //   * the apploader is run from the partition (offsets are words);
+    //   * the CPU is left at the entry point with the boot BATs plus MEM2
+    //     (BAT4 0x90000000, DBAT5 0xD0000000 uncached) and HID4[SBE].
+    bool boot_wii_disc(std::string& error);
+    ios::DiDevice* di_device() noexcept { return di_dev_; }
+
     static constexpr u32 kGuestReturn = 0x81300000U;   // never executed
     static constexpr u32 kReportStub = 0x81300004U;    // blr (apploader OSReport)
     static constexpr u32 kApploaderStack = 0x816FFFF0U;
@@ -173,6 +194,10 @@ public:
 
 private:
     void advance(u64 cycles);
+    // Loads and drives the apploader from `d` (header at 0x2440); read offsets are
+    // shifted left by `offset_shift` (2 on Wii). Returns the game's entry point.
+    std::optional<u32> run_apploader(disc::DiscReader& d, unsigned offset_shift, std::string& error);
+    void wii_boot_state();
 
     SystemConfig config_;
     Clocks clocks_;
@@ -206,6 +231,7 @@ private:
     ios::Es* es_{nullptr};
     std::unique_ptr<ios::NandFs> nand_;
     std::string nand_error_;
+    ios::DiDevice* di_dev_{nullptr};
     std::function<void(bool)> field_listener_;
     std::optional<u32> stop_pc_;
     u64 timebase_remainder_{0};

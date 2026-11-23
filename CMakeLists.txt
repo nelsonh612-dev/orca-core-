@@ -58,6 +58,8 @@ add_library(orca_core
     src/ios/es.cpp
     src/ios/nand_fs.cpp
     src/ios/fs_device.cpp
+    src/ios/di_device.cpp
+    src/ios/memory_values.cpp
     src/hw/exi_ipl.cpp
     src/hw/exi_memcard.cpp
     src/gpu/command_stream.cpp
@@ -218,11 +220,20 @@ if(ORCA_BUILD_TESTS)
             COMMAND ${ORCA_OBJCOPY} -O binary ${ODIR}/apploader.elf ${ODIR}/apploader.bin
             DEPENDS ${PDIR}/apploader.c ${PDIR}/apploader.ld
             COMMENT "Building PowerPC test apploader")
-        list(APPEND PPC_OUTPUTS ${ODIR}/apploader.bin)
+        add_custom_command(
+            OUTPUT ${ODIR}/apploader_wii.bin
+            COMMAND ${ORCA_PPC_CLANG} ${PPC_FLAGS} -DORCA_WII -c ${PDIR}/apploader.c -o ${ODIR}/apploader_wii.o
+            COMMAND ${ORCA_PPC_LLD} -T ${PDIR}/apploader.ld ${ODIR}/apploader_wii.o -o ${ODIR}/apploader_wii.elf
+            COMMAND ${ORCA_OBJCOPY} -O binary ${ODIR}/apploader_wii.elf ${ODIR}/apploader_wii.bin
+            DEPENDS ${PDIR}/apploader.c ${PDIR}/apploader.ld
+            COMMENT "Building PowerPC test apploader (Wii offsets)")
+        list(APPEND PPC_OUTPUTS ${ODIR}/apploader.bin ${ODIR}/apploader_wii.bin)
         add_custom_target(orca_ppc_programs ALL DEPENDS ${PPC_OUTPUTS})
         add_dependencies(orca_test_programs orca_ppc_programs)
         target_compile_definitions(orca_test_programs PRIVATE ORCA_PROGRAMS_DIR="${ODIR}")
         add_dependencies(orca_test_disc orca_ppc_programs)
+        add_dependencies(orca_test_ios orca_ppc_programs)
+        target_compile_definitions(orca_test_ios PRIVATE ORCA_PROGRAMS_DIR="${ODIR}")
         add_dependencies(orca_test_av orca_ppc_programs)
         add_dependencies(orca_test_exi orca_ppc_programs)
         add_dependencies(orca_test_dsp_mi orca_ppc_programs)

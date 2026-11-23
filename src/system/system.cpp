@@ -80,6 +80,10 @@ System::System(SystemConfig config) : config_(config), clocks_(clocks_for(config
                 ios_->add_device(std::make_unique<ios::FsDevice>(*nand_));
             }
         }
+        di_->set_wii_mode(); // the drive belongs to Starlet
+        auto di_dev = std::make_unique<ios::DiDevice>(*di_, *es_, nand_.get(), config_.wii_keys);
+        di_dev_ = di_dev.get();
+        ios_->add_device(std::move(di_dev));
     }
     ai_->set_stream_sink([this](std::span<const s16> pcm, u32 divisor, u32 vol) { mixer_->push_stream(pcm, divisor, vol); });
 }
@@ -161,28 +165,41 @@ bool System::boot_disc(std::string& error) {
     (void)bus_.dma_write(loader::virtual_to_physical(kBi2Address), bi2);
     (void)bus_.write32(0xF4, kBi2Address);
 
+    hle_boot(0);
+    const auto entry = run_apploader(*d, 0, error);
+    if (!entry) return false;
+    hle_boot(*entry);
+    // the IPL read the disc ID and the apploader and configured streaming audio
+    di_->after_ipl_boot(id[8] != 0U, id[9]);
+    return true;
+}
+
+std::optional<u32> System::run_apploader(disc::DiscReader& d, unsigned offset_shift, std::string& error) {
+    const auto app = disc::parse_apploader_header(d, error);
+    if (!app) return std::nullopt;
+    const u32 app_bytes = app->size + app->trailer_size;
+    if (disc::kApploaderLoadAddress + app_bytes > kGuestReturn) { error = "boot: apploader overlaps the HLE stub area"; return std::nullopt; }
     // Apploader image and HLE stubs
     std::vector<u8> code(app_bytes);
-    if (!d->read(disc::kApploaderOffset + 0x20U, code)) { error = "boot_disc: cannot read the apploader"; return false; }
+    if (!d.read(disc::kApploaderOffset + 0x20U, code)) { error = "boot: cannot read the apploader"; return std::nullopt; }
     (void)bus_.dma_write(loader::virtual_to_physical(disc::kApploaderLoadAddress), code);
     const u32 stub_pa = loader::virtual_to_physical(kGuestReturn);
     (void)bus_.write32(stub_pa, 0x4E800020U);      // blr (never executed: the run loop stops here)
     (void)bus_.write32(stub_pa + 4U, 0x4E800020U); // report stub: blr
-    hle_boot(0);
     cpu_->state().gpr[1] = kApploaderStack;
 
     constexpr u64 kBudget = 2000000000ULL;
     const u32 slots = kGuestReturn + 0x10U, args = kGuestReturn + 0x20U;
-    if (!call_guest(app->entry, {slots, slots + 4U, slots + 8U}, kBudget, error)) return false;
+    if (!call_guest(app->entry, {slots, slots + 4U, slots + 8U}, kBudget, error)) return std::nullopt;
     u32 init = 0, main_fn = 0, close = 0;
     bus_.read32(loader::virtual_to_physical(slots), init);
     bus_.read32(loader::virtual_to_physical(slots + 4U), main_fn);
     bus_.read32(loader::virtual_to_physical(slots + 8U), close);
-    if (!call_guest(init, {kReportStub}, kBudget, error)) return false;
+    if (!call_guest(init, {kReportStub}, kBudget, error)) return std::nullopt;
     for (int i = 0;; ++i) {
-        if (i > 100000) { error = "boot_disc: apploader main() never finished"; return false; }
+        if (i > 100000) { error = "boot: apploader main() never finished"; return std::nullopt; }
         const auto more = call_guest(main_fn, {args, args + 4U, args + 8U}, kBudget, error);
-        if (!more) return false;
+        if (!more) return std::nullopt;
         u32 dst = 0, size = 0, offset = 0;
         bus_.read32(loader::virtual_to_physical(args), dst);
         bus_.read32(loader::virtual_to_physical(args + 4U), size);
@@ -190,19 +207,91 @@ bool System::boot_disc(std::string& error) {
         if (size != 0U) {
             const u32 pa = loader::virtual_to_physical(dst);
             std::vector<u8> chunk(size);
-            if (!bus_.is_ram(pa, size)) { error = "boot_disc: apploader requested a read outside RAM"; return false; }
-            if (!d->read(offset, chunk)) { error = "boot_disc: apploader requested a read outside the disc"; return false; }
+            if (!bus_.is_ram(pa, size)) { error = "boot: apploader requested a read outside RAM"; return std::nullopt; }
+            if (!d.read(u64{offset} << offset_shift, chunk)) { error = "boot: apploader requested a read outside the disc"; return std::nullopt; }
             (void)bus_.dma_write(pa, chunk);
             (void)bus_.write32(loader::virtual_to_physical(args + 4U), 0); // consumed
         }
         if (*more == 0U) break;
     }
-    const auto entry = call_guest(close, {}, kBudget, error);
+    return call_guest(close, {}, kBudget, error);
+}
+
+bool System::boot_wii_disc(std::string& error) {
+    if (config_.console != Console::Wii || ios_ == nullptr || di_dev_ == nullptr) { error = "boot_wii_disc: not a Wii system"; return false; }
+    disc::DiscReader* d = di_->disc();
+    if (d == nullptr) { error = "boot_wii_disc: no disc inserted"; return false; }
+    std::array<u8, 0x20> id{};
+    if (!d->read(0, id)) { error = "boot_wii_disc: cannot read the disc ID"; return false; }
+    const u32 magic = static_cast<u32>(id[0x18]) << 24 | static_cast<u32>(id[0x19]) << 16 | static_cast<u32>(id[0x1A]) << 8 | id[0x1B];
+    if (magic != disc::kWiiMagic) { error = "boot_wii_disc: not a Wii disc (no Wii magic at 0x18)"; return false; }
+    const auto parts = disc::list_wii_partitions(*d, error);
+    if (!parts) return false;
+    const disc::WiiPartitionEntry* game = nullptr;
+    for (const auto& p : *parts)
+        if (p.type == 0U) { game = &p; break; }
+    if (game == nullptr) { error = "boot_wii_disc: the disc has no game partition"; return false; }
+    // The system menu opens the game partition: ES title, owner IDs
+    if (!di_dev_->open_partition(*ios_, game->offset, error)) { error = "boot_wii_disc: " + error; return false; }
+    disc::WiiPartition& part = *di_dev_->partition();
+    const auto& tmd = part.tmd();
+    const u32 ios_hi = static_cast<u32>(tmd[0x184]) << 24 | static_cast<u32>(tmd[0x185]) << 16 | static_cast<u32>(tmd[0x186]) << 8 | tmd[0x187];
+    const u32 ios_lo = static_cast<u32>(tmd[0x188]) << 24 | static_cast<u32>(tmd[0x189]) << 16 | static_cast<u32>(tmd[0x18A]) << 8 | tmd[0x18B];
+    const auto values = ios_hi == 1U ? ios::ios_memory_values(ios_lo) : std::nullopt;
+    if (!values) {
+        char b[96];
+        std::snprintf(b, sizeof b, "boot_wii_disc: the title needs IOS %08X-%08X, which is not in the table", ios_hi, ios_lo);
+        error = b;
+        return false;
+    }
+    // What IOS leaves for Broadway, then what the system menu adds
+    if (!ios::write_ios_memory_values(bus_, *values)) { error = "boot_wii_disc: cannot write low memory"; return false; }
+    (void)bus_.dma_write(0, id);
+    std::array<u8, 4> pid{};
+    if (!part.read(0, pid)) { error = "boot_wii_disc: " + part.last_error(); return false; }
+    (void)bus_.dma_write(0x3180, pid);              // game ID as read from the partition
+    (void)bus_.write32(0x20, 0x0D15EA5EU);          // boot magic
+    (void)bus_.write32(0x24, 1U);                   // version
+    (void)bus_.write32(0x2C, 0x00000023U);          // board model: retail
+    (void)bus_.write32(0xF8, 243000000U);           // bus clock
+    (void)bus_.write32(0xFC, static_cast<u32>(clocks_.cpu_hz));
+    const auto region = static_cast<char>(id[3]);
+    const bool pal = region == 'P' || region == 'D' || region == 'F' || region == 'I' || region == 'S' ||
+                     region == 'H' || region == 'U' || region == 'X' || region == 'Y';
+    (void)bus_.write32(0xCC, pal ? 1U : 0U);        // video mode the menu ran in
+    (void)bus_.write32(0x3184, 0x80000000U);        // game ID address
+    (void)bus_.write32(0x3194, game->type);         // partition type and offset (>> 2)
+    (void)bus_.write32(0x3198, static_cast<u32>(game->offset >> 2));
+    (void)bus_.write16(0x315E, 0x0113U);            // devkit boot program version (system menu)
+    // setting.txt (encrypted, 0x100 bytes) from the system menu's data directory
+    {
+        const std::string path = "/title/00000001/00000002/data/setting.txt";
+        if (nand_ == nullptr) { error = "boot_wii_disc: no NAND"; return false; }
+        const s32 h = nand_->open(0, 0, path, ios::kFsRead);
+        if (h < 0) { error = "boot_wii_disc: " + path + " is not on the NAND (" + std::to_string(h) + ")"; return false; }
+        std::vector<u8> st(0x100);
+        const s32 n = nand_->read(h, st);
+        nand_->close(h);
+        if (n != 0x100) { error = "boot_wii_disc: setting.txt is not 256 bytes"; return false; }
+        (void)bus_.dma_write(0x3800, st);
+    }
+    di_->after_ipl_boot(false, 0);                  // disc ID and apploader read
+    // CPU: the boot state plus MEM2 BATs (BATs 4-7 enabled)
+    hle_boot(0);
+    wii_boot_state();
+    const auto entry = run_apploader(part, 2, error);
     if (!entry) return false;
     hle_boot(*entry);
-    // the IPL read the disc ID and the apploader and configured streaming audio
-    di_->after_ipl_boot(id[8] != 0U, id[9]);
+    wii_boot_state();
     return true;
+}
+
+void System::wii_boot_state() {
+    ppc::CpuState& s = cpu_->state();
+    s.ibat[4] = {0x90001FFFU, 0x10000002U};
+    s.dbat[4] = {0x90001FFFU, 0x10000002U};
+    s.dbat[5] = {0xD0001FFFU, 0x1000002AU};
+    s.hid4 |= ppc::HID4_SBE;
 }
 
 u64 System::steps_until_next_event(u64 end) const {

@@ -6,12 +6,18 @@
 #include "orca/ios/es.hpp"
 #include "orca/ios/fs_device.hpp"
 #include "orca/ios/nand_fs.hpp"
+#include "orca/ios/di_device.hpp"
+#include "orca/ios/memory_values.hpp"
+#include "orca/disc/disc_image.hpp"
+#include "test_port.hpp"
+#include "wii_disc_builder.hpp"
 #include "orca/memory/console_maps.hpp"
 #include "orca/system/system.hpp"
 #include "test_framework.hpp"
 
 #include <algorithm>
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -751,5 +757,249 @@ TEST_CASE(fs_device_files_and_isfs_requests) {
     r.ticks(600);
     CHECK(r.kernel.stopped());
 }
+
+namespace {
+// A Rig with a drive, ES, a NAND and /dev/di over a synthetic Wii disc.
+struct DiRig {
+    TempDir dir{"di"};
+    ios::NandFs nand{dir.p};
+    Rig r;
+    hw::DiscInterface drive{r.bus, r.sched, r.pi};
+    ios::Es* es = nullptr;
+    ios::DiDevice* di = nullptr;
+    std::vector<u8> image;
+    DiRig() {
+        std::string error;
+        CHECK(nand.load(error));
+        drive.set_wii_mode();
+        auto e = std::make_unique<ios::Es>();
+        es = e.get();
+        r.kernel.add_device(std::move(e));
+        auto d = std::make_unique<ios::DiDevice>(drive, *es, &nand, test_wii::test_keys());
+        di = d.get();
+        r.kernel.add_device(std::move(d));
+        image = test_wii::build_disc(test_wii::plain_data(3));
+        drive.insert(std::make_unique<disc::MemoryDisc>(image));
+        r.set(PPC_IRQMASK, IRQ_IPC_BROADWAY);
+        r.set(PPCCTRL, CTRL_IY1 | CTRL_IY2);
+        r.put_string(0x2000, "/dev/di");
+        r.block(0x1000, 1, 0, {0x2000, 0});
+        CHECK_EQ(r.call(0x1000), 0);
+    }
+    // ioctl on fd 0 with the 0x20-byte input at 0x2100
+    s32 ioctl(u32 cmd, std::vector<u32> words, u32 out, u32 out_size) {
+        for (u32 i = 0; i < 8; ++i) r.bus.write32(0x2100 + 4 * i, i == 0 ? cmd << 24 : (i - 1 < words.size() ? words[i - 1] : 0));
+        r.block(0x1000, 6, 0, {cmd, 0x2100, 0x20, out, out_size});
+        return r.call(0x1000);
+    }
+};
+} // namespace
+
+TEST_CASE(di_device_drive_commands_partitions_and_reads) {
+    DiRig t;
+    // a partition read before opening one: refused
+    CHECK_EQ(t.ioctl(0x71, {0x20, 0}, 0x8000, 0x20), ios::di_res::kSecurity);
+    // open the partition (ioctlv 0x8B): TMD out, ES result 0
+    t.r.bus.write32(0x2200, 0x8B000000U);
+    t.r.bus.write32(0x2204, 0x50000U >> 2);
+    CHECK_EQ(ioctlv(t.r, 0x8B, {{0x2200, 0x20}, {0, 0}, {0, 0}}, {{0x9000, 0x49E4}, {0x2300, 4}}), ios::di_res::kSuccess);
+    CHECK_EQ(t.r.mem32(0x2300), 0U);
+    CHECK_EQ(t.r.mem32(0x9000 + 0x18C), 0x00010000U);
+    CHECK(t.es->active_title().has_value());
+    const auto cred = t.r.kernel.ppc_credentials();
+    CHECK(cred.has_value());
+    CHECK_EQ(cred->first, 0x1000U);   // first title in uid.sys
+    CHECK_EQ(cred->second, 0x3031U);  // group from the TMD
+    // the drive has not read the disc ID yet: drive error
+    CHECK_EQ(t.ioctl(0x71, {0x20, 0}, 0x8000, 0x20), ios::di_res::kDriveError);
+    CHECK_EQ(t.ioctl(0xE0, {}, 0x8100, 4), ios::di_res::kSuccess);
+    CHECK_EQ(t.r.mem32(0x8100), 0x05020401U); // state "disc ID not read" (6 - 1), error 0x20401
+    // read the disc ID (DMA into MEM2), then the partition
+    CHECK_EQ(t.ioctl(0x70, {}, 0x10001000U, 0x20), ios::di_res::kSuccess);
+    CHECK_EQ(t.r.mem32(0x10001000U), 0x52534245U); // "RSBE"
+    CHECK_EQ(t.ioctl(0x71, {0x40, 0}, 0x8000, 0x40), ios::di_res::kSuccess);
+    const auto plain = test_wii::plain_data(3);
+    CHECK(read_mem(t.r, 0x8000, 0x40) == std::vector<u8>(plain.begin(), plain.begin() + 0x40));
+    // across a cluster boundary, offset in words
+    const u32 off = 0x7C00 - 0x10;
+    CHECK_EQ(t.ioctl(0x71, {0x20, off >> 2}, 0x8200, 0x20), ios::di_res::kSuccess);
+    CHECK(read_mem(t.r, 0x8200, 0x20) == std::vector<u8>(plain.begin() + off, plain.begin() + off + 0x20));
+    CHECK_EQ(t.ioctl(0x83, {}, 0x8100, 4), ios::di_res::kSuccess);
+    CHECK_EQ(t.r.mem32(0x8100), off >> 2); // IOS keeps the offset as "length"
+    CHECK_EQ(t.ioctl(0x71, {0x40, 0}, 0x8000, 0x20), ios::di_res::kSecurity); // buffer too small
+    // unencrypted reads: system area only
+    CHECK_EQ(t.ioctl(0x8D, {0x20, 0x40000U >> 2}, 0x8300, 0x20), ios::di_res::kSuccess);
+    CHECK_EQ(t.r.mem32(0x8300), 1U);                 // one partition in group 0
+    CHECK_EQ(t.ioctl(0x8D, {0x20, 0x50000U >> 2}, 0x8300, 0x20), ios::di_res::kSecurity);
+    // out-of-bounds test area past the first layer: the drive reports an error
+    CHECK_EQ(t.ioctl(0x8D, {0x20, 0x460A0000U}, 0x8300, 0x20), ios::di_res::kDriveError);
+    CHECK_EQ(t.ioctl(0xE0, {}, 0x8100, 4), ios::di_res::kSuccess);
+    CHECK_EQ(t.r.mem32(0x8100) & 0xFFFFFFU, 0x052100U); // block out of bounds
+    // inquiry, cover status, registers
+    CHECK_EQ(t.ioctl(0x12, {}, 0x8400, 0x20), ios::di_res::kSuccess);
+    CHECK_EQ(t.r.mem32(0x8400), 0x00000002U);
+    CHECK_EQ(t.ioctl(0x88, {}, 0x8100, 4), ios::di_res::kSuccess);
+    CHECK_EQ(t.r.mem32(0x8100), 2U);
+    CHECK_EQ(t.ioctl(0x7A, {}, 0x8100, 4), ios::di_res::kSuccess);
+    CHECK_EQ(t.r.mem32(0x8100), 0U); // cover closed, no interrupt
+    CHECK_EQ(t.ioctl(0x12, {}, 0x8410, 0x20), ios::di_res::kBadArgument); // misaligned buffer
+    CHECK_EQ(t.ioctl(0x12, {}, 0x8400, 0x10), 0x10);                     // too small: timed out
+    // reset: the disc ID must be read again
+    CHECK_EQ(t.ioctl(0x8A, {1}, 0, 0), ios::di_res::kSuccess);
+    CHECK_EQ(t.ioctl(0x71, {0x20, 0}, 0x8000, 0x20), ios::di_res::kDriveError);
+    // close the partition: reads refused again
+    CHECK_EQ(t.ioctl(0x70, {}, 0x8000, 0x20), ios::di_res::kSuccess);
+    CHECK_EQ(t.ioctl(0x8C, {}, 0, 0), ios::di_res::kSuccess);
+    CHECK_EQ(t.ioctl(0x71, {0x20, 0}, 0x8000, 0x20), ios::di_res::kSecurity);
+    // a second title gets the next uid; the first keeps its own
+    std::string error;
+    CHECK(ios::uid_for_title(t.nand, 0x0001000041414141ULL, error) == std::optional<u32>(0x1001U));
+    CHECK(ios::uid_for_title(t.nand, 0x0001000052534245ULL, error) == std::optional<u32>(0x1000U));
+    // DVD-video commands: explicit stop
+    t.r.bus.write32(0x2100, 0xD0000000U);
+    t.r.block(0x1000, 6, 0, {0xD0, 0x2100, 0x20, 0x8000, 0x20});
+    t.r.send(0x1000);
+    t.r.ticks(600);
+    CHECK(t.r.kernel.stopped());
+    CHECK(t.r.kernel.stop_reason().find("0xD0") != std::string::npos);
+}
+
+TEST_CASE(di_device_requests_queue_behind_the_drive) {
+    DiRig t;
+    t.drive.set_latency_cycles(12U * 100000U); // the drive takes 100000 ticks per command
+    // two drive commands sent back to back: the second waits for the first
+    for (u32 i = 0; i < 8; ++i) t.r.bus.write32(0x2100 + 4 * i, i == 0 ? 0x70000000U : 0);
+    for (u32 i = 0; i < 8; ++i) t.r.bus.write32(0x2180 + 4 * i, i == 0 ? 0xE0000000U : 0);
+    t.r.block(0x1100, 6, 0, {0x70, 0x2100, 0x20, 0x8000, 0x20});
+    t.r.block(0x1200, 6, 0, {0xE0, 0x2180, 0x20, 0x8100, 4});
+    t.r.send(0x1100);
+    CHECK(t.r.service(2000) == std::optional<u32>(0U));
+    t.r.send(0x1200);
+    CHECK(t.r.service(2000) == std::optional<u32>(0U));
+    CHECK_EQ(t.r.mem32(0x1100), 6U);                         // not answered yet
+    CHECK(t.r.service(200000) == std::optional<u32>(0x1100U));
+    CHECK_EQ(t.r.mem32(0x1200), 6U);                         // B starts only now
+    CHECK(t.r.service(200000) == std::optional<u32>(0x1200U));
+    CHECK_EQ(t.r.mem32(0x1104), 1U);
+    CHECK_EQ(t.r.mem32(0x1204), 1U);
+    CHECK_EQ(t.r.mem32(0x8000), 0x52534245U);
+    CHECK_EQ(t.r.mem32(0x8100), 0x00000000U); // drive ready (disc ID read), no error
+}
+
+TEST_CASE(ios_memory_values_for_known_versions) {
+    CHECK(!ios::ios_memory_values(5).has_value());
+    const auto v36 = ios::ios_memory_values(36);
+    CHECK(v36.has_value());
+    CHECK_EQ(v36->version >> 16, 36U);
+    mem::Bus bus;
+    mem::map_wii_ram(bus);
+    bus.write32(0x3FFC, 0xFFFFFFFFU);
+    CHECK(ios::write_ios_memory_values(bus, *v36));
+    u32 x = 0;
+    bus.read32(0x3FFC, x); CHECK_EQ(x, 0U);
+    bus.read32(0x3140, x); CHECK_EQ(x, v36->version);
+    bus.read32(0x3120, x); CHECK_EQ(x, 0x93600000U);
+    bus.read32(0x3130, x); CHECK_EQ(x, 0x935E0000U);
+    bus.read32(0x3134, x); CHECK_EQ(x, 0x93600000U);
+    bus.read32(0x3128, x); CHECK_EQ(x, 0x935E0000U);
+    bus.read32(0x3148, x); CHECK_EQ(x, 0x93600000U);
+    bus.read32(0x28, x); CHECK_EQ(x, 0x01800000U);
+    const auto v9 = ios::ios_memory_values(9);
+    CHECK(v9.has_value());
+    CHECK_EQ(v9->mem2_end, 0x93400000U);
+    CHECK_EQ(v9->reserved_begin, 0xDEADBEEFU);
+}
+
+#ifdef ORCA_PROGRAMS_DIR
+namespace {
+std::vector<u8> read_file(const std::string& path) {
+    std::ifstream f(path, std::ios::binary);
+    return std::vector<u8>((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+}
+void put_be32(std::vector<u8>& d, std::size_t at, u32 v) { for (unsigned k = 0; k < 4; ++k) d[at + k] = static_cast<u8>(v >> (24U - 8U * k)); }
+} // namespace
+
+TEST_CASE(wii_disc_boot_runs_the_integer_suite) {
+    const auto app = read_file(ORCA_PROGRAMS_DIR "/apploader_wii.bin");
+    const auto dol = read_file(ORCA_PROGRAMS_DIR "/integer_suite.dol");
+    CHECK(!app.empty() && !dol.empty());
+    // partition data: header (DOL at 0x20000, in words at 0x420), apploader at 0x2440, DOL
+    const u32 dol_at = 0x20000;
+    const u64 bytes = dol_at + dol.size();
+    std::vector<u8> plain = test_wii::plain_data((bytes + disc::kWiiClusterData - 1U) / disc::kWiiClusterData);
+    std::fill(plain.begin() + 0x20, plain.begin() + 0x2440 + 0x20 + static_cast<std::ptrdiff_t>(app.size()), u8{0});
+    put_be32(plain, 0x420, dol_at >> 2);
+    const char date[] = "2026/11/23";
+    std::copy(date, date + sizeof date, plain.begin() + 0x2440);
+    put_be32(plain, 0x2450, 0x81200000U);
+    put_be32(plain, 0x2454, static_cast<u32>((app.size() + 31U) & ~std::size_t{31}));
+    put_be32(plain, 0x2458, 0);
+    std::copy(app.begin(), app.end(), plain.begin() + 0x2460);
+    std::copy(dol.begin(), dol.end(), plain.begin() + dol_at);
+    const auto image = test_wii::build_disc(plain);
+    // NAND with the system menu's setting.txt
+    TempDir dir("boot");
+    {
+        ios::NandFs nand(dir.p);
+        std::string error;
+        CHECK(nand.load(error));
+        for (const char* d : {"/title", "/title/00000001", "/title/00000001/00000002", "/title/00000001/00000002/data"})
+            CHECK_EQ(nand.create(0, 0, d, 0, {3, 3, 1}, false), 0);
+        CHECK_EQ(nand.create(0, 0, "/title/00000001/00000002/data/setting.txt", 0, {3, 3, 1}, true), 0);
+        const s32 h = nand.open(0, 0, "/title/00000001/00000002/data/setting.txt", 3);
+        std::vector<u8> st(0x100);
+        for (std::size_t i = 0; i < st.size(); ++i) st[i] = static_cast<u8>(i ^ 0x5A);
+        CHECK_EQ(nand.write(h, st), 0x100);
+        nand.close(h);
+    }
+    system::SystemConfig cfg;
+    cfg.console = system::Console::Wii;
+    cfg.nand_root = dir.p.string();
+    cfg.wii_keys = test_wii::test_keys();
+    system::System sys(cfg);
+    CHECK(sys.nand() != nullptr);
+    test::TestPort port;
+    port.cpu = &sys.cpu();
+    sys.bus().map_mmio("test-port", test::TestPort::kPhysical, 0x1000, port);
+    sys.insert_disc(std::make_unique<disc::MemoryDisc>(image));
+    std::string error;
+    const bool booted = sys.boot_wii_disc(error);
+    if (!booted) std::fprintf(stderr, "    boot_wii_disc: %s\n", error.c_str());
+    CHECK(booted);
+    if (!booted) return;
+    // what the boot left below the program (this test DOL is linked at 0x80003100,
+    // so the IOS and system menu values from 0x3100 on are overwritten by it)
+    u32 x = 0;
+    sys.bus().read32(0x00, x); CHECK_EQ(x, 0x52534245U);  // disc ID
+    sys.bus().read32(0x18, x); CHECK_EQ(x, disc::kWiiMagic);
+    sys.bus().read32(0x20, x); CHECK_EQ(x, 0x0D15EA5EU);
+    sys.bus().read32(0x2C, x); CHECK_EQ(x, 0x23U);
+    sys.bus().read32(0xCC, x); CHECK_EQ(x, 0U);           // NTSC region letter 'E'
+    sys.bus().read32(0xF8, x); CHECK_EQ(x, 243000000U);
+    sys.bus().read32(0x28, x); CHECK_EQ(x, 0x01800000U);
+    CHECK((sys.cpu().state().hid4 & ppc::HID4_SBE) != 0U);
+    CHECK_EQ(sys.cpu().state().dbat[5].upper, 0xD0001FFFU);
+    CHECK(sys.ios()->ppc_credentials().has_value());
+    CHECK(sys.es()->active_title().has_value());
+    const auto res = sys.run(4000000000ULL);
+    CHECK(res.stop == ppc::StepResult::Halted);
+    CHECK(port.exited);
+    CHECK_EQ(port.exit_code, 0U);
+    std::printf("[ios] integer_suite booted from a Wii disc partition: %zu values, exit %u\n", port.log.size(), port.exit_code);
+}
+
+TEST_CASE(wii_disc_boot_failures_are_explicit) {
+    system::SystemConfig cfg;
+    cfg.console = system::Console::Wii;
+    cfg.wii_keys = test_wii::test_keys();
+    system::System sys(cfg);
+    std::string error;
+    CHECK(!sys.boot_wii_disc(error));
+    CHECK(error.find("no disc") != std::string::npos);
+    sys.insert_disc(std::make_unique<disc::MemoryDisc>(test_wii::build_disc(test_wii::plain_data(2), 0, 5)));
+    CHECK(!sys.boot_wii_disc(error));      // no NAND for uid.sys
+    CHECK(error.find("NAND") != std::string::npos);
+}
+#endif
 
 int main() { return orca::test::run_all("ios"); }
