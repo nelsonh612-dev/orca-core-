@@ -491,6 +491,7 @@ bool Cpu::phys_write(u32 pa, unsigned size, u64 value) {
         const auto it = locked_cache_.find(a & ~31U);
         if (it != locked_cache_.end()) {
             it->second[a & 31U] = b;
+            locked_cache_dirty_.insert(a & ~31U);
             if (cached_size == 0U) cached_run = a;
             ++cached_size;
         } else {
@@ -1095,7 +1096,7 @@ Cpu::Outcome Cpu::write_spr(unsigned n, u32 v) {
     case spr::HID0: s.hid0 = v; return Outcome::done();
     case spr::HID1: s.hid1 = v; return Outcome::done();
     case spr::HID2:
-        if ((v & HID2_LCE) == 0U) locked_cache_.clear(); // disabling the locked cache discards its lines
+        if ((v & HID2_LCE) == 0U) { locked_cache_.clear(); locked_cache_dirty_.clear(); } // disabling LCE discards its lines
         s.hid2 = v; return Outcome::done();
     case spr::HID4: s.hid4 = v; return Outcome::done();
     case spr::IABR:
@@ -1191,18 +1192,22 @@ Cpu::Outcome Cpu::op_cache_x(u32 ins, unsigned xo, bool& handled) {
         if (!o.ok()) return o;
         const auto it = locked_cache_.find(lo);
         if (it == locked_cache_.end()) return o;
-        // 750CL §9.2.2.4-.5: a modified locked-cache hit is cast out;
-        // dcbf invalidates the line, while dcbst leaves it resident.
-        // All lines currently represented here are allocated/modified by
-        // dcbz_l or updated by CPU/DMA, so a castout writes the full line.
-        for (u32 offset = 0; offset < 32U; offset += 8U) {
-            u64 value = 0;
-            for (u32 byte = 0; byte < 8U; ++byte)
-                value = (value << 8U) | it->second[offset + byte];
-            if (bus_.write64(lo + offset, value) != mem::BusStatus::Ok)
-                return Outcome::stop(StepResult::MemoryFault, "locked-cache castout failed", lo + offset);
+        // A clean line needs no castout. dcbf still invalidates it; dcbst
+        // leaves it resident. Dirty lines are written to backing memory.
+        if (locked_cache_dirty_.find(lo) != locked_cache_dirty_.end()) {
+            for (u32 offset = 0; offset < 32U; offset += 8U) {
+                u64 value = 0;
+                for (u32 byte = 0; byte < 8U; ++byte)
+                    value = (value << 8U) | it->second[offset + byte];
+                if (bus_.write64(lo + offset, value) != mem::BusStatus::Ok)
+                    return Outcome::stop(StepResult::MemoryFault, "locked-cache castout failed", lo + offset);
+            }
+            locked_cache_dirty_.erase(lo); // successful castout -> E
         }
-        if (xo == 86U) locked_cache_.erase(it); // dcbf -> I; dcbst -> E
+        if (xo == 86U) { // dcbf -> I
+            locked_cache_.erase(it);
+            locked_cache_dirty_.erase(lo);
+        }
         return o;
     }
     case 470: { // dcbi (supervisor; invalidate a matching locked-cache line)
@@ -1213,6 +1218,7 @@ Cpu::Outcome Cpu::op_cache_x(u32 ins, unsigned xo, bool& handled) {
         // line without a castout to L2 or the external bus. Do not notify
         // write observers: dcbi discards the cache line; it is not a store.
         locked_cache_.erase(lo);
+        locked_cache_dirty_.erase(lo);
         return o;
     }
     case 982: { // icbi
@@ -1230,6 +1236,7 @@ Cpu::Outcome Cpu::op_cache_x(u32 ins, unsigned xo, bool& handled) {
         if ((wimg & (WIMG_W | WIMG_I)) != 0U) return Outcome::alignment(ea); // 750CL: write-through / cache-inhibited
         if (const auto it = locked_cache_.find(lo); it != locked_cache_.end()) {
             it->second.fill(0);
+            locked_cache_dirty_.insert(lo);
             bus_.notify_external_write(lo, 32U, mem::AccessSource::Cpu);
             return o;
         }
