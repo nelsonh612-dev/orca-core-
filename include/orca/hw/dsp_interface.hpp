@@ -87,7 +87,7 @@ public:
     void set_audio_sink(std::function<void(std::span<const u8>)> sink) { audio_sink_ = std::move(sink); }
     u64 audio_blocks_played() const noexcept { return audio_blocks_; }
     u64 aid_block_cycles() const;
-    std::vector<u8>& aram() noexcept { return aram_; }
+    std::vector<u8>& aram() noexcept override { return aram_; } // also hle::Host
     bool aram_busy() const noexcept { return (csr_ & dsp::CSR_DMABUSY) != 0U; }
     u16 csr() const noexcept { return csr_; }
     ::orca::dsp::DspCore& core() noexcept { return core_; }
