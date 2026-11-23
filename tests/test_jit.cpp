@@ -74,6 +74,7 @@ u32 random_insn(Rng& r, u32 at, u32 code_end) {
         u32 base = 28U + r.u(2);
         u32 off = r.u(256) - 64U + (r.u(8) == 0U ? 0x0FFDU - 0x80U : 0U); // occasionally near the page end
         if (r.u(10) == 0U) { base = 0; off = kData + r.u(0x400U); }      // (0): absolute address
+        if (r.u(6) == 0U) off = r.u(2) ? 0x1000U + r.u(0x800U) : 0xF000U + r.u(0x800U); // displacement > 12 bits
         u32 rt = reg();
         if ((op & 1U) != 0U && rt == base) rt = 1;
         return D(op, rt, base, off);

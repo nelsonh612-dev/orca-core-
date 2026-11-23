@@ -245,7 +245,8 @@ bool Jit::Compiler::load_store(u32 ins, u32 pc, u32 i, unsigned size, bool load,
         else if (base == ZR) e.mov_imm(false, d, static_cast<u32>(disp)); // ADD (immediate) would read SP
         else if (disp >= 0 && disp < 4096) e.add_imm(false, d, base, static_cast<u32>(disp));
         else if (disp < 0 && disp > -4096) e.sub_imm(false, d, base, static_cast<u32>(-disp));
-        else { e.mov_imm(false, T0, static_cast<u32>(disp)); e.add(false, d, base, T0); }
+        // scratch T2: T0 holds the loaded value when the EA is recomputed for an update
+        else { e.mov_imm(false, T2, static_cast<u32>(disp)); e.add(false, d, base, T2); }
     };
     ea_into(1);
     e.movz(false, 2, static_cast<u16>(size));
