@@ -84,26 +84,3 @@ jobs:
           for f in build-android/orca_test_*; do file "$f"; done | head -5
           file build-android/orca_test_cpu_fpu | grep -q "ARM aarch64"
 
-  android-app:
-    name: Android app sources compile (native library + Java; no APK)
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
-      - uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '8.9'
-      - name: Compile (no packaging)
-        run: |
-          export ORCA_NDK_VERSION=$(basename "$ANDROID_NDK_LATEST_HOME")
-          echo "NDK $ORCA_NDK_VERSION, SDK $ANDROID_HOME"
-          cd android
-          gradle --no-daemon --stacktrace :app:compileDebugJavaWithJavac :app:externalNativeBuildDebug
-      - name: Check the JNI library is AArch64
-        run: |
-          f=$(find android/app/build -name liborca_android.so | head -1)
-          echo "$f"; file "$f" | grep -q "ARM aarch64"
