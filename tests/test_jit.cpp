@@ -330,7 +330,11 @@ TEST_CASE(jit_matches_interpreter_on_random_programs) {
             const u8* pa = a.bus.ram_pointer(at, n_bytes);
             const u8* pb = b.bus.ram_pointer(at, n_bytes);
             same = same && pa != nullptr && pb != nullptr && std::memcmp(pa, pb, n_bytes) == 0;
+            // the bus's write stamps (texture cache) advance exactly as with the interpreter
+            for (u32 page = at; same && page < at + n_bytes; page += 0x1000U)
+                same = *a.bus.page_epoch_pointer(page) == *b.bus.page_epoch_pointer(page);
         }
+        same = same && a.bus.write_epoch() == b.bus.write_epoch();
         if (!same && failures < 3) {
             // lockstep replay: find the first translated block whose result differs
             Machine c(kCode), d(kCode);
@@ -626,4 +630,50 @@ TEST_CASE(jit_native_fp_matches_interpreter) {
                 static_cast<unsigned long long>(steps), static_cast<unsigned long long>(helper));
     CHECK(helper < steps / 2U);
     (void)native_blocks;
+}
+
+// Linked blocks follow the instruction-translation context: the same effective
+// addresses hold different code with instruction translation off (physical
+// 0x4000) and on (IBAT0: effective 0-128 KiB -> physical 0x40000), and the test
+// switches MSR[IR] between runs. A link made in one context must not be taken in
+// the other.
+TEST_CASE(jit_links_follow_the_translation_context) {
+    if (!jit::host_can_execute()) {
+        std::printf("[jit] host is not AArch64: block-linking contexts run on the ARM64 CI\n");
+        return;
+    }
+    auto prog = [](u32 add_a, u32 add_b) {
+        return std::vector<u32>{D(14, 3, 3, add_a), B(8), D(14, 9, 9, 1), D(14, 4, 4, add_b),
+                                BC(16, 0, 8), D(14, 7, 7, 1), B(-24)}; // bdnz skips one instruction; loop
+    };
+    auto init = [&](Machine& m) {
+        const auto p0 = prog(1, 3), p1 = prog(100, 300);
+        for (u32 k = 0; k < p0.size(); ++k) m.bus.write32(kCode + 4U * k, p0[k]);
+        for (u32 k = 0; k < p1.size(); ++k) m.bus.write32(0x40000U + kCode + 4U * k, p1[k]);
+        m.s().pc = kCode;
+        m.s().ibat[0] = BatPair{0x00000003U, 0x00040002U};
+        m.s().ctr = 1000000;
+    };
+    Machine a(kCode), b(kCode);
+    init(a);
+    init(b);
+    Jit j(*b.cpu, b.bus);
+    Rng r{77};
+    bool same = true;
+    for (int round = 0; round < 60 && same; ++round) {
+        const u64 n = 5U + r.u(200);
+        (void)run_interp(a, n);
+        (void)run_jit(j, n);
+        same = a.s() == b.s() && a.cpu->instructions_retired() == b.cpu->instructions_retired();
+        if (!same) std::printf("    round %d: r3 %u/%u r4 %u/%u pc %08X/%08X\n", round, a.s().gpr[3], b.s().gpr[3], a.s().gpr[4],
+                               b.s().gpr[4], a.s().pc, b.s().pc);
+        const u32 msr = a.s().msr ^ MSR_IR;
+        a.s().msr = msr;
+        b.s().msr = msr;
+    }
+    CHECK(same);
+    CHECK(j.stats().links > 4U);
+    CHECK(a.s().gpr[3] > 1000U); // both programs really ran
+    std::printf("[jit] linking across 60 context switches: %llu links, identical to the interpreter\n",
+                static_cast<unsigned long long>(j.stats().links));
 }

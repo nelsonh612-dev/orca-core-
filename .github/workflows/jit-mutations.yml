@@ -1,0 +1,23 @@
+# Mutation test of the JIT on real ARM64 (manual): tools/jit_mutations.py.
+name: jit mutations
+
+on:
+  workflow_dispatch:
+
+jobs:
+  mutations:
+    name: JIT mutations on native ARM64
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q ninja-build clang lld libegl-dev libgles-dev libegl-mesa0 libgl1-mesa-dri
+      - name: Build
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          ninja -C build
+      - name: Mutations
+        run: python3 tools/jit_mutations.py build
