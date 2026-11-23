@@ -6,8 +6,12 @@
 #include "machine.hpp"
 #include "test_framework.hpp"
 
+#include "orca/ppc/fpu.hpp"
+
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <string>
 #include <vector>
@@ -236,6 +240,46 @@ TEST_CASE(jit_translates_blocks_on_any_host) {
         std::printf("[jit] block of %u guest instructions -> %zu AArch64 instructions, all valid for llvm-mc\n", n, words.size());
     }
 #endif
+    // a block with native floating point: every word valid too
+    {
+        const u32 fp_block[] = {
+            63U << 26 | 1U << 21 | 2U << 16 | 3U << 11 | 21U << 1,              // fadd
+            59U << 26 | 4U << 21 | 5U << 16 | 6U << 11 | 7U << 6 | 29U << 1 | 1U, // fmadds.
+            4U << 26 | 8U << 21 | 9U << 16 | 10U << 11 | 11U << 6 | 30U << 1,   // ps_nmsub
+            4U << 26 | 8U << 21 | 9U << 16 | 10U << 11 | 11U << 6 | 18U << 1,   // ps_div
+            4U << 26 | 8U << 21 | 9U << 16 | 10U << 11 | 11U << 6 | 10U << 1,   // ps_sum0
+            63U << 26 | 1U << 21 | 2U << 16 | 3U << 11 | 4U << 6 | 23U << 1,    // fsel
+            63U << 26 | 1U << 21 | 3U << 11 | 12U << 1,                          // frsp
+            63U << 26 | 4U << 21 | 2U << 16 | 3U << 11 | 32U << 1,              // fcmpo cr1
+            4U << 26 | 1U << 21 | 2U << 16 | 3U << 11 | 592U << 1 | 1U,         // ps_merge10.
+            BC(12, 2, -36)};
+        for (u32 n = 0; n < 10U; ++n) m.bus.write32(kCode + 0x200U + 4U * n, fp_block[n]);
+        std::vector<u32> fw;
+        u32 fn = 0;
+        CHECK(j.translate_for_test(kCode + 0x200U, fw, fn, err));
+        CHECK_EQ(fn, 10U);
+#ifdef ORCA_LLVM_MC
+        const std::string mc2 = ORCA_LLVM_MC;
+        if (!mc2.empty() && mc2.find("NOTFOUND") == std::string::npos) {
+            {
+                std::ofstream f("/tmp/orca_jit_fp_block.txt");
+                for (u32 w : fw) f << "0x" << std::hex << (w & 0xFF) << " 0x" << ((w >> 8) & 0xFF) << " 0x" << ((w >> 16) & 0xFF) << " 0x" << (w >> 24) << "\n";
+            }
+            const std::string cmd = mc2 + " --disassemble -triple=aarch64 /tmp/orca_jit_fp_block.txt > /tmp/orca_jit_fp_block.s 2>&1";
+            CHECK(std::system(cmd.c_str()) == 0);
+            std::ifstream in("/tmp/orca_jit_fp_block.s");
+            std::string line;
+            unsigned lines = 0, bad = 0;
+            while (std::getline(in, line)) {
+                if (line.find("invalid") != std::string::npos || line.find("warning") != std::string::npos) ++bad;
+                if (!line.empty() && line[0] == '\t' && line.find(".text") == std::string::npos) ++lines;
+            }
+            CHECK_EQ(bad, 0U);
+            CHECK_EQ(lines, static_cast<unsigned>(fw.size()));
+            std::printf("[jit] FP block of %u guest instructions -> %zu AArch64 instructions, all valid for llvm-mc\n", fn, fw.size());
+        }
+#endif
+    }
     // an untranslated first instruction gives no block
     m.code(kCode + 0x100U, {31U << 26 | 3U << 21 | SPR(268) << 11 | 371U << 1}); // mftb
     CHECK(!j.translate_for_test(kCode + 0x100U, words, n, err));
@@ -332,3 +376,240 @@ TEST_CASE(jit_matches_interpreter_on_random_programs) {
 }
 
 TEST_MAIN("jit")
+
+// ---------------------------------------------------------------------------
+// Native floating point (src/ppc/jit.cpp, "Native floating point")
+// ---------------------------------------------------------------------------
+namespace {
+namespace F = fpu;
+
+double dbl(u64 b) { double x; std::memcpy(&x, &b, 8); return x; }
+u64 bits_of(double x) { u64 b; std::memcpy(&b, &x, 8); return b; }
+constexpr u64 kS = 0x8000000000000000ULL;
+unsigned bexp(u64 b) { return static_cast<unsigned>((b >> 52) & 0x7FFU); }
+bool is_zero(u64 b) { return (b & ~kS) == 0U; }
+
+// The algorithm of Compiler::fp_slot in C++, step by step (same conditions for the
+// slow path). Checked against fpu::arith on any host; the AArch64 code is checked
+// against the interpreter by the lockstep test below.
+struct FastSlot { bool native; u64 bits; bool fi, fr; };
+void two_sum(double x, double y, double& s, double& err) { s = x + y; const double bb = s - x; err = (x - (s - bb)) + (y - bb); }
+FastSlot fast_slot(F::Op op, u64 A, u64 B, u64 C, bool single) {
+    FastSlot r{false, 0, false, false};
+    const double a = dbl(A), c = dbl(C);
+    double b = dbl(B);
+    if (op == F::Op::Sub || op == F::Op::MSub || op == F::Op::NMSub) b = -b;
+    double s = 0;
+    u64 eb = 0;
+    bool allow_zero = true;
+    switch (op) {
+    case F::Op::Add: case F::Op::Sub: { double err = 0; two_sum(a, b, s, err); eb = bits_of(err); break; }
+    case F::Op::Mul: s = a * c; eb = bits_of(std::fma(a, c, -s)); allow_zero = false; break;
+    case F::Op::Div:
+        if (is_zero(A) || bexp(A) < 256U) return r;
+        s = a / b;
+        eb = bits_of(std::fma(-s, b, a)) ^ (B & kS);
+        allow_zero = false;
+        break;
+    case F::Op::MAdd: case F::Op::MSub: case F::Op::NMAdd: case F::Op::NMSub: {
+        const double u1 = a * c;
+        const u64 ub = bits_of(u1);
+        if (is_zero(ub) ? !(is_zero(A) || is_zero(C)) : (bexp(ub) < 256U || bexp(ub) > 2045U)) return r;
+        if (!is_zero(bits_of(b)) && bexp(bits_of(b)) < 256U) return r;
+        s = std::fma(a, c, b);
+        const double u2 = std::fma(a, c, -u1);
+        double al = 0, z = 0, b1 = 0, b2 = 0;
+        two_sum(b, u2, al, z);
+        two_sum(u1, al, b1, b2);
+        const double g = (b1 - s) + b2, r2 = g + z, r3 = z - (r2 - g);
+        eb = is_zero(bits_of(r2)) ? bits_of(r3) : bits_of(r2);
+        break;
+    }
+    case F::Op::Round: s = b; break;
+    default: return r;
+    }
+    const u64 sb = bits_of(s);
+    const bool fie = !is_zero(eb), fre = fie && ((eb ^ sb) >> 63) != 0U;
+    if (!single) {
+        if (is_zero(sb) ? !allow_zero : (bexp(sb) < 256U || bexp(sb) > 2045U)) return r;
+        r.bits = sb; r.fi = fie; r.fr = fre;
+    } else {
+        if (is_zero(sb) && !allow_zero) return r;
+        if (fie && (sb & 0x1FFFFFFFULL) == 0x10000000ULL) return r;
+        const u64 tb = bits_of(static_cast<double>(static_cast<float>(s)));
+        if (!is_zero(sb) && (bexp(tb) < 898U || bexp(tb) > 1150U)) return r;
+        const bool diff = tb != sb;
+        r.bits = tb; r.fi = diff || fie; r.fr = diff ? (tb & ~kS) > (sb & ~kS) : fre;
+    }
+    if (op == F::Op::NMAdd || op == F::Op::NMSub) r.bits ^= kS;
+    r.native = true;
+    return r;
+}
+
+// Operands that reach the hard cases: cancellation, operands 1-2 ulp apart, exact
+// results, single-precision midpoints, extremes, specials.
+u64 fp_operand(Rng& g, u64 ref) {
+    const u64 m = static_cast<u64>(g.next()) << 32 | g.next();
+    switch (g.u(9)) {
+    case 0: return (m & 0x800FFFFFFFFFFFFFULL) | (static_cast<u64>(1023U - 40U + g.u(80)) << 52);
+    case 1: return (m & 0x800FFFFFE0000000ULL) | (static_cast<u64>(1023U - 20U + g.u(40)) << 52); // single values
+    case 2: return (m & 0x800FF00000000000ULL) | (static_cast<u64>(1023U - 8U + g.u(16)) << 52);  // few bits
+    case 3: return ref + g.u(5) - 2U;
+    case 4: return (ref ^ kS) + g.u(5) - 2U;
+    case 5: return (m & 0x800FFFFFFFFFFFFFULL) | (static_cast<u64>(g.u(2048)) << 52);
+    case 6: {
+        const u64 sp[] = {0, 1, 0x3FF0000000000000ULL, 0x7FF0000000000000ULL, 0x7FF8000000000000ULL, 0x7FF0000000000001ULL,
+                          0x0010000000000000ULL, 0x7FEFFFFFFFFFFFFFULL, 0x47EFFFFFE0000000ULL, 0x3810000000000000ULL, 0x36A0000000000000ULL};
+        return sp[g.u(11)] ^ (g.u(2) ? kS : 0U);
+    }
+    case 7: return (m & 0x800FFFFFFFFFFFFFULL) | (static_cast<u64>(1023U - 150U + g.u(300)) << 52);
+    default: return (m & 0x800FFFFFF0000000ULL) | (static_cast<u64>(1023U - 3U + g.u(6)) << 52) | 0x10000000ULL; // single midpoints
+    }
+}
+} // namespace
+
+TEST_CASE(native_fp_algorithm_matches_the_fpu_engine) {
+    const F::Op ops[] = {F::Op::Add, F::Op::Sub, F::Op::Mul, F::Op::Div, F::Op::MAdd, F::Op::MSub, F::Op::NMAdd, F::Op::NMSub, F::Op::Round};
+    Rng g{0xF00DFACE1234ULL};
+    u64 cases = 0, native = 0, mismatches = 0;
+    for (const F::Op op : ops) {
+        for (int single = 0; single < 2; ++single) {
+            if (op == F::Op::Round && single == 0) continue;
+            for (int k = 0; k < 150000; ++k) {
+                const u64 A = fp_operand(g, 0), C = fp_operand(g, A);
+                u64 B = fp_operand(g, g.u(2) ? A : C);
+                if (op >= F::Op::MAdd && op <= F::Op::NMSub && g.u(3) == 0U) { // addend near -a*c: cancellation
+                    const double p = dbl(A) * dbl(C);
+                    B = bits_of(op == F::Op::MSub || op == F::Op::NMSub ? p : -p) + g.u(5) - 2U;
+                }
+                ++cases;
+                const FastSlot m = fast_slot(op, A, B, C, single != 0);
+                if (!m.native) continue;
+                ++native;
+                const F::Result r = F::arith(op, A, B, C, single != 0, 0);
+                const u32 fprf = is_zero(m.bits) ? ((m.bits >> 63) != 0U ? 0x12U : 0x02U) : ((m.bits >> 63) != 0U ? 0x08U : 0x04U);
+                if (r.bits != m.bits || r.fi != m.fi || r.fr != m.fr || r.exceptions != (m.fi ? F::XX : 0U) || r.fprf != fprf) {
+                    if (mismatches++ < 5)
+                        std::printf("    op %d single %d A %016llX B %016llX C %016llX: engine %016llX fi %d fr %d, native %016llX fi %d fr %d\n",
+                                    static_cast<int>(op), single, static_cast<unsigned long long>(A), static_cast<unsigned long long>(B),
+                                    static_cast<unsigned long long>(C), static_cast<unsigned long long>(r.bits), r.fi, r.fr,
+                                    static_cast<unsigned long long>(m.bits), m.fi, m.fr);
+                }
+            }
+        }
+    }
+    CHECK_EQ(mismatches, 0U);
+    CHECK(native > cases / 2U);
+    std::printf("[jit] native FP algorithm: %llu operations, %llu on the native path, all identical to fpu::arith\n",
+                static_cast<unsigned long long>(cases), static_cast<unsigned long long>(native));
+}
+
+TEST_CASE(jit_native_fp_matches_interpreter) {
+    if (!jit::host_can_execute()) {
+        std::printf("[jit] host is not AArch64: native FP equivalence runs on the ARM64 CI\n");
+        return;
+    }
+    Rng rng{0xFEEDF00D5EEDULL};
+    unsigned failures = 0;
+    u64 steps = 0, helper = 0, native_blocks = 0;
+    for (int p = 0; p < 2000; ++p) {
+        // FP and paired-single arithmetic, moves, selects and compares only
+        std::vector<u32> prog;
+        const u32 len = 8U + rng.u(40);
+        for (u32 n = 0; n < len; ++n) {
+            const u32 fa = rng.u(32), fb = rng.u(32), fc = rng.u(32), fd = rng.u(32);
+            const bool rc = rng.u(4) == 0U;
+            const u32 a5[] = {21, 20, 25, 18, 29, 28, 31, 30};
+            switch (rng.u(8)) {
+            case 0: case 1: prog.push_back(63U << 26 | fd << 21 | fa << 16 | fb << 11 | fc << 6 | a5[rng.u(8)] << 1 | (rc ? 1U : 0U)); break;
+            case 2: case 3: prog.push_back(59U << 26 | fd << 21 | fa << 16 | fb << 11 | fc << 6 | a5[rng.u(8)] << 1 | (rc ? 1U : 0U)); break;
+            case 4: case 5: {
+                const u32 xs[] = {21, 20, 25, 18, 29, 28, 31, 30, 10, 11, 12, 13, 14, 15, 23};
+                prog.push_back(4U << 26 | fd << 21 | fa << 16 | fb << 11 | fc << 6 | xs[rng.u(15)] << 1 | (rc ? 1U : 0U));
+                break;
+            }
+            case 6: {
+                const u32 xs[] = {0, 32, 12, 40, 72, 136, 264};
+                const u32 x = xs[rng.u(7)];
+                prog.push_back(63U << 26 | (x == 0U || x == 32U ? rng.u(8) << 2 : fd) << 21 | fa << 16 | fb << 11 | x << 1 |
+                               (rc && x != 0U && x != 32U ? 1U : 0U));
+                if (rng.u(2)) prog.push_back(63U << 26 | fd << 21 | fa << 16 | fb << 11 | fc << 6 | 23U << 1); // fsel
+                break;
+            }
+            default: {
+                const u32 xs[] = {0, 32, 64, 96, 40, 72, 136, 264, 528, 560, 592, 624};
+                const u32 x = xs[rng.u(12)];
+                prog.push_back(4U << 26 | (x < 128U ? rng.u(8) << 2 : fd) << 21 | fa << 16 | fb << 11 | x << 1 | (rc && x >= 128U ? 1U : 0U));
+                break;
+            }
+            }
+        }
+        prog.push_back(B(-static_cast<s32>(4U * prog.size())));
+        const u64 seed = rng.s;
+        Machine a(kCode), b(kCode);
+        auto init = [&](Machine& m) {
+            Rng r{seed};
+            for (u32 n = 0; n < prog.size(); ++n) m.bus.write32(kCode + 4U * n, prog[n]);
+            m.s().pc = kCode;
+            m.s().msr = r.u(16) == 0U ? 0U : MSR_FP;
+            m.s().hid2 = r.u(16) == 0U ? 0U : HID2_PSE;
+            m.s().cr = r.next();
+            u64 prev = 0x3FF0000000000000ULL;
+            for (auto& f : m.s().fpr) { f.ps0 = fp_operand(r, prev); f.ps1 = fp_operand(r, f.ps0); prev = f.ps1; }
+            // mostly round-to-nearest with exceptions disabled (the native path); sometimes not
+            u32 fpscr = r.next() & 0xFFF7F8FFU;
+            if (r.u(8) != 0U) fpscr &= ~0xFFU; else fpscr &= ~(r.u(2) ? 0xF8U : 0U);
+            m.s().fpscr = fpscr;
+        };
+        init(a);
+        init(b);
+        Jit j(*b.cpu, b.bus);
+        const u64 n = 100U + rng.u(400);
+        const RunEnd ea = run_interp(a, n);
+        const RunEnd eb = run_jit(j, n);
+        const bool same = ea.r == eb.r && ea.steps == eb.steps && a.s() == b.s();
+        if (!same && failures++ < 3) {
+            std::printf("    FP program %d: interp %s/%llu jit %s/%llu fpscr %08X vs %08X cr %08X vs %08X\n", p, to_string(ea.r),
+                        static_cast<unsigned long long>(ea.steps), to_string(eb.r), static_cast<unsigned long long>(eb.steps),
+                        a.s().fpscr, b.s().fpscr, a.s().cr, b.s().cr);
+            // lockstep: first instruction whose result differs
+            Machine c(kCode), d(kCode);
+            init(c);
+            init(d);
+            Jit jd(*d.cpu, d.bus);
+            u64 k = 0;
+            while (k < n) {
+                const CpuState before = d.s();
+                const Jit::Result r = jd.run(n - k);
+                for (u64 t = 0; t < r.steps; ++t) (void)c.cpu->step();
+                k += r.steps;
+                if (!(c.s() == d.s())) {
+                    std::printf("      block at %08X, %llu steps; fpscr before %08X interp %08X jit %08X  cr %08X/%08X\n", before.pc,
+                                static_cast<unsigned long long>(r.steps), before.fpscr, c.s().fpscr, d.s().fpscr, c.s().cr, d.s().cr);
+                    for (u64 t = 0; t < r.steps && t < 64U; ++t) {
+                        u32 w = 0;
+                        (void)d.bus.read32(before.pc + 4U * static_cast<u32>(t), w);
+                        std::printf("        %08X: %08X\n", before.pc + 4U * static_cast<u32>(t), w);
+                    }
+                    for (unsigned f = 0; f < 32; ++f)
+                        if (!(c.s().fpr[f] == d.s().fpr[f]) || !(before.fpr[f] == c.s().fpr[f]))
+                            std::printf("      f%-2u before %016llX/%016llX interp %016llX/%016llX jit %016llX/%016llX\n", f,
+                                        static_cast<unsigned long long>(before.fpr[f].ps0), static_cast<unsigned long long>(before.fpr[f].ps1),
+                                        static_cast<unsigned long long>(c.s().fpr[f].ps0), static_cast<unsigned long long>(c.s().fpr[f].ps1),
+                                        static_cast<unsigned long long>(d.s().fpr[f].ps0), static_cast<unsigned long long>(d.s().fpr[f].ps1));
+                    break;
+                }
+                if (r.result != StepResult::Executed && r.result != StepResult::ExceptionTaken) break;
+            }
+        }
+        steps += j.stats().block_steps;
+        helper += j.stats().helper_steps;
+        native_blocks += j.stats().blocks_compiled;
+    }
+    CHECK_EQ(failures, 0U);
+    std::printf("[jit] native FP: 2000 programs, %llu instructions in blocks, %llu of them by the interpreter call (slow path), "
+                "the rest native; identical to the interpreter\n",
+                static_cast<unsigned long long>(steps), static_cast<unsigned long long>(helper));
+    CHECK(helper < steps / 2U);
+    (void)native_blocks;
+}

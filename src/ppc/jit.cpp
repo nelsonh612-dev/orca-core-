@@ -9,6 +9,7 @@
 
 #include "cpu_internal.hpp"
 
+#include "orca/ppc/fpu.hpp"
 #include "orca/ppc/mmu.hpp"
 #include "orca/ppc/registers.hpp"
 
@@ -32,13 +33,14 @@ constexpr Reg kCacheFirst = 22, kCacheCount = 7;
 constexpr Reg T0 = 8, T1 = 9, T2 = 10, T3 = 11, T4 = 12;
 
 struct Offsets {
-    u32 gpr, pc, lr, ctr, cr, xer;
+    u32 gpr, pc, lr, ctr, cr, xer, fpr, fpscr, msr, hid2;
 };
 const Offsets& offsets() {
     static const Offsets o = [] {
         CpuState s;
         auto off = [&](const void* p) { return static_cast<u32>(reinterpret_cast<const char*>(p) - reinterpret_cast<const char*>(&s)); };
-        return Offsets{off(s.gpr.data()), off(&s.pc), off(&s.lr), off(&s.ctr), off(&s.cr), off(&s.xer)};
+        return Offsets{off(s.gpr.data()), off(&s.pc), off(&s.lr), off(&s.ctr), off(&s.cr), off(&s.xer),
+                       off(s.fpr.data()), off(&s.fpscr), off(&s.msr), off(&s.hid2)};
     }();
     return o;
 }
@@ -215,10 +217,27 @@ struct Jit::Compiler {
     // when the instruction is not handled (nothing emitted). Sets `ends` when the
     // instruction leaves the block itself (branches).
     Reg value_reg_ = ZR; // store value, fetched by the caller of load_store
+    bool native_fp = false; // host FPCR is the default (round to nearest, no flush to zero, no default NaN)
     bool insn(u32 ins, u32 pc, u32 i, bool& ends);
     bool load_store(u32 ins, u32 pc, u32 i, unsigned size, bool load, bool update, bool sign, bool reverse,
                     unsigned rt, unsigned ra, Reg ea_reg_or_zr, s32 disp, Reg rb_reg);
     bool op31(u32 ins, u32 pc, u32 i, bool& ends);
+
+    // In-place execution by the interpreter's implementation (see helper_exec).
+    // `clean`: the register cache is written back and marked clean (otherwise
+    // dirty registers are stored but stay dirty, for code that merges with a
+    // path that did not store them).
+    void interp_call(u32 ins, u32 pc, u32 i, bool generic, bool update, unsigned ureg, bool clean);
+
+    // --- native floating point (see fp_native) -------------------------------
+    std::vector<Emitter::Label> to_slow; // branches to the instruction's interpreter call
+    void slow_if(Cond c) { to_slow.push_back(e.b_cond(c)); }
+    u32 fpr_off(unsigned f, unsigned ps) const { return o.fpr + 16U * f + 8U * ps; }
+    void exp_range(Reg bits, unsigned lo, unsigned hi, bool allow_zero);
+    void fp_slot(fpu::Op op, bool single, u8 va, u8 vb, u8 vc, u8 out);
+    void fp_commit(bool rc);
+    void cr1_from_fpscr();
+    bool fp_native(u32 ins, u32 pc, u32 i);
     bool branch(u32 ins, u32 pc, u32 i, unsigned kind, bool& ends);
 };
 
@@ -682,27 +701,398 @@ bool Jit::Compiler::op31(u32 ins, u32 pc, u32 i, bool& ends) {
     }
 }
 
+void Jit::Compiler::interp_call(u32 ins, u32 pc, u32 i, bool generic, bool update, unsigned ureg, bool clean) {
+    flush_dirty();
+    if (clean) after_flush_clean();
+    e.mov_imm(false, 1, ins);
+    e.mov_imm(false, 2, pc);
+    call(reinterpret_cast<const void*>(&Jit::helper_exec));
+    const auto ok = e.cbnz(false, 0);
+    exit_const(pc, i, kExitFallback);
+    e.bind_here(ok);
+    if (generic) slot.fill(-1); // any GPR may have changed in memory
+    else if (update) { const int k = find(ureg); if (k >= 0) slot[static_cast<unsigned>(k)] = -1; } // rA changed in memory
+    e.cmp_imm(false, 0, 2);
+    const auto same = e.b_cond(Cond::NE);
+    exit_const(pc + 4U, i + 1U, kExitNormal);
+    e.bind_here(same);
+}
+
+// ---------------------------------------------------------------------------
+// Native floating point
+//
+// The common case runs on the host FPU and produces exactly what the
+// interpreter (fpu.cpp) produces, FPSCR included; everything else goes to the
+// interpreter's implementation of the same instruction (the slow path), before
+// anything was written. The native path requires: MSR[FP] (and HID2[PSE] for
+// paired singles), FPSCR[VE,OE,UE,ZE,XE] = 0 (no enabled exception can arise)
+// and RN = 0 (round to nearest), and a result that is a normal number well
+// inside the format (or an exact zero where it can only be exact). Then the only
+// possible exception is "inexact" and the result is the host's correctly
+// rounded one. The exact error of the rounding, needed for FPSCR[FI] and [FR],
+// is computed with error-free transformations, exact in that range:
+//   add/sub: TwoSum (Knuth); mul: fma(a, c, -s); div: a - q*b with fma
+//   (sign of the error = sign(r) xor sign(b)); fmadd family: ErrFma
+//   (Boldo & Muller, "Exact and approximated error of the FMA", IEEE TC 2011).
+// Single-precision results: the double result s is rounded once more to single;
+// that equals rounding the exact value directly unless s lies exactly halfway
+// between two singles while the first rounding was inexact (slow path then).
+// tests/test_jit.cpp checks the same algorithm against fpu::arith on any host,
+// and the generated code against the interpreter on AArch64.
+// ---------------------------------------------------------------------------
+namespace {
+constexpr u64 kSign = 0x8000000000000000ULL, kMag = ~kSign;
+constexpr u32 kFpEnables = fpu::VE | fpu::OE | fpu::UE | fpu::ZE | fpu::XE;
+} // namespace
+
+// Slow path unless the biased exponent of `bits` is in [lo, hi] (a zero passes when allowed).
+void Jit::Compiler::exp_range(Reg bits, unsigned lo, unsigned hi, bool allow_zero) {
+    Emitter::Label skip = 0;
+    if (allow_zero) { e.ands_imm(true, ZR, bits, kMag); skip = e.b_cond(Cond::EQ); }
+    e.ubfx(true, T0, bits, 52, 11);
+    e.cmp_imm(false, T0, lo);
+    slow_if(Cond::LO);
+    e.cmp_imm(false, T0, hi);
+    slow_if(Cond::HI);
+    if (allow_zero) e.bind_here(skip);
+}
+
+// One arithmetic result. Inputs in d<va>, d<vb>, d<vc> (frA, frB, frC); result
+// (double format, single-rounded when `single`) in d<out>; FI in w9, FR in w10.
+// Clobbers d3-d7, d16-d21, x8, x11-x15.
+void Jit::Compiler::fp_slot(fpu::Op op, bool single, u8 va, u8 vb, u8 vc, u8 out) {
+    using F = fpu::Op;
+    const bool negb = op == F::Sub || op == F::MSub || op == F::NMSub;
+    u8 b = vb;
+    if (negb) { e.fneg(4, vb); b = 4; }
+    bool allow_zero = true;
+    constexpr Reg S = 13, E = 14, X15 = 15;
+    auto two_sum = [&](u8 s, u8 err, u8 x, u8 y, u8 t1, u8 t2) { // s = x + y already computed
+        e.fsub(t1, s, x);     // bb
+        e.fsub(t2, s, t1);
+        e.fsub(t2, x, t2);    // x - (s - bb)
+        e.fsub(t1, y, t1);    // y - bb
+        e.fadd(err, t2, t1);
+    };
+    switch (op) {
+    case F::Add: case F::Sub:
+        e.fadd(3, va, b);
+        two_sum(3, 5, va, b, 6, 7);
+        e.fmov_to_x(E, 5);
+        break;
+    case F::Mul:
+        e.fmul(3, va, vc);
+        e.fnmsub(5, va, vc, 3); // a*c - s
+        e.fmov_to_x(E, 5);
+        allow_zero = false;
+        break;
+    case F::Div:
+        e.fmov_to_x(S, va);
+        exp_range(S, 256, 2046, false); // |a| >= 2^-767: the remainder is exact
+        e.fdiv(3, va, vb);
+        e.fmsub(5, 3, vb, va);  // a - q*b (exact)
+        e.fmov_to_x(E, 5);
+        e.fmov_to_x(X15, vb);
+        e.and_imm(true, X15, X15, kSign);
+        e.eor(true, E, E, X15);  // error sign = sign(r) xor sign(b)
+        allow_zero = false;
+        break;
+    case F::MAdd: case F::MSub: case F::NMAdd: case F::NMSub: {
+        e.fmul(6, va, vc);       // u1
+        e.fmov_to_x(S, 6);
+        // u1 = 0 only for an exact zero product; otherwise u1 inside [2^-767, 2^1022]
+        e.ands_imm(true, ZR, S, kMag);
+        const auto nz = e.b_cond(Cond::NE);
+        e.fmov_to_x(E, va);
+        e.ands_imm(true, ZR, E, kMag);
+        const auto zero_a = e.b_cond(Cond::EQ);
+        e.fmov_to_x(E, vc);
+        e.ands_imm(true, ZR, E, kMag);
+        slow_if(Cond::NE);
+        e.bind_here(zero_a);
+        const auto checked = e.b();
+        e.bind_here(nz);
+        exp_range(S, 256, 2045, false);
+        e.bind_here(checked);
+        e.fmov_to_x(S, b);
+        exp_range(S, 256, 2047, true); // addend zero or >= 2^-767 (Inf/NaN make s non-finite)
+        e.fmadd(3, va, vc, b);   // s = RN(a*c + b)
+        e.fnmsub(7, va, vc, 6);  // u2 = a*c - u1 (exact)
+        e.fadd(16, b, 7);        // (alpha1, z) = TwoSum(b, u2)
+        two_sum(16, 17, b, 7, 18, 19);
+        e.fadd(18, 6, 16);       // (beta1, beta2) = TwoSum(u1, alpha1)
+        two_sum(18, 19, 6, 16, 20, 21);
+        e.fsub(20, 18, 3);       // gamma = (beta1 - s) + beta2
+        e.fadd(20, 20, 19);
+        e.fadd(5, 20, 17);       // (r2, r3) = Fast2Sum(gamma, z)
+        e.fsub(21, 5, 20);
+        e.fsub(21, 17, 21);
+        e.fmov_to_x(E, 5);
+        e.fmov_to_x(X15, 21);
+        e.ands_imm(true, ZR, E, kMag);
+        e.csel(true, E, E, X15, Cond::NE); // the error has the sign of r2, or of r3 when r2 = 0
+        break;
+    }
+    case F::Round:
+        e.fmov_d(3, vb);
+        e.movz(true, E, 0);
+        break;
+    default:
+        break;
+    }
+    e.fmov_to_x(S, 3);
+    // FI and FR of the first rounding: error != 0, and the error's sign differs from the result's
+    e.ands_imm(true, ZR, E, kMag);
+    e.cset(false, T1, Cond::NE);
+    e.eor(true, T2, E, S);
+    e.lsr_imm(true, T2, T2, 63);
+    e.and_(false, T2, T2, T1);
+    if (!single) {
+        exp_range(S, 256, 2045, allow_zero);
+        e.fmov_d(out, 3);
+    } else {
+        if (!allow_zero) { e.ands_imm(true, ZR, S, kMag); slow_if(Cond::EQ); }
+        // s exactly halfway between two singles after an inexact first rounding
+        e.and_imm(true, T0, S, 0x1FFFFFFFULL);
+        e.movz(false, T3, 0x1000, 16);
+        e.cmp(true, T0, T3);
+        const auto not_mid = e.b_cond(Cond::NE);
+        to_slow.push_back(e.cbnz(false, T1));
+        e.bind_here(not_mid);
+        e.fcvt_s_from_d(out, 3);
+        e.fcvt_d_from_s(out, out);
+        e.fmov_to_x(X15, out);
+        e.ands_imm(true, ZR, S, kMag);
+        const auto s_zero = e.b_cond(Cond::EQ);
+        exp_range(X15, 898, 1150, false); // 2^-125 <= |result| < 2^128: normal single, no underflow/overflow
+        e.bind_here(s_zero);
+        e.cmp(true, X15, S);
+        e.cset(false, T3, Cond::NE);        // second rounding changed the value
+        e.orr(false, T1, T1, T3);
+        e.and_imm(true, T0, X15, kMag);
+        e.and_imm(true, T4, S, kMag);
+        e.cmp(true, T0, T4);
+        e.cset(false, T4, Cond::HI);        // ... away from zero
+        e.cmp_imm(false, T3, 0);
+        e.csel(false, T2, T4, T2, Cond::NE);
+    }
+    if (op == F::NMAdd || op == F::NMSub) e.fneg(out, out);
+}
+
+// FPSCR after an arithmetic instruction: XX (and FX when XX was clear) from w11,
+// FI from w9, FR from w10, FPRF from the result bits in x15; VX recomputed and FEX
+// cleared (no exception is enabled on the native path). Rc: CR1.
+void Jit::Compiler::fp_commit(bool rc) {
+    ld(T0, o.fpscr);
+    e.ubfx(false, T4, T0, 25, 1);
+    e.bic(false, T4, T3, T4);
+    e.orr(false, T0, T0, T4, Shift::LSL, 31);
+    e.orr(false, T0, T0, T3, Shift::LSL, 25);
+    e.and_imm(false, T0, T0, ~u64{fpu::FR | fpu::FI | fpu::FPRF_MASK} & 0xFFFFFFFFULL);
+    e.orr(false, T0, T0, T2, Shift::LSL, 18);
+    e.orr(false, T0, T0, T1, Shift::LSL, 17);
+    // FPRF: normal 0x04 / 0x08, zero 0x02 / 0x12
+    e.lsr_imm(true, 13, 15, 63);
+    e.movz(false, T4, 4);
+    e.lslv(false, T4, T4, 13);
+    e.movz(false, 14, 2);
+    e.orr(false, 14, 14, 13, Shift::LSL, 4);
+    e.ands_imm(true, ZR, 15, kMag);
+    e.csel(false, T4, T4, 14, Cond::NE);
+    e.orr(false, T0, T0, T4, Shift::LSL, 12);
+    e.and_imm(false, T0, T0, ~u64{fpu::VX | fpu::FEX} & 0xFFFFFFFFULL);
+    e.mov_imm(false, T4, fpu::VX_ALL);
+    e.tst(false, T0, T4);
+    e.cset(false, T4, Cond::NE);
+    e.orr(false, T0, T0, T4, Shift::LSL, 29);
+    st(T0, o.fpscr);
+    if (rc) { e.lsr_imm(false, 13, T0, 28); set_cr_field_reg(1, 13); }
+}
+
+void Jit::Compiler::cr1_from_fpscr() {
+    ld(13, o.fpscr);
+    e.lsr_imm(false, 13, 13, 28);
+    set_cr_field_reg(1, 13);
+}
+
+bool Jit::Compiler::fp_native(u32 ins, u32 pc, u32 i) {
+    using F = fpu::Op;
+    const unsigned op = ins >> 26, fd = F_RT(ins), fa = F_RA(ins), fb = F_RB(ins), fc = (ins >> 6) & 31U;
+    const unsigned xo5 = (ins >> 1) & 31U, xo10 = (ins >> 1) & 0x3FFU;
+    const bool rc = F_RC(ins);
+    enum class K { None, Arith, Pair, Sum, Scalar, Move, Sel, Cmp, Merge };
+    K k = K::None;
+    F aop = F::Add;
+    bool single = false;
+    auto arith5 = [&](unsigned x, F& r) {
+        switch (x) {
+        case 18: r = F::Div; return true;
+        case 20: r = F::Sub; return true;
+        case 21: r = F::Add; return true;
+        case 25: r = F::Mul; return true;
+        case 28: r = F::MSub; return true;
+        case 29: r = F::MAdd; return true;
+        case 30: r = F::NMSub; return true;
+        case 31: r = F::NMAdd; return true;
+        default: return false;
+        }
+    };
+    if (op == 63U) {
+        if (arith5(xo5, aop)) k = K::Arith;
+        else if (xo5 == 23U) k = K::Sel;
+        else if (xo10 == 12U) { k = K::Arith; aop = F::Round; single = true; }
+        else if (xo10 == 0U || xo10 == 32U) k = K::Cmp;
+        else if (xo10 == 40U || xo10 == 72U || xo10 == 136U || xo10 == 264U) k = K::Move;
+    } else if (op == 59U) {
+        if (arith5(xo5, aop)) { k = K::Arith; single = true; }
+    } else if (op == 4U) {
+        if (arith5(xo5, aop)) { k = K::Pair; single = true; }
+        else if (xo5 == 10U || xo5 == 11U) { k = K::Sum; aop = F::Add; single = true; }
+        else if (xo5 >= 12U && xo5 <= 15U) { k = K::Scalar; aop = xo5 <= 13U ? F::Mul : F::MAdd; single = true; }
+        else if (xo5 == 23U) k = K::Sel;
+        else if (xo10 == 0U || xo10 == 32U || xo10 == 64U || xo10 == 96U) k = K::Cmp;
+        else if (xo10 == 40U || xo10 == 72U || xo10 == 136U || xo10 == 264U) k = K::Move;
+        else if (xo10 == 528U || xo10 == 560U || xo10 == 592U || xo10 == 624U) k = K::Merge;
+    }
+    if (k == K::None) return false;
+    const bool ps = op == 4U;
+    to_slow.clear();
+
+    // availability and FPSCR preconditions (otherwise: the interpreter's implementation)
+    ld(T0, o.msr);
+    to_slow.push_back(e.tbz(T0, 13)); // MSR[FP]
+    if (ps) { ld(T0, o.hid2); to_slow.push_back(e.tbz(T0, 29)); } // HID2[PSE]
+    if (k == K::Arith || k == K::Pair || k == K::Sum || k == K::Scalar || k == K::Cmp) {
+        ld(T0, o.fpscr);
+        e.mov_imm(false, T1, k == K::Cmp ? kFpEnables : (kFpEnables | fpu::RN_MASK));
+        e.tst(false, T0, T1);
+        slow_if(Cond::NE);
+    }
+
+    auto load3 = [&](unsigned slot_a, unsigned slot_b, unsigned slot_c) {
+        e.ldr_d(0, kState, fpr_off(fa, slot_a));
+        e.ldr_d(1, kState, fpr_off(fb, slot_b));
+        e.ldr_d(2, kState, fpr_off(fc, slot_c));
+    };
+    switch (k) {
+    case K::Arith:
+        load3(0, 0, 0);
+        fp_slot(aop, single, 0, 1, 2, 24);
+        e.str_d(24, kState, fpr_off(fd, 0));
+        if (single) e.str_d(24, kState, fpr_off(fd, 1));
+        e.fmov_to_x(15, 24);
+        e.mov(false, T3, T1);
+        fp_commit(rc);
+        break;
+    case K::Pair: case K::Scalar: {
+        // slot 0, then slot 1; FPSCR: exceptions of both, FI/FR/FPRF of slot 0
+        const unsigned cslot0 = k == K::Scalar ? (xo5 & 1U) : 0U, cslot1 = k == K::Scalar ? (xo5 & 1U) : 1U;
+        load3(0, 0, cslot0);
+        fp_slot(aop, true, 0, 1, 2, 24);
+        e.mov(false, 0, T1);
+        e.mov(false, 1, T2);
+        load3(1, 1, cslot1);
+        fp_slot(aop, true, 0, 1, 2, 25);
+        e.orr(false, T3, 0, T1);
+        e.mov(false, T1, 0);
+        e.mov(false, T2, 1);
+        e.str_d(24, kState, fpr_off(fd, 0));
+        e.str_d(25, kState, fpr_off(fd, 1));
+        e.fmov_to_x(15, 24);
+        fp_commit(rc);
+        break;
+    }
+    case K::Sum: {
+        // ps_sum0: ps0 = A0 + B1, ps1 = C1; ps_sum1: ps0 = C0, ps1 = A0 + B1
+        e.ldr_d(0, kState, fpr_off(fa, 0));
+        e.ldr_d(1, kState, fpr_off(fb, 1));
+        e.ldr_d(25, kState, fpr_off(fc, xo5 == 10U ? 1U : 0U));
+        fp_slot(F::Add, true, 0, 1, 2, 24);
+        e.str_d(24, kState, fpr_off(fd, xo5 == 10U ? 0U : 1U));
+        e.str_d(25, kState, fpr_off(fd, xo5 == 10U ? 1U : 0U));
+        e.fmov_to_x(15, 24);
+        e.mov(false, T3, T1);
+        fp_commit(rc);
+        break;
+    }
+    case K::Move: {
+        const unsigned slots = ps ? 2U : 1U;
+        for (unsigned s = 0; s < slots; ++s) {
+            e.ldr(8, 13, kState, fpr_off(fb, s));
+            if (xo10 == 40U) e.eor_imm(true, 13, 13, kSign);
+            else if (xo10 == 136U) e.orr_imm(true, 13, 13, kSign);
+            else if (xo10 == 264U) e.and_imm(true, 13, 13, kMag);
+            e.str(8, 13, kState, fpr_off(fd, s));
+        }
+        if (rc) cr1_from_fpscr();
+        break;
+    }
+    case K::Merge: {
+        e.ldr(8, 13, kState, fpr_off(fa, xo10 == 592U || xo10 == 624U ? 1U : 0U));
+        e.ldr(8, 14, kState, fpr_off(fb, xo10 == 560U || xo10 == 624U ? 1U : 0U));
+        e.str(8, 13, kState, fpr_off(fd, 0));
+        e.str(8, 14, kState, fpr_off(fd, 1));
+        if (rc) cr1_from_fpscr();
+        break;
+    }
+    case K::Sel: {
+        // D = (A is not a NaN and A >= 0) ? C : B ("GE" is false for unordered)
+        const unsigned slots = ps ? 2U : 1U;
+        for (unsigned s = 0; s < slots; ++s) {
+            e.ldr_d(0, kState, fpr_off(fa, s));
+            e.ldr_d(1, kState, fpr_off(fb, s));
+            e.ldr_d(2, kState, fpr_off(fc, s));
+            e.fcmp_zero(0);
+            e.fcsel(s == 0U ? 24 : 25, 2, 1, Cond::GE);
+        }
+        for (unsigned s = 0; s < slots; ++s) e.str_d(s == 0U ? 24 : 25, kState, fpr_off(fd, s));
+        if (rc) cr1_from_fpscr();
+        break;
+    }
+    case K::Cmp: {
+        // ordered operands only (NaNs set VXSNAN/VXVC: slow path); Rc is reserved
+        const unsigned which = ps && xo10 >= 64U ? 1U : 0U, crf = (ins >> 23) & 7U;
+        e.ldr_d(0, kState, fpr_off(fa, which));
+        e.ldr_d(1, kState, fpr_off(fb, which));
+        e.fcmp(0, 1);
+        slow_if(Cond::VS);
+        e.movz(false, T3, 2);
+        e.movz(false, T4, 8);
+        e.csel(false, T3, T4, T3, Cond::MI);
+        e.movz(false, T4, 4);
+        e.csel(false, T3, T4, T3, Cond::GT);
+        ld(T0, o.fpscr);
+        e.bfi(false, T0, T3, 12, 4);
+        e.and_imm(false, T0, T0, ~u64{fpu::VX | fpu::FEX} & 0xFFFFFFFFULL);
+        e.mov_imm(false, T4, fpu::VX_ALL);
+        e.tst(false, T0, T4);
+        e.cset(false, T4, Cond::NE);
+        e.orr(false, T0, T0, T4, Shift::LSL, 29);
+        st(T0, o.fpscr);
+        set_cr_field_reg(crf, T3);
+        break;
+    }
+    case K::None:
+        break;
+    }
+
+    const auto done = e.b();
+    for (auto l : to_slow) e.bind_here(l);
+    to_slow.clear();
+    interp_call(ins, pc, i, false, false, 0, false);
+    e.bind_here(done);
+    return true;
+}
+
 bool Jit::Compiler::insn(u32 ins, u32 pc, u32 i, bool& ends) {
     ends = false;
     {
         bool update = false;
         unsigned ureg = 0;
         const bool generic = !fp_class(ins, update, ureg) && interp_class(ins);
+        if (!generic && native_fp && fp_native(ins, pc, i)) return true;
         if (generic || fp_class(ins, update, ureg)) {
-            flush_dirty();
-            after_flush_clean();
-            e.mov_imm(false, 1, ins);
-            e.mov_imm(false, 2, pc);
-            call(reinterpret_cast<const void*>(&Jit::helper_exec));
-            const auto ok = e.cbnz(false, 0);
-            exit_const(pc, i, kExitFallback);
-            e.bind_here(ok);
-            if (generic) slot.fill(-1); // any GPR may have changed in memory
-            else if (update) { const int k = find(ureg); if (k >= 0) slot[static_cast<unsigned>(k)] = -1; } // rA changed in memory
-            e.cmp_imm(false, 0, 2);
-            const auto same = e.b_cond(Cond::NE);
-            exit_const(pc + 4U, i + 1U, kExitNormal);
-            e.bind_here(same);
+            interp_call(ins, pc, i, generic, update, ureg, true);
             return true;
         }
     }
@@ -941,8 +1331,23 @@ u32 Jit::helper_store(Jit* self, u32 ea, u32 size, u32 value) {
     return self->running_invalidated_ ? 2U : 1U;
 }
 
+namespace {
+// The native FP code assumes the host's default floating-point control: round to
+// nearest, no flush-to-zero, no default-NaN mode, no trapping. Jit::run checks it.
+bool host_fp_control_is_default() noexcept {
+#if defined(__aarch64__)
+    u64 fpcr = 0;
+    asm volatile("mrs %0, fpcr" : "=r"(fpcr));
+    return (fpcr & 0x03C09F00ULL) == 0U; // DN, FZ, RMode, trap enables
+#else
+    return true;
+#endif
+}
+} // namespace
+
 bool Jit::compile(u32 pc, u32 pa, std::vector<u32>& words, u32& count, std::string& error) {
     Compiler c;
+    c.native_fp = native_fp_;
     c.prologue();
     count = 0;
     bool ended = false;
@@ -1028,6 +1433,7 @@ Jit::Result Jit::run(u64 max_steps) {
     // decrementer underflow) and translated code never changes MSR, so the entry
     // conditions checked here stay true from one block to the next.
     if (s.halted) return interpret();
+    if (!host_fp_control_is_default()) return interpret(); // the native FP path relies on it
     if ((s.msr & (MSR_SE | MSR_BE | MSR_LE)) != 0U) return interpret();
     if ((s.msr & MSR_EE) != 0U && (cpu_.external_line_ || s.dec_pending)) return interpret();
     if ((s.msr & MSR_POW) != 0U && (s.hid0 & 0x00E00000U) != 0U) return interpret();

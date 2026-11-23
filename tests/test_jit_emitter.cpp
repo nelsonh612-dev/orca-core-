@@ -141,6 +141,25 @@ std::vector<Case> cases() {
     add([](Emitter& e) { const auto l = e.tbnz(3, 40); CHECK(e.bind(l, l + 4)); }, "tbnz x3, #40, #16");
     add([](Emitter& e) { e.br(16); }, "br x16");
     add([](Emitter& e) { e.blr(17); }, "blr x17");
+    // scalar floating point
+    add([](Emitter& e) { e.ldr_d(3, 19, 128); }, "ldr d3, [x19, #128]");
+    add([](Emitter& e) { e.str_d(31, 1, 32760); }, "str d31, [x1, #32760]");
+    add([](Emitter& e) { e.fadd(0, 1, 2); }, "fadd d0, d1, d2");
+    add([](Emitter& e) { e.fsub(31, 16, 7); }, "fsub d31, d16, d7");
+    add([](Emitter& e) { e.fmul(4, 5, 6); }, "fmul d4, d5, d6");
+    add([](Emitter& e) { e.fdiv(20, 21, 22); }, "fdiv d20, d21, d22");
+    add([](Emitter& e) { e.fmadd(1, 2, 3, 4); }, "fmadd d1, d2, d3, d4");
+    add([](Emitter& e) { e.fmsub(1, 2, 3, 4); }, "fmsub d1, d2, d3, d4");
+    add([](Emitter& e) { e.fnmsub(17, 18, 19, 20); }, "fnmsub d17, d18, d19, d20");
+    add([](Emitter& e) { e.fneg(5, 6); }, "fneg d5, d6");
+    add([](Emitter& e) { e.fmov_d(5, 6); }, "fmov d5, d6");
+    add([](Emitter& e) { e.fcvt_s_from_d(7, 8); }, "fcvt s7, d8");
+    add([](Emitter& e) { e.fcvt_d_from_s(9, 10); }, "fcvt d9, s10");
+    add([](Emitter& e) { e.fmov_to_x(13, 3); }, "fmov x13, d3");
+    add([](Emitter& e) { e.fmov_from_x(24, 15); }, "fmov d24, x15");
+    add([](Emitter& e) { e.fcmp(0, 1); }, "fcmp d0, d1");
+    add([](Emitter& e) { e.fcmp_zero(2); }, "fcmp d2, #0.0");
+    add([](Emitter& e) { e.fcsel(3, 4, 5, Cond::GE); }, "fcsel d3, d4, d5, ge");
     add([](Emitter& e) { e.ret(); }, "ret");
     add([](Emitter& e) { e.nop(); }, "nop");
     return c;

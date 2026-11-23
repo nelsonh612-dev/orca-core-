@@ -133,6 +133,27 @@ public:
     void stp(Reg t1, Reg t2, Reg n, s32 imm) { pair(0xA9000000U, t1, t2, n, imm); }
     void ldp(Reg t1, Reg t2, Reg n, s32 imm) { pair(0xA9400000U, t1, t2, n, imm); }
 
+    // --- scalar floating point (double unless noted; V = SIMD/FP register 0-31) --
+    using V = u8;
+    void ldr_d(V t, Reg n, u32 imm = 0) { emit(0xFD400000U | (imm / 8U) << 10 | u32{n} << 5 | t); } // imm: multiple of 8, < 32768
+    void str_d(V t, Reg n, u32 imm = 0) { emit(0xFD000000U | (imm / 8U) << 10 | u32{n} << 5 | t); }
+    void fadd(V d, V n, V m) { emit(0x1E602800U | u32{m} << 16 | u32{n} << 5 | d); }
+    void fsub(V d, V n, V m) { emit(0x1E603800U | u32{m} << 16 | u32{n} << 5 | d); }
+    void fmul(V d, V n, V m) { emit(0x1E600800U | u32{m} << 16 | u32{n} << 5 | d); }
+    void fdiv(V d, V n, V m) { emit(0x1E601800U | u32{m} << 16 | u32{n} << 5 | d); }
+    void fmadd(V d, V n, V m, V a) { emit(0x1F400000U | u32{m} << 16 | u32{a} << 10 | u32{n} << 5 | d); }  // a + n*m
+    void fmsub(V d, V n, V m, V a) { emit(0x1F408000U | u32{m} << 16 | u32{a} << 10 | u32{n} << 5 | d); }  // a - n*m
+    void fnmsub(V d, V n, V m, V a) { emit(0x1F608000U | u32{m} << 16 | u32{a} << 10 | u32{n} << 5 | d); } // n*m - a
+    void fneg(V d, V n) { emit(0x1E614000U | u32{n} << 5 | d); }
+    void fmov_d(V d, V n) { emit(0x1E604000U | u32{n} << 5 | d); }
+    void fcvt_s_from_d(V d, V n) { emit(0x1E624000U | u32{n} << 5 | d); }
+    void fcvt_d_from_s(V d, V n) { emit(0x1E22C000U | u32{n} << 5 | d); }
+    void fmov_to_x(Reg d, V n) { emit(0x9E660000U | u32{n} << 5 | d); }
+    void fmov_from_x(V d, Reg n) { emit(0x9E670000U | u32{n} << 5 | d); }
+    void fcmp(V n, V m) { emit(0x1E602000U | u32{m} << 16 | u32{n} << 5); }
+    void fcmp_zero(V n) { emit(0x1E602008U | u32{n} << 5); }
+    void fcsel(V d, V n, V m, Cond c) { emit(0x1E600C00U | u32{m} << 16 | u32{static_cast<u8>(c)} << 12 | u32{n} << 5 | d); }
+
     // --- branches ------------------------------------------------------------
     // Forward branches are emitted with a zero offset and patched with bind().
     Label b() { emit(0x14000000U); return here() - 1U; }

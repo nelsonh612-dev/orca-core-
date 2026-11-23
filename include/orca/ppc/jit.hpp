@@ -54,6 +54,11 @@ public:
     // Drops every block.
     void clear();
 
+    // Native floating point (default on). Off: FP and paired-single arithmetic go
+    // through the in-block interpreter call only (comparisons and measurements).
+    // Takes effect for blocks compiled afterwards (call clear() to recompile).
+    void set_native_fp(bool on) noexcept { native_fp_ = on; }
+
     // Translation without execution (tests on any host): the AArch64 words of the
     // block at `pc` and how many guest instructions it covers (0 = none).
     bool translate_for_test(u32 pc, std::vector<u32>& words, u32& guest_instructions, std::string& error);
@@ -99,6 +104,7 @@ private:
     std::vector<std::unique_ptr<Block>> retired_blocks_;         // invalid, kept until clear()
     Block* running_{nullptr};
     bool running_invalidated_{false};
+    bool native_fp_{true};
     JitExit exit_{};
     Stats stats_;
 };
