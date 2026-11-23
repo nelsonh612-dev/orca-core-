@@ -519,6 +519,7 @@ Cpu::Outcome Cpu::op_dcbz_l(u32 ins) {
     if (it == locked_cache_.end()) {
         if (locked_cache_.size() >= kLockedCacheLines) return Outcome::unsupported("locked cache full (more than 16 KiB of lines)");
         locked_cache_.emplace(lo, std::array<u8, 32>{});
+        ++locked_cache_generation_;
     } else {
         it->second.fill(0);
     }
@@ -546,6 +547,7 @@ Cpu::Outcome Cpu::locked_cache_dma(u32 dmal) {
             std::array<u8, 32> line{};
             (void)bus_.dma_read(mem_addr + k * 32U, line);
             locked_cache_[lc_addr + k * 32U] = line;
+            ++locked_cache_generation_;
         }
     } else {
         for (u32 k = 0; k < lines; ++k)

@@ -48,6 +48,12 @@ inline constexpr u8 WIMG_W = 0x8U, WIMG_I = 0x4U, WIMG_M = 0x2U, WIMG_G = 0x1U;
 Translation translate(CpuState& state, mem::Bus& bus, u32 ea, AccessType type,
                       bool extended_bats = false);
 
+// The same translation when it is decided without the page table (translation
+// off, or a BAT hit): true and `out` set. False when the page table would be
+// needed (nothing is read or written). Used by the JIT's translation cache.
+bool translate_without_page_table(const CpuState& state, u32 ea, AccessType type, bool extended_bats,
+                                  Translation& out);
+
 // HID4[SBE] (Broadway "secondary BAT enable"; Dolphin Gekko.h bit 25 LSB0).
 inline constexpr u32 HID4_SBE = 0x02000000U;
 

@@ -119,4 +119,16 @@ Translation translate(CpuState& st, mem::Bus& bus, u32 ea, AccessType type, bool
     return page_table(st, bus, ea, type);
 }
 
+bool translate_without_page_table(const CpuState& st, u32 ea, AccessType type, bool extended_bats, Translation& out) {
+    const bool fetch = type == AccessType::Fetch;
+    const bool enabled = fetch ? (st.msr & MSR_IR) != 0U : (st.msr & MSR_DR) != 0U;
+    if (!enabled) {
+        out = Translation{TranslateStatus::Ok, ea, fetch ? kRealModeFetchWimg : kRealModeDataWimg};
+        return true;
+    }
+    const bool problem = (st.msr & MSR_PR) != 0U;
+    const unsigned count = extended_bats && (st.hid4 & HID4_SBE) != 0U ? 8U : 4U;
+    return try_bat(fetch ? st.ibat : st.dbat, count, problem, ea, type, out);
+}
+
 } // namespace orca::ppc

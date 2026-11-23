@@ -218,6 +218,10 @@ struct Jit::Compiler {
     // instruction leaves the block itself (branches).
     Reg value_reg_ = ZR; // store value, fetched by the caller of load_store
     bool native_fp = false; // host FPCR is the default (round to nearest, no flush to zero, no default NaN)
+    u32 tlb_off = 0, epoch_off = 0; // offsets from x21 (Jit*) of tlb_ and bus_write_epoch_
+    // Translation-cache probe for the EA in w1: on a hit x14 = host base of the page
+    // (and x15 = its write stamp pointer for stores); otherwise branch to `miss`.
+    void tlb_probe(unsigned size, bool write, std::vector<Emitter::Label>& miss);
     bool insn(u32 ins, u32 pc, u32 i, bool& ends);
     bool load_store(u32 ins, u32 pc, u32 i, unsigned size, bool load, bool update, bool sign, bool reverse,
                     unsigned rt, unsigned ra, Reg ea_reg_or_zr, s32 disp, Reg rb_reg);
@@ -369,6 +373,23 @@ bool fp_memory_operand(u32 ins, const CpuState& s, u32& ea, u32& size, bool& sto
 // Kind codes returned in w0: 0 = continue at state.pc, 1 = interpret the instruction at state.pc.
 static constexpr u32 kExitNormal = 0, kExitFallback = 1;
 
+void Jit::Compiler::tlb_probe(unsigned size, bool write, std::vector<Emitter::Label>& miss) {
+    e.ubfx(false, 13, 1, 12, 8);                    // entry index (kTlbEntries = 256)
+    e.add(true, 14, kSelf, 13, Shift::LSL, 5);      // 32-byte entries
+    e.ldr(4, 15, 14, tlb_off + (write ? 4U : 0U));  // tag
+    e.and_imm(false, 13, 1, 0xFFFFF000ULL);
+    e.orr_imm(false, 13, 13, 1);
+    e.cmp(false, 15, 13);
+    miss.push_back(e.b_cond(Cond::NE));
+    if (size > 1U) {                                // the access stays inside the page
+        e.and_imm(false, 13, 1, 0xFFFULL);
+        e.cmp_imm(false, 13, 0x1000U - size);
+        miss.push_back(e.b_cond(Cond::HI));
+    }
+    if (write) e.ldr(8, 15, 14, tlb_off + 16U);     // write stamp pointer
+    e.ldr(8, 14, 14, tlb_off + 8U);                 // host base
+}
+
 bool Jit::Compiler::load_store(u32 ins, u32 pc, u32 i, unsigned size, bool load, bool update, bool sign, bool reverse,
                                unsigned rt, unsigned ra, Reg base, s32 disp, Reg rb_reg) {
     (void)ins;
@@ -383,8 +404,19 @@ bool Jit::Compiler::load_store(u32 ins, u32 pc, u32 i, unsigned size, bool load,
         else { e.mov_imm(false, T2, static_cast<u32>(disp)); e.add(false, d, base, T2); }
     };
     ea_into(1);
-    e.movz(false, 2, static_cast<u16>(size));
+    std::vector<Emitter::Label> miss;
     if (load) {
+        // fast path: RAM through the translation cache (guest memory is big-endian)
+        tlb_probe(size, false, miss);
+        e.ldr_reg(size, T0, 14, 1);
+        if (!reverse) {
+            if (size == 4U) e.rev(false, T0, T0);
+            else if (size == 2U) e.rev16(false, T0, T0);
+            if (sign) e.sxth(false, T0, T0);
+        }
+        const auto join = e.b();
+        for (auto l : miss) e.bind_here(l);
+        e.movz(false, 2, static_cast<u16>(size));
         e.mov(true, 3, kExit);
         call(reinterpret_cast<const void*>(&Jit::helper_load));
         const auto ok = e.cbnz(false, 0);
@@ -397,10 +429,28 @@ bool Jit::Compiler::load_store(u32 ins, u32 pc, u32 i, unsigned size, bool load,
         } else if (sign) {
             e.sxth(false, T0, T0);
         }
+        e.bind_here(join);
         if (update) { ea_into(T1); e.mov(false, def(ra, rt), T1); }
         e.mov(false, def(rt, ra), T0);
     } else {
         const Reg v = value_reg_;
+        tlb_probe(size, true, miss);
+        if (!reverse && size == 4U) e.rev(false, 3, v);
+        else if (!reverse && size == 2U) e.rev16(false, 3, v);
+        else e.mov(false, 3, v);
+        e.str_reg(size, 3, 14, 1);
+        // the bus's write stamps (texture cache): ++epoch; page stamp = epoch
+        e.ldr(8, 13, kSelf, epoch_off);
+        e.ldr(8, 14, 13, 0);
+        e.add_imm(true, 14, 14, 1);
+        e.str(8, 14, 13, 0);
+        const auto untracked = e.cbz(true, 15);
+        e.str(8, 14, 15, 0);
+        e.bind_here(untracked);
+        e.movz(false, 0, 1); // "stored, code untouched" (a write entry never maps a code page)
+        const auto join = e.b();
+        for (auto l : miss) e.bind_here(l);
+        e.movz(false, 2, static_cast<u16>(size));
         if (reverse) {
             if (size == 4U) e.rev(false, 3, v);
             else { e.rev16(false, 3, v); e.uxth(3, 3); }
@@ -411,6 +461,7 @@ bool Jit::Compiler::load_store(u32 ins, u32 pc, u32 i, unsigned size, bool load,
         const auto ok = e.cbnz(false, 0);
         exit_const(pc, i, kExitFallback);
         e.bind_here(ok);
+        e.bind_here(join);
         if (update) { ea_into(T1); e.mov(false, def(ra), T1); }
         // w0 == 2: the store hit this block's own code -> stop right after it
         e.cmp_imm(false, 0, 2);
@@ -1239,6 +1290,7 @@ bool Jit::Compiler::insn(u32 ins, u32 pc, u32 i, bool& ends) {
 // Runtime
 // ---------------------------------------------------------------------------
 Jit::Jit(Cpu& cpu, mem::Bus& bus) : cpu_(cpu), bus_(bus) {
+    bus_write_epoch_ = bus_.write_epoch_pointer();
     if (jit::host_can_execute()) code_ = std::make_unique<jit::CodeBuffer>();
     bus_.set_code_invalidation_handler([this](u32 address, u32 size) { invalidate(address, size); });
 }
@@ -1248,6 +1300,7 @@ Jit::~Jit() { bus_.set_code_invalidation_handler(nullptr); }
 bool Jit::can_execute() const noexcept { return code_ != nullptr && code_->ok(); }
 
 void Jit::clear() {
+    tlb_flush();
     for (auto& [page, list] : page_blocks_) bus_.unmark_code_page(page << 12);
     no_block_.clear();
     blocks_.clear();
@@ -1291,6 +1344,7 @@ u32 Jit::helper_load(Jit* self, u32 ea, u32 size, JitExit* out) {
     u32 v = 0;
     for (u32 k = 0; k < size; ++k) v = (v << 8) | p[k];
     out->value = v;
+    self->tlb_fill(ea, false);
     return 1;
 }
 
@@ -1328,7 +1382,49 @@ u32 Jit::helper_store(Jit* self, u32 ea, u32 size, u32 value) {
     self->running_invalidated_ = false;
     const mem::BusStatus s = self->bus_.write(lo, size, value, mem::AccessSource::Cpu);
     if (s != mem::BusStatus::Ok) return 0; // cannot happen for RAM; keep the interpreter's handling
-    return self->running_invalidated_ ? 2U : 1U;
+    if (self->running_invalidated_) return 2U;
+    self->tlb_fill(ea, true);
+    return 1U;
+}
+
+void Jit::tlb_fill(u32 ea, bool write) {
+    const CpuState& s = cpu_.state_;
+    const u32 page = ea & ~0xFFFU;
+    Translation t;
+    if (!translate_without_page_table(s, page, write ? AccessType::Write : AccessType::Read, cpu_.config_.extended_bats, t) ||
+        t.status != TranslateStatus::Ok)
+        return;
+    const u32 pp = t.physical & ~0xFFFU;
+    u8* host = bus_.ram_pointer(pp, 0x1000U);
+    if (host == nullptr) return;
+    for (const auto& line : cpu_.locked_cache_)
+        if ((line.first & ~0xFFFU) == pp) return;
+    if (write && (bus_.is_code_page(pp) || bus_.observes_cpu_writes())) return;
+    TlbEntry& en = tlb_[(ea >> 12) & (kTlbEntries - 1U)];
+    const u32 tag = page | 1U;
+    const u64 base = static_cast<u64>(reinterpret_cast<std::uintptr_t>(host)) - page;
+    if (en.base != base || en.phys_page != pp) { en.read_tag = 0; en.write_tag = 0; } // another page: drop both kinds
+    en.base = base;
+    en.phys_page = pp;
+    en.epoch = bus_.page_epoch_pointer(pp);
+    (write ? en.write_tag : en.read_tag) = tag;
+    ++stats_.tlb_fills;
+}
+
+void Jit::tlb_drop_writes_to(u32 phys_page) noexcept {
+    for (auto& en : tlb_)
+        if (en.write_tag != 0U && en.phys_page == phys_page) en.write_tag = 0;
+}
+
+void Jit::tlb_check_context() {
+    const CpuState& s = cpu_.state_;
+    TlbContext now;
+    now.msr = s.msr & (MSR_DR | MSR_PR);
+    now.hid4 = cpu_.config_.extended_bats ? (s.hid4 & HID4_SBE) : 0U;
+    now.dbat = s.dbat;
+    now.locked = cpu_.locked_cache_generation_;
+    now.cpu_observers = bus_.observes_cpu_writes();
+    if (!(now == tlb_context_)) { tlb_flush(); tlb_context_ = now; }
 }
 
 namespace {
@@ -1348,6 +1444,13 @@ bool host_fp_control_is_default() noexcept {
 bool Jit::compile(u32 pc, u32 pa, std::vector<u32>& words, u32& count, std::string& error) {
     Compiler c;
     c.native_fp = native_fp_;
+    c.tlb_off = static_cast<u32>(reinterpret_cast<const char*>(tlb_.data()) - reinterpret_cast<const char*>(this));
+    c.epoch_off = static_cast<u32>(reinterpret_cast<const char*>(&bus_write_epoch_) - reinterpret_cast<const char*>(this));
+    // both must be reachable with scaled LDR offsets from x21 (they are the first members)
+    if (c.tlb_off + 24U >= 16384U || c.epoch_off >= 32768U || (c.tlb_off & 7U) != 0U || (c.epoch_off & 7U) != 0U) {
+        error = "Jit layout: translation cache out of reach";
+        return false;
+    }
     c.prologue();
     count = 0;
     bool ended = false;
@@ -1402,6 +1505,7 @@ Jit::Block* Jit::lookup_or_compile(u32 pc, u32 pa, std::string& error) {
         no_block_[pc] = pa;
         page_blocks_[pa >> 12];                 // keep the page tracked so a write clears the entry
         bus_.mark_code_page(pa & ~0xFFFU);
+        tlb_drop_writes_to(pa & ~0xFFFU);
         return nullptr;
     }
     const u32* code = code_->append(words);
@@ -1415,7 +1519,7 @@ Jit::Block* Jit::lookup_or_compile(u32 pc, u32 pa, std::string& error) {
     Block* raw = b.get();
     blocks_[pc] = std::move(b);
     const u32 first = pa >> 12, last = (pa + count * 4U - 1U) >> 12;
-    for (u32 p = first; p <= last; ++p) { page_blocks_[p].push_back(raw); bus_.mark_code_page(p << 12); }
+    for (u32 p = first; p <= last; ++p) { page_blocks_[p].push_back(raw); bus_.mark_code_page(p << 12); tlb_drop_writes_to(p << 12); }
     ++stats_.blocks_compiled;
     return raw;
 }
@@ -1434,6 +1538,7 @@ Jit::Result Jit::run(u64 max_steps) {
     // conditions checked here stay true from one block to the next.
     if (s.halted) return interpret();
     if (!host_fp_control_is_default()) return interpret(); // the native FP path relies on it
+    tlb_check_context();
     if ((s.msr & (MSR_SE | MSR_BE | MSR_LE)) != 0U) return interpret();
     if ((s.msr & MSR_EE) != 0U && (cpu_.external_line_ || s.dec_pending)) return interpret();
     if ((s.msr & MSR_POW) != 0U && (s.hid0 & 0x00E00000U) != 0U) return interpret();

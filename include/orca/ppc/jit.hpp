@@ -20,6 +20,7 @@
 #include "orca/jit/code_buffer.hpp"
 #include "orca/ppc/cpu.hpp"
 
+#include <array>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -68,11 +69,25 @@ public:
             fallback_exits{0};
         u64 helper_steps{0}; // block instructions executed by the in-block interpreter call (FP, PS, lmw/stmw, ...)
         u64 chained{0};      // blocks entered directly after another one inside the same run()
+        u64 tlb_fills{0};    // translation-cache entries created by the load/store helpers
     };
     const Stats& stats() const noexcept { return stats_; }
 
     // Maximum guest instructions per block.
     static constexpr u32 kMaxBlock = 64;
+
+    // Translation cache for loads and stores made by translated code (direct-mapped
+    // by effective page). An entry maps a 4 KiB effective page that is decided
+    // without the page table (translation off, or a BAT) onto RAM with no locked-cache
+    // line; write entries also require a page without translated code. Tags are
+    // (page | 1), 0 = empty; host address = base + EA.
+    struct TlbEntry {
+        u32 read_tag{0}, write_tag{0};
+        u64 base{0};
+        u64* epoch{nullptr}; // the page's write stamp in the bus (nullptr: not tracked)
+        u32 phys_page{0}, unused{0};
+    };
+    static constexpr u32 kTlbEntries = 256;
 
 private:
     struct Block {
@@ -88,9 +103,25 @@ private:
     static u32 helper_exec(Jit* self, u32 ins, u32 pc);
 
     Result interpret();
+    void tlb_fill(u32 ea, bool write);
+    void tlb_flush() noexcept { tlb_.fill(TlbEntry{}); }
+    void tlb_drop_writes_to(u32 phys_page) noexcept;
+    void tlb_check_context();
     Block* lookup_or_compile(u32 pc, u32 pa, std::string& error);
     bool compile(u32 pc, u32 pa, std::vector<u32>& words, u32& count, std::string& error);
     void invalidate(u32 address, u32 size);
+
+    // First members: translated code reaches them with small offsets from x21 (this).
+    std::array<TlbEntry, kTlbEntries> tlb_{};
+    u64* bus_write_epoch_{nullptr};
+    // What the cached translations depend on (checked at every run())
+    struct TlbContext {
+        u32 msr{0}, hid4{0};
+        std::array<BatPair, 8> dbat{};
+        u64 locked{0};
+        bool cpu_observers{false};
+        bool operator==(const TlbContext&) const = default;
+    } tlb_context_{};
 
     Cpu& cpu_;
     mem::Bus& bus_;

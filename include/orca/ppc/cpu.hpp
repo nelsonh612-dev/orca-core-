@@ -174,6 +174,7 @@ private:
     std::size_t observer_id_{0};
     IcacheInvalidateHandler icbi_handler_;
     std::unordered_map<u32, std::array<u8, 32>> locked_cache_;
+    u64 locked_cache_generation_{0}; // changes whenever a line is added or the cache is discarded
     // Set when a computational FP instruction completes with FPSCR[FEX] = 1
     // and MSR[FE0|FE1] != 0: step() then takes the program exception.
     bool fp_program_pending_{false};

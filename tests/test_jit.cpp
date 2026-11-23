@@ -43,7 +43,7 @@ constexpr u32 kCode = 0x00004000U, kData = 0x00010000U, kDataSize = 0x2000U;
 // A random instruction from the translated set (plus a few the JIT leaves to the
 // interpreter). r1-r27: values; r28/r29: data pointers; r30/r31: index values.
 u32 random_insn(Rng& r, u32 at, u32 code_end) {
-    auto reg = [&] { return 1U + r.u(27); };
+    auto reg = [&] { return 1U + r.u(26); }; // r27 holds a DBAT0L value
     auto anyreg = [&] { return r.u(32); };
     const bool rc = r.u(2) != 0U;
     auto freg = [&] { return r.u(32); };
@@ -142,7 +142,11 @@ u32 random_insn(Rng& r, u32 at, u32 code_end) {
         }
     case 27: return r.u(4) == 0U ? 31U << 26 | reg() << 21 | SPR(268) << 11 | 371U << 1 // mftb: interpreter
                                  : D(36, reg(), 0, kCode + 4U * r.u(64));            // store into the code: invalidation
-    case 28: return D(14, 30U + r.u(2), 0, r.u(64));                                // keep the indexes small
+    case 28: switch (r.u(4)) {
+        case 0: return 31U << 26 | 27U << 21 | SPR(537) << 11 | 467U << 1;        // mtspr DBAT0L, r27: new data mapping
+        case 1: return 4U << 26 | (28U + r.u(2)) << 16 | (30U + r.u(2)) << 11 | 1014U << 1; // dcbz_l: locked-cache line
+        default: return D(14, 30U + r.u(2), 0, r.u(64));                         // keep the indexes small
+        }
     default: { // move a data pointer inside the data area (addis + addi pair is not needed: r28/r29 += small)
         const u32 base = 28U + r.u(2);
         return D(14, base, base, static_cast<u32>(static_cast<s32>(r.u(0x200U)) - 0x100));
@@ -169,6 +173,15 @@ void setup(Machine& m, Rng& r, const std::vector<u32>& prog) {
     // FP-unavailable exception in both), paired singles and quantized loads enabled
     m.s().msr = r.u(5) == 0U ? 0U : MSR_FP;
     m.s().hid2 = HID2_PSE | HID2_LSQE;
+    // half of the programs translate data through DBAT0 (EA 0-256 KiB -> 256 KiB or
+    // 512 KiB, sometimes read-only), and r27 holds another DBAT0L for mtspr
+    const u32 lowers[] = {0x00040002U, 0x00080002U, 0x00040001U};
+    m.s().gpr[27] = lowers[r.u(3)];
+    if (r.u(2) != 0U) {
+        m.s().msr |= MSR_DR;
+        m.s().dbat[0] = BatPair{0x00000007U, lowers[r.u(3)]};
+    }
+    if (r.u(3) == 0U) m.s().hid2 |= HID2_LCE;
     const u64 fspecial[] = {0x7FF8000000000000ULL, 0x7FF0000000000001ULL, 0x7FF0000000000000ULL, 0xFFF0000000000000ULL,
                             0x0000000000000001ULL, 0x8000000000000000ULL, 0, 0x3FF0000000000000ULL, 0x47EFFFFFE0000000ULL,
                             0x380FFFFFFFFFFFFFULL, 0xC1E0000000000000ULL};
@@ -310,12 +323,13 @@ TEST_CASE(jit_matches_interpreter_on_random_programs) {
         const RunEnd eb = run_jit(j, n);
         bool same = ea.r == eb.r && ea.steps == eb.steps && a.s() == b.s() &&
                     a.cpu->instructions_retired() == b.cpu->instructions_retired();
-        // all memory a program can reach with its 16-bit displacements and pointers
-        for (u32 x = 0; same && x < kData + kDataSize + 0x10000U; x += 4) {
-            u32 va = 0, vb = 0;
-            (void)a.bus.read32(x, va);
-            (void)b.bus.read32(x, vb);
-            same = va == vb;
+        // all memory a program can reach with its 16-bit displacements and pointers,
+        // untranslated and through the DBAT0 mappings
+        for (const u32 at : {0x0U, 0x40000U, 0x80000U}) {
+            const u32 n_bytes = kData + kDataSize + 0x10000U;
+            const u8* pa = a.bus.ram_pointer(at, n_bytes);
+            const u8* pb = b.bus.ram_pointer(at, n_bytes);
+            same = same && pa != nullptr && pb != nullptr && std::memcmp(pa, pb, n_bytes) == 0;
         }
         if (!same && failures < 3) {
             // lockstep replay: find the first translated block whose result differs

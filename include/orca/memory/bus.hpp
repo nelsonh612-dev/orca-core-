@@ -108,7 +108,16 @@ public:
 
     // Write observers are called after every successful write (CPU and DMA).
     using WriteObserver = std::function<void(const WriteEvent&)>;
-    std::size_t add_write_observer(WriteObserver observer);
+    // `cpu_writes`: the observer also wants writes from the CPU (AccessSource::Cpu).
+    // The JIT writes RAM directly only while no observer wants them.
+    std::size_t add_write_observer(WriteObserver observer, bool cpu_writes = true);
+    bool observes_cpu_writes() const noexcept { return cpu_observers_ != 0U; }
+    // Direct access to the write stamps (JIT stores to RAM): the global counter and
+    // the stamp of a physical page (nullptr outside the tracked range).
+    u64* write_epoch_pointer() noexcept { return &write_epoch_; }
+    u64* page_epoch_pointer(u32 address) noexcept {
+        return (address >> kPageShift) < kEpochPages ? &page_epoch_[address >> kPageShift] : nullptr;
+    }
     void remove_write_observer(std::size_t id);
 
     // Code-page tracking: when a write touches a page marked as containing
@@ -151,6 +160,8 @@ private:
     std::unique_ptr<u64[]> page_epoch_;    // kEpochPages write stamps
     u64 write_epoch_{0};
     std::vector<std::pair<std::size_t, WriteObserver>> observers_;
+    std::vector<std::size_t> cpu_observer_ids_;
+    std::size_t cpu_observers_{0};
     std::size_t next_observer_id_{1};
     CodeInvalidationHandler code_handler_;
 };

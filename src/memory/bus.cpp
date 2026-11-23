@@ -209,14 +209,17 @@ void Bus::after_write(u32 address, u32 size, AccessSource src) {
     }
 }
 
-std::size_t Bus::add_write_observer(WriteObserver observer) {
+std::size_t Bus::add_write_observer(WriteObserver observer, bool cpu_writes) {
     const std::size_t id = next_observer_id_++;
     observers_.emplace_back(id, std::move(observer));
+    if (cpu_writes) { cpu_observer_ids_.push_back(id); cpu_observers_ = cpu_observer_ids_.size(); }
     return id;
 }
 
 void Bus::remove_write_observer(std::size_t id) {
     std::erase_if(observers_, [id](const auto& p) { return p.first == id; });
+    std::erase(cpu_observer_ids_, id);
+    cpu_observers_ = cpu_observer_ids_.size();
 }
 
 void Bus::set_code_invalidation_handler(CodeInvalidationHandler handler) { code_handler_ = std::move(handler); }

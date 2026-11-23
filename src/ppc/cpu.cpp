@@ -33,7 +33,7 @@ Cpu::Cpu(mem::Bus& bus, CpuConfig config) : bus_(bus), config_(config) {
         const u64 lo = ev.address, hi = static_cast<u64>(ev.address) + ev.size;
         const u64 g_lo = state_.reserve_address, g_hi = g_lo + 32U;
         if (lo < g_hi && g_lo < hi) state_.reserve = false;
-    });
+    }, /*cpu_writes=*/false);
 }
 
 Cpu::~Cpu() { bus_.remove_write_observer(observer_id_); }
@@ -870,7 +870,7 @@ Cpu::Outcome Cpu::write_spr(unsigned n, u32 v) {
     case spr::HID0: s.hid0 = v; return Outcome::done();
     case spr::HID1: s.hid1 = v; return Outcome::done();
     case spr::HID2:
-        if ((v & HID2_LCE) == 0U) locked_cache_.clear(); // disabling the locked cache discards its lines
+        if ((v & HID2_LCE) == 0U) { locked_cache_.clear(); ++locked_cache_generation_; } // disabling the locked cache discards its lines
         s.hid2 = v; return Outcome::done();
     case spr::HID4: s.hid4 = v; return Outcome::done();
     case spr::IABR:
