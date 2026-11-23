@@ -71,7 +71,7 @@ bool Es::set_active_title(std::vector<u8> ticket, std::vector<u8> tmd, std::stri
     return true;
 }
 
-Result Es::open(Kernel&, const Request&, u32) { return Result::reply(err::kOk, kDefaultReplyTicks); }
+Result Es::open(Kernel&, const Request&, const std::string&, u32) { return Result::reply(err::kOk, kDefaultReplyTicks); }
 Result Es::close(Kernel&, const Request&) { return Result::reply(err::kOk, kDefaultReplyTicks); }
 
 Result Es::ioctlv(Kernel& k, const Request& r, u32 number, std::span<const IoVector> in, std::span<const IoVector> io) {

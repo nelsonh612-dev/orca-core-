@@ -36,7 +36,7 @@ const char* command_name(u32 c) {
 Result Device::unsupported(std::string_view what) const {
     return Result::stop("IOS " + path_ + ": " + std::string(what) + " is not emulated");
 }
-Result Device::open(Kernel&, const Request&, u32) { return unsupported("open"); }
+Result Device::open(Kernel&, const Request&, const std::string&, u32) { return unsupported("open"); }
 Result Device::close(Kernel&, const Request&) { return unsupported("close"); }
 Result Device::read(Kernel&, const Request&, u32, u32) { return unsupported("read"); }
 Result Device::write(Kernel&, const Request&, u32, u32) { return unsupported("write"); }
@@ -153,12 +153,15 @@ Result Kernel::dispatch(const Request& r) {
         std::string path;
         if (!read_string(r.args[0], kMaxPath, path))
             return Result::stop("IOS open: path at 0x" + hex(r.args[0]) + " is not a string of at most 63 bytes in RAM");
-        Device* d = device(path);
+        const bool dev = path.rfind("/dev/", 0) == 0;
+        Device* d = dev ? device(path) : (path.rfind('/', 0) == 0 ? device("/dev/fs") : nullptr);
         if (d == nullptr) return Result::stop("IOS open of \"" + path + "\": no emulated device or file system path");
         u32 fd = 0;
         while (fd < kMaxFds && fds_[fd] != nullptr) ++fd;
         if (fd == kMaxFds) return Result::reply(err::kMaxFds, kNoFreeFdTicks);
-        Result res = d->open(*this, r, r.args[1]);
+        Request with_fd = r;
+        with_fd.fd = fd;
+        Result res = d->open(*this, with_fd, path, r.args[1]);
         if (res.kind == Result::Kind::Deferred)
             return Result::stop("IOS " + path + ": deferred open is not supported by the kernel");
         if (res.kind == Result::Kind::Reply && res.value >= 0) {

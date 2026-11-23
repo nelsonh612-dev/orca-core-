@@ -24,7 +24,8 @@
 // delay. Replies leave in request order. IOS sends one acknowledge/reply at a
 // time: the next waits until Broadway has cleared Y1/Y2 and the IPC flag.
 //
-// Devices are registered by path. Opening a path no device claims, a command a
+// Devices are registered by path. Paths outside /dev/ are files of the NAND
+// and go to the device registered as /dev/fs. Opening a path no device claims, a command a
 // device does not implement, or anything a device cannot do stops emulation
 // with an explicit reason (stopped(), stop_reason()); nothing answers with an
 // invented result. A device may also answer later (Result::deferred()) and
@@ -38,6 +39,8 @@
 #include <deque>
 #include <map>
 #include <memory>
+#include <optional>
+#include <utility>
 #include <span>
 #include <string>
 #include <string_view>
@@ -100,7 +103,8 @@ public:
     const std::string& path() const noexcept { return path_; }
 
     // Every command stops by default: a device implements what it supports.
-    virtual Result open(Kernel& k, const Request& r, u32 mode);
+    // `r.fd` is the descriptor the request will get if the open succeeds.
+    virtual Result open(Kernel& k, const Request& r, const std::string& path, u32 mode);
     virtual Result close(Kernel& k, const Request& r);
     virtual Result read(Kernel& k, const Request& r, u32 buffer, u32 size);
     virtual Result write(Kernel& k, const Request& r, u32 buffer, u32 size);
@@ -145,6 +149,14 @@ public:
     u64 ticks_to_cycles(u64 ticks) const noexcept { return ticks * cycles_per_tick_; }
 
     Device* fd_device(u32 fd) const noexcept { return fd < kMaxFds ? fds_[fd] : nullptr; }
+
+    // Owner and group of Broadway's requests (for the file system), set when a
+    // title starts.
+    void set_ppc_credentials(u32 uid, u16 gid) { ppc_uid_ = uid; ppc_gid_ = gid; }
+    std::optional<std::pair<u32, u16>> ppc_credentials() const {
+        if (!ppc_uid_) return std::nullopt;
+        return std::pair<u32, u16>{*ppc_uid_, ppc_gid_};
+    }
     u64 requests_executed() const noexcept { return executed_; }
 
 private:
@@ -164,6 +176,8 @@ private:
     std::deque<u32> requests_, replies_;
     u64 last_reply_time_{0};
     u64 executed_{0};
+    std::optional<u32> ppc_uid_;
+    u16 ppc_gid_{0};
     bool stopped_{false};
     std::string stop_reason_;
 };

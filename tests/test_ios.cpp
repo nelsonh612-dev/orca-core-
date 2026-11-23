@@ -4,10 +4,13 @@
 #include "orca/ios/kernel.hpp"
 #include "orca/ios/stm.hpp"
 #include "orca/ios/es.hpp"
+#include "orca/ios/fs_device.hpp"
+#include "orca/ios/nand_fs.hpp"
 #include "orca/memory/console_maps.hpp"
 #include "orca/system/system.hpp"
 #include "test_framework.hpp"
 
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -23,7 +26,7 @@ constexpr u32 kTick = 12; // Broadway cycles per timebase tick
 struct TestDevice final : ios::Device {
     TestDevice() : Device("/dev/test") {}
     std::vector<u32> deferred;
-    ios::Result open(ios::Kernel&, const ios::Request&, u32 mode) override { return ios::Result::reply(mode == 7 ? -1 : 0, 300); }
+    ios::Result open(ios::Kernel&, const ios::Request&, const std::string&, u32 mode) override { return ios::Result::reply(mode == 7 ? -1 : 0, 300); }
     ios::Result close(ios::Kernel&, const ios::Request&) override { return ios::Result::reply(0, 200); }
     ios::Result ioctl(ios::Kernel& k, const ios::Request& r, u32 n, ios::IoVector in, ios::IoVector out) override {
         if (n == 3) { deferred.push_back(r.address); return ios::Result::deferred(); }
@@ -83,7 +86,12 @@ struct Rig {
     // Waits (at most `limit` ticks) for the IPC interrupt and handles it; returns
     // the reply address for a reply, 0 for an acknowledge.
     std::optional<u32> service(u64 limit) {
-        for (u64 t = 0; t < limit && !line; ++t) ticks(1);
+        const u64 end = sched.now() + limit * kTick;
+        while (!line) {
+            const auto next = sched.next_event_time();
+            if (!next || *next > end) { sched.advance_to(end); break; }
+            sched.advance_to(*next);
+        }
         if (!line) return std::nullopt;
         const u32 c = reg(PPCCTRL);
         if ((c & CTRL_Y1) != 0U) {
@@ -100,7 +108,7 @@ struct Rig {
     s32 call(u32 a) {
         send(a);
         CHECK(service(2000) == std::optional<u32>(0U));  // acknowledge
-        CHECK(service(100000) == std::optional<u32>(a)); // reply
+        CHECK(service(10000000) == std::optional<u32>(a)); // reply
         CHECK_EQ(mem32(a), 8U);
         return static_cast<s32>(mem32(a + 4));
     }
@@ -532,6 +540,215 @@ TEST_CASE(es_unimplemented_requests_stop) {
     r.ticks(600);
     CHECK(r.kernel.stopped());
     CHECK(r.kernel.stop_reason() == "IOS /dev/es: ioctlv 0x00000008 is not emulated");
+}
+
+namespace {
+struct TempDir {
+    std::filesystem::path p;
+    explicit TempDir(const char* tag) {
+        p = std::filesystem::temp_directory_path() / (std::string("orca_nand_") + tag);
+        std::filesystem::remove_all(p);
+    }
+    ~TempDir() { std::filesystem::remove_all(p); }
+};
+} // namespace
+
+TEST_CASE(nand_paths_permissions_and_files) {
+    TempDir t("unit");
+    ios::NandFs fs(t.p);
+    std::string error;
+    CHECK(fs.load(error));
+    using ios::NandFs;
+    CHECK(NandFs::valid_path("/"));
+    CHECK(NandFs::valid_non_root("/title/00010000/52534245/data"));
+    CHECK(!NandFs::valid_non_root("/title/"));
+    CHECK(!NandFs::valid_non_root("title"));
+    CHECK(!NandFs::valid_non_root("/a//b"));
+    CHECK(!NandFs::valid_non_root("/abcdefghijklm"));      // 13 characters
+    CHECK(!NandFs::valid_non_root("/" + std::string(63, 'a')));
+    const ios::FsModes rw_r_none{3, 1, 0};
+    // the root: only the kernel (uid 0) may create
+    CHECK_EQ(fs.create(0x1000, 1, "/title", 0, {3, 3, 3}, false), ios::fs_err::kAccess);
+    CHECK_EQ(fs.create(0, 0, "/title", 0, {3, 3, 1}, false), 0);
+    CHECK_EQ(fs.create(0, 0, "/title", 0, {3, 3, 1}, false), ios::fs_err::kExists);
+    CHECK_EQ(fs.create(0, 0, "/x/y", 0, {3, 3, 1}, false), ios::fs_err::kNotFound);
+    CHECK_EQ(fs.create(0, 0, "/title/a/b", 0, {3, 3, 1}, false), ios::fs_err::kNotFound);
+    CHECK_EQ(fs.create(0, 0, "/1/2/3/4/5/6/7/8/9", 0, {3, 3, 1}, false), ios::fs_err::kTooDeep);
+    CHECK_EQ(fs.create(0, 0, "/title/game", 0x10, rw_r_none, false), 0);
+    CHECK_EQ(fs.set_metadata(0, "/title/game", 0x1001, 0x31, 0x10, rw_r_none), 0);
+    // owner 0x1001 (rw), group 0x31 (r), others none
+    CHECK_EQ(fs.create(0x1001, 0x31, "/title/game/save.bin", 0, rw_r_none, true), 0);
+    CHECK_EQ(fs.create(0x1002, 0x31, "/title/game/x", 0, rw_r_none, true), ios::fs_err::kAccess); // group: read only
+    std::vector<std::string> names;
+    CHECK_EQ(fs.list(0x1002, 0x31, "/title/game", names), 0);
+    CHECK_EQ(fs.list(0x1003, 0x99, "/title/game", names), ios::fs_err::kAccess);
+    // file data
+    const s32 h = fs.open(0x1001, 0x31, "/title/game/save.bin", 3);
+    CHECK(h >= 0);
+    const std::vector<u8> data{1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
+    CHECK_EQ(fs.write(h, data), 10);
+    CHECK_EQ(fs.seek(h, 2, 0), 2);
+    std::vector<u8> back(4);
+    CHECK_EQ(fs.read(h, back), 4);
+    CHECK(back == std::vector<u8>({3, 4, 5, 6}));
+    CHECK_EQ(fs.seek(h, -1, 2), 9);
+    CHECK_EQ(fs.read(h, back), 1);
+    CHECK_EQ(fs.read(h, back), 0);
+    CHECK_EQ(fs.seek(h, 1, 1), ios::fs_err::kInvalid); // past the end
+    u32 size = 0, pos = 0;
+    CHECK_EQ(fs.status(h, size, pos), 0);
+    CHECK_EQ(size, 10U);
+    CHECK_EQ(pos, 10U);
+    // in use while open
+    CHECK_EQ(fs.remove(0x1001, 0x31, "/title/game/save.bin"), ios::fs_err::kInUse);
+    CHECK_EQ(fs.remove(0, 0, "/title/game"), ios::fs_err::kInUse);
+    CHECK_EQ(fs.set_metadata(0, "/title/game/save.bin", 0x1002, 0x31, 0, rw_r_none), ios::fs_err::kNotEmpty);
+    CHECK_EQ(fs.close(h), 0);
+    CHECK_EQ(fs.close(h), ios::fs_err::kInvalid);
+    // read-only open cannot write; others have no access
+    const s32 r = fs.open(0x1002, 0x31, "/title/game/save.bin", 1);
+    CHECK(r >= 0);
+    CHECK_EQ(fs.write(r, data), ios::fs_err::kAccess);
+    CHECK_EQ(fs.close(r), 0);
+    CHECK_EQ(fs.open(0x1002, 0x31, "/title/game/save.bin", 2), ios::fs_err::kAccess);
+    CHECK_EQ(fs.open(0x1003, 0x99, "/title/game/save.bin", 1), ios::fs_err::kAccess);
+    CHECK_EQ(fs.open(0, 0, "/title/game", 1), ios::fs_err::kInvalid);
+    // newest first
+    CHECK_EQ(fs.create(0x1001, 0x31, "/title/game/b", 0, rw_r_none, false), 0);
+    CHECK_EQ(fs.create(0x1001, 0x31, "/title/game/a", 0, rw_r_none, true), 0);
+    CHECK_EQ(fs.list(0x1001, 0x31, "/title/game", names), 0);
+    CHECK(names == std::vector<std::string>({"a", "b", "save.bin"}));
+    // renames: files keep their name; a directory moves with its content
+    CHECK_EQ(fs.rename(0x1001, 0x31, "/title/game/a", "/title/game/c"), ios::fs_err::kInvalid);
+    CHECK_EQ(fs.rename(0x1001, 0x31, "/title/game/a", "/title/game/b/a"), 0);
+    CHECK_EQ(fs.rename(0x1001, 0x31, "/title/game/b", "/title/game/d"), 0);
+    ios::FsMeta m;
+    CHECK_EQ(fs.metadata(0x1001, 0x31, "/title/game/d/a", m), 0);
+    CHECK(m.is_file);
+    CHECK_EQ(m.uid, 0x1001U);
+    CHECK_EQ(fs.metadata(0x1001, 0x31, "/title/game/b", m), ios::fs_err::kNotFound);
+    u32 clusters = 0, inodes = 0;
+    CHECK_EQ(fs.usage("/title/game", clusters, inodes), 0);
+    CHECK_EQ(clusters, 1U);   // save.bin (10 bytes); the moved file is empty
+    CHECK_EQ(inodes, 4U);     // game, save.bin, d, d/a
+    // metadata survives a reload
+    ios::NandFs again(t.p);
+    CHECK(again.load(error));
+    CHECK_EQ(again.metadata(0, 0, "/title/game", m), 0);
+    CHECK_EQ(m.uid, 0x1001U);
+    CHECK_EQ(m.gid, 0x31U);
+    CHECK_EQ(m.attribute, 0x10U);
+    CHECK(m.modes.owner == 3 && m.modes.group == 1 && m.modes.other == 0);
+    CHECK_EQ(again.list(0, 0, "/title/game", names), 0);
+    CHECK(names == std::vector<std::string>({"d", "save.bin"}));
+    // delete removes contents
+    CHECK_EQ(again.remove(0x1001, 0x31, "/title/game/d"), 0);
+    CHECK_EQ(again.metadata(0, 0, "/title/game/d/a", m), ios::fs_err::kNotFound);
+    // names with characters the host may not accept
+    CHECK_EQ(again.create(0, 0, "/sh:are?", 0, {3, 3, 3}, false), 0);
+    CHECK_EQ(again.list(0, 0, "/", names), 0);
+    CHECK(std::find(names.begin(), names.end(), "sh:are?") != names.end());
+    CHECK(std::filesystem::exists(t.p / "sh%3Aare%3F"));
+}
+
+TEST_CASE(fs_device_files_and_isfs_requests) {
+    TempDir t("device");
+    ios::NandFs nand(t.p);
+    std::string error;
+    CHECK(nand.load(error));
+    CHECK_EQ(nand.create(0, 0, "/shared2", 0, {3, 3, 3}, false), 0);
+    Rig r;
+    r.kernel.add_device(std::make_unique<ios::FsDevice>(nand));
+    r.set(PPC_IRQMASK, IRQ_IPC_BROADWAY);
+    r.set(PPCCTRL, CTRL_IY1 | CTRL_IY2);
+    // without credentials: explicit stop
+    {
+        Rig q;
+        q.kernel.add_device(std::make_unique<ios::FsDevice>(nand));
+        q.put_string(0x2000, "/dev/fs");
+        q.block(0x1000, 1, 0, {0x2000, 0});
+        q.send(0x1000);
+        q.ticks(600);
+        CHECK(q.kernel.stopped());
+        CHECK(q.kernel.stop_reason().find("owner/group") != std::string::npos);
+    }
+    r.kernel.set_ppc_credentials(0x1000, 0x30);
+    r.put_string(0x2000, "/dev/fs");
+    r.block(0x1000, 1, 0, {0x2000, 0});
+    CHECK_EQ(r.call(0x1000), 0);
+    // create file /shared2/f.bin (ioctl 9)
+    std::vector<u8> params(0x4A, 0);
+    const std::string path = "/shared2/f.bin";
+    std::copy(path.begin(), path.end(), params.begin() + 6);
+    params[70] = 3; params[71] = 3; params[72] = 1;
+    write_mem(r, 0x3000, params);
+    r.block(0x1000, 6, 0, {9, 0x3000, 0x4A, 0, 0});
+    CHECK_EQ(r.call(0x1000), 0);
+    r.block(0x1000, 6, 0, {9, 0x3000, 0x4A, 0, 0});
+    CHECK_EQ(r.call(0x1000), ios::fs_err::kExists);
+    // open it (a NAND path goes to /dev/fs), write, seek, read, file status
+    r.put_string(0x2040, path);
+    r.block(0x1000, 1, 0, {0x2040, 3});
+    CHECK_EQ(r.call(0x1000), 1);
+    write_mem(r, 0x4000, {0xDE, 0xAD, 0xBE, 0xEF, 0x01});
+    r.block(0x1000, 4, 1, {0x4000, 5});
+    CHECK_EQ(r.call(0x1000), 5);
+    r.block(0x1000, 5, 1, {1, 0});
+    CHECK_EQ(r.call(0x1000), 1);
+    r.block(0x1000, 3, 1, {0x4100, 16});
+    CHECK_EQ(r.call(0x1000), 4);
+    CHECK_EQ(r.mem32(0x4100), 0xADBEEF01U);
+    r.block(0x1000, 6, 1, {11, 0, 0, 0x4200, 8});
+    CHECK_EQ(r.call(0x1000), 0);
+    CHECK_EQ(r.mem32(0x4200), 5U);
+    CHECK_EQ(r.mem32(0x4204), 5U);
+    // the file system descriptor cannot be read
+    r.block(0x1000, 3, 0, {0x4100, 4});
+    CHECK_EQ(r.call(0x1000), ios::fs_err::kInvalid);
+    r.block(0x1000, 2, 1, {});
+    CHECK_EQ(r.call(0x1000), 0);
+    // get attributes
+    r.put_string(0x3100, path);
+    r.block(0x1000, 6, 0, {6, 0x3100, 64, 0x3200, 0x4A});
+    CHECK_EQ(r.call(0x1000), 0);
+    CHECK_EQ(r.mem32(0x3200), 0x1000U);
+    const auto attr = read_mem(r, 0x3200, 0x4A);
+    CHECK_EQ(attr[5], 0x30U);
+    CHECK(attr[70] == 3 && attr[71] == 3 && attr[72] == 1);
+    // read directory: count, then names
+    r.put_string(0x3300, "/shared2");
+    r.bus.write32(0x3400, 0);
+    CHECK_EQ(ioctlv(r, 4, {{0x3300, 64}}, {{0x3400, 4}}), 0);
+    CHECK_EQ(r.mem32(0x3400), 1U);
+    r.bus.write32(0x3410, 4);
+    CHECK_EQ(ioctlv(r, 4, {{0x3300, 64}, {0x3410, 4}}, {{0x3500, 52}, {0x3420, 4}}), 0);
+    CHECK_EQ(r.mem32(0x3420), 1U);
+    const auto listed = read_mem(r, 0x3500, 6);
+    CHECK(std::string(reinterpret_cast<const char*>(listed.data())) == "f.bin");
+    // usage and statistics
+    CHECK_EQ(ioctlv(r, 12, {{0x3300, 64}}, {{0x3600, 4}, {0x3604, 4}}), 0);
+    CHECK_EQ(r.mem32(0x3600), 1U);
+    CHECK_EQ(r.mem32(0x3604), 2U);
+    r.block(0x1000, 6, 0, {2, 0, 0, 0x3700, 0x1C});
+    CHECK_EQ(r.call(0x1000), 0);
+    CHECK_EQ(r.mem32(0x3700), 0x4000U);
+    CHECK_EQ(r.mem32(0x3708), 1U);                // used clusters
+    CHECK_EQ(r.mem32(0x3704), 0x7BC0U - 1U);      // free clusters
+    CHECK_EQ(r.mem32(0x3718), 3U);                // inodes: root, shared2, f.bin
+    // rename (files keep their name), delete
+    r.put_string(0x3800, path);
+    r.put_string(0x3840, "/shared2/g.bin");
+    r.block(0x1000, 6, 0, {8, 0x3800, 128, 0, 0});
+    CHECK_EQ(r.call(0x1000), ios::fs_err::kInvalid);
+    r.block(0x1000, 6, 0, {7, 0x3800, 64, 0, 0});
+    CHECK_EQ(r.call(0x1000), 0);
+    r.block(0x1000, 1, 0, {0x2040, 1});
+    CHECK_EQ(r.call(0x1000), ios::fs_err::kNotFound);
+    // format: explicit stop
+    r.block(0x1000, 6, 0, {1, 0, 0, 0, 0});
+    r.send(0x1000);
+    r.ticks(600);
+    CHECK(r.kernel.stopped());
 }
 
 int main() { return orca::test::run_all("ios"); }

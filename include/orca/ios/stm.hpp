@@ -24,7 +24,7 @@ inline constexpr u32 kStmEventPower = 0x00000800U;
 class StmEventHook final : public Device {
 public:
     StmEventHook() : Device("/dev/stm/eventhook") {}
-    Result open(Kernel& k, const Request& r, u32 mode) override;
+    Result open(Kernel& k, const Request& r, const std::string& path, u32 mode) override;
     Result close(Kernel& k, const Request& r) override;
     Result ioctl(Kernel& k, const Request& r, u32 number, IoVector in, IoVector out) override;
 
@@ -41,7 +41,7 @@ private:
 class StmImmediate final : public Device {
 public:
     explicit StmImmediate(StmEventHook& hook) : Device("/dev/stm/immediate"), hook_(hook) {}
-    Result open(Kernel& k, const Request& r, u32 mode) override;
+    Result open(Kernel& k, const Request& r, const std::string& path, u32 mode) override;
     Result close(Kernel& k, const Request& r) override;
     Result ioctl(Kernel& k, const Request& r, u32 number, IoVector in, IoVector out) override;
 

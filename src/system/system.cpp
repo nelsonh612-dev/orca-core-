@@ -72,6 +72,13 @@ System::System(SystemConfig config) : config_(config), clocks_(clocks_for(config
         auto es = std::make_unique<ios::Es>();
         es_ = es.get();
         ios_->add_device(std::move(es));
+        if (!config_.nand_root.empty()) {
+            auto nand = std::make_unique<ios::NandFs>(config_.nand_root);
+            if (nand->load(nand_error_)) {
+                nand_ = std::move(nand);
+                ios_->add_device(std::make_unique<ios::FsDevice>(*nand_));
+            }
+        }
     }
     ai_->set_stream_sink([this](std::span<const s16> pcm, u32 divisor, u32 vol) { mixer_->push_stream(pcm, divisor, vol); });
 }

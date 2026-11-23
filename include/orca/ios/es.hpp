@@ -48,7 +48,7 @@ public:
     bool set_active_title(std::vector<u8> ticket, std::vector<u8> tmd, std::string& error);
     const std::optional<TitleContext>& active_title() const noexcept { return title_; }
 
-    Result open(Kernel& k, const Request& r, u32 mode) override;
+    Result open(Kernel& k, const Request& r, const std::string& path, u32 mode) override;
     Result close(Kernel& k, const Request& r) override;
     Result ioctlv(Kernel& k, const Request& r, u32 number, std::span<const IoVector> in,
                   std::span<const IoVector> io) override;

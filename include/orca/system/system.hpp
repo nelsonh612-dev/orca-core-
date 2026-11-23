@@ -32,6 +32,7 @@
 #include "orca/ios/kernel.hpp"
 #include "orca/ios/stm.hpp"
 #include "orca/ios/es.hpp"
+#include "orca/ios/fs_device.hpp"
 #include "orca/hw/processor_interface.hpp"
 #include "orca/loader/executable.hpp"
 #include "orca/memory/bus.hpp"
@@ -67,6 +68,9 @@ struct SystemConfig {
     // DSP: high-level emulation of the known ucodes (orca/dsp/hle.hpp) instead of
     // running DSP code, which needs the user's DSP ROM dumps.
     bool dsp_hle{false};
+    // Wii: host directory holding the NAND (orca/ios/nand_fs.hpp). Empty: no
+    // NAND; any NAND access stops explicitly.
+    std::string nand_root;
 };
 
 struct RunResult {
@@ -105,6 +109,9 @@ public:
     hw::HollywoodIpc* hollywood() noexcept { return hollywood_.get(); }
     ios::Kernel* ios() noexcept { return ios_.get(); }
     ios::Es* es() noexcept { return es_; }
+    ios::NandFs* nand() noexcept { return nand_.get(); }
+    // Error from opening the NAND (SystemConfig::nand_root), empty if none.
+    const std::string& nand_error() const noexcept { return nand_error_; }
     // Wii reset (or power) button: answers the game's STM event hook. False on
     // GameCube or when the game has no hook installed (the press has no effect).
     bool press_console_button(bool power);
@@ -197,6 +204,8 @@ private:
     std::unique_ptr<ios::Kernel> ios_;
     ios::StmEventHook* stm_hook_{nullptr};
     ios::Es* es_{nullptr};
+    std::unique_ptr<ios::NandFs> nand_;
+    std::string nand_error_;
     std::function<void(bool)> field_listener_;
     std::optional<u32> stop_pc_;
     u64 timebase_remainder_{0};

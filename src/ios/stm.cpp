@@ -14,7 +14,7 @@ constexpr u32 kVideoDimming = 0x5001;
 constexpr u32 kLedMode = 0x6002;
 } // namespace
 
-Result StmEventHook::open(Kernel&, const Request&, u32) {
+Result StmEventHook::open(Kernel&, const Request&, const std::string&, u32) {
     open_ = true;
     return Result::reply(err::kOk, kDefaultReplyTicks);
 }
@@ -46,7 +46,7 @@ bool StmEventHook::trigger(Kernel& k, u32 event, u64 delay_ticks) {
     return true;
 }
 
-Result StmImmediate::open(Kernel&, const Request&, u32) { return Result::reply(err::kOk, kDefaultReplyTicks); }
+Result StmImmediate::open(Kernel&, const Request&, const std::string&, u32) { return Result::reply(err::kOk, kDefaultReplyTicks); }
 Result StmImmediate::close(Kernel&, const Request&) { return Result::reply(err::kOk, kDefaultReplyTicks); }
 
 Result StmImmediate::ioctl(Kernel& k, const Request& r, u32 number, IoVector in, IoVector out) {

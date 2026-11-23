@@ -56,6 +56,8 @@ add_library(orca_core
     src/ios/kernel.cpp
     src/ios/stm.cpp
     src/ios/es.cpp
+    src/ios/nand_fs.cpp
+    src/ios/fs_device.cpp
     src/hw/exi_ipl.cpp
     src/hw/exi_memcard.cpp
     src/gpu/command_stream.cpp
