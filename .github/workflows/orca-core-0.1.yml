@@ -40,7 +40,7 @@ jobs:
       - name: JIT report (native AArch64 execution)
         run: |
           ./build/orca_test_jit | grep -E "^\[jit\]"
-          ./build/orca_test_programs | grep -E "JIT|identical|MISMATCH"
+          ./build/orca_test_programs | grep -E "JIT|identical|MISMATCH|time"
 
   arm64-sanitizers:
     name: Core tests on native ARM64 with ASan+UBSan

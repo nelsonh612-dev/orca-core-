@@ -134,7 +134,8 @@ struct FullRun {
     u64 instructions = 0, cycles = 0, ram_hash = 0;
     std::vector<u32> log;
     ppc::CpuState state;
-    u64 block_steps = 0, blocks = 0;
+    u64 block_steps = 0, blocks = 0, helper_steps = 0;
+    double ms = 0;
 };
 FullRun run_full(const char* path, bool jit) {
     FullRun r;
@@ -148,7 +149,9 @@ FullRun run_full(const char* path, bool jit) {
     sys.bus().map_mmio("test-port", 0x0E000000U, 0x1000, port);
     std::string err;
     if (!sys.load_executable(file, err)) return r;
+    const auto t0 = std::chrono::steady_clock::now();
     const auto res = sys.run(4000000000ULL);
+    r.ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     r.stop = res.stop;
     r.instructions = res.instructions;
     r.cycles = res.cycles;
@@ -158,7 +161,11 @@ FullRun run_full(const char* path, bool jit) {
     u64 h = 0xCBF29CE484222325ULL;
     for (std::size_t i = 0; ram != nullptr && i < (24U << 20); ++i) { h ^= ram[i]; h *= 0x100000001B3ULL; }
     r.ram_hash = h;
-    if (sys.jit() != nullptr) { r.block_steps = sys.jit()->stats().block_steps; r.blocks = sys.jit()->stats().blocks_compiled; }
+    if (sys.jit() != nullptr) {
+        r.block_steps = sys.jit()->stats().block_steps;
+        r.blocks = sys.jit()->stats().blocks_compiled;
+        r.helper_steps = sys.jit()->stats().helper_steps;
+    }
     return r;
 }
 } // namespace
@@ -178,10 +185,13 @@ TEST_CASE(programs_identical_with_the_jit) {
         CHECK(a.state == b.state);
         CHECK_EQ(a.ram_hash, b.ram_hash);
         CHECK(b.block_steps > 0U);
-        std::printf("[programs] %-24s JIT: %9llu of %9llu instructions in %llu translated blocks, %s\n",
+        std::printf("[programs] %-24s JIT: %9llu of %9llu instructions in %llu translated blocks (%llu of them FP/PS by the in-block call), %s\n",
                     f + std::string(f).rfind('/') + 1, static_cast<unsigned long long>(b.block_steps),
                     static_cast<unsigned long long>(b.instructions), static_cast<unsigned long long>(b.blocks),
+                    static_cast<unsigned long long>(b.helper_steps),
                     a.state == b.state && a.ram_hash == b.ram_hash && a.cycles == b.cycles ? "identical to the interpreter" : "DIFFERENT");
+        std::printf("[programs] %-24s time (whole System, same machine): interpreter %.1f ms, JIT %.1f ms\n",
+                    f + std::string(f).rfind('/') + 1, a.ms, b.ms);
     }
 }
 
