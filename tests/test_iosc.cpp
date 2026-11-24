@@ -5,6 +5,7 @@
 // test value that exists only in the tests.
 #include "orca/crypto/aes.hpp"
 #include "orca/ios/iosc.hpp"
+#include "orca/ios/key_bundle.hpp"
 #include "test_framework.hpp"
 
 #include <cstdio>
@@ -55,7 +56,7 @@ void write(const std::filesystem::path& f, const void* data, std::size_t n) {
 } // namespace
 
 TEST_CASE(iosc_default_entries_match_ios) {
-    const Iosc iosc(Iosc::ConsoleType::Retail, disc::WiiKeys{});
+    Iosc iosc(Iosc::ConsoleType::Retail, disc::WiiKeys{});
     struct E { Iosc::Handle h; Iosc::ObjectType t; Iosc::ObjectSubType st; u32 owner; };
     const E expect[] = {
         {Iosc::HANDLE_CONSOLE_KEY, Iosc::TYPE_SECRET_KEY, Iosc::ObjectSubType::ECC233, 3},
@@ -98,7 +99,7 @@ TEST_CASE(iosc_decrypt_checks_ownership_type_and_presence) {
     disc::WiiKeys p;
     // NIST SP 800-38A F.2.2 (CBC-AES128.Decrypt), first block, as a synthetic "common key"
     p.common[0] = AesKey{0x2b, 0x7e, 0x15, 0x16, 0x28, 0xae, 0xd2, 0xa6, 0xab, 0xf7, 0x15, 0x88, 0x09, 0xcf, 0x4f, 0x3c};
-    const Iosc iosc(Iosc::ConsoleType::Retail, p);
+    Iosc iosc(Iosc::ConsoleType::Retail, p);
     std::string err;
     std::array<u8, 16> iv{0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f};
     const u8 cipher[16] = {0x76, 0x49, 0xab, 0xac, 0x81, 0x19, 0xb2, 0x46, 0xce, 0xe9, 0x8e, 0x9b, 0x12, 0xe9, 0x19, 0x7d};
@@ -125,7 +126,7 @@ TEST_CASE(iosc_selects_the_common_key_by_ticket_index) {
     p.common[1] = kKorean;
     p.common[2] = kVwii;
     p.dev_common = kDev;
-    const Iosc retail(Iosc::ConsoleType::Retail, p);
+    Iosc retail(Iosc::ConsoleType::Retail, p);
     std::string err;
     CHECK(retail.common_key_handle(0, err) == std::optional<Iosc::Handle>(Iosc::HANDLE_COMMON_KEY));
     CHECK(retail.common_key_handle(1, err) == std::optional<Iosc::Handle>(Iosc::HANDLE_NEW_COMMON_KEY));
@@ -149,16 +150,16 @@ TEST_CASE(iosc_selects_the_common_key_by_ticket_index) {
     // development (RVT) consoles: their common key in handle 4
     CHECK(Iosc::console_type_of("Root-CA00000002-XS00000006") == Iosc::ConsoleType::RVT);
     CHECK(Iosc::console_type_of("Root-CA00000001-XS00000003") == Iosc::ConsoleType::Retail);
-    const Iosc rvt(Iosc::ConsoleType::RVT, p);
+    Iosc rvt(Iosc::ConsoleType::RVT, p);
     const auto dev_tk = rvt.title_key(tid, encrypt_title_key(kDev, tid), 0, err);
     CHECK(dev_tk.has_value() && *dev_tk == kTitle);
     // a missing key: precise error
     disc::WiiKeys only_common;
     only_common.common[0] = kCommon;
-    const Iosc partial(Iosc::ConsoleType::Retail, only_common);
+    Iosc partial(Iosc::ConsoleType::Retail, only_common);
     CHECK(!partial.title_key(tid, encrypt_title_key(kKorean, tid), 1, err).has_value());
     CHECK(contains(err, "Korean"));
-    const Iosc rvt_missing(Iosc::ConsoleType::RVT, only_common);
+    Iosc rvt_missing(Iosc::ConsoleType::RVT, only_common);
     CHECK(!rvt_missing.title_key(tid, encrypt_title_key(kDev, tid), 0, err).has_value());
     CHECK(contains(err, "development common key"));
 }
@@ -179,6 +180,97 @@ TEST_CASE(iosc_title_keys_through_the_disc_layer) {
     k.common[0] = kCommon;
     const auto tk = disc::decrypt_title_key(t, k, err);
     CHECK(tk.has_value() && *tk == kTitle);
+}
+
+TEST_CASE(iosc_objects_imports_and_ownership) {
+    disc::WiiKeys p;
+    p.common[0] = kCommon;
+    Iosc iosc(Iosc::ConsoleType::Retail, p);
+    // sizes by object type, as IOS
+    CHECK_EQ(Iosc::size_for_type(Iosc::TYPE_SECRET_KEY, Iosc::ObjectSubType::AES128), 16U);
+    CHECK_EQ(Iosc::size_for_type(Iosc::TYPE_SECRET_KEY, Iosc::ObjectSubType::MAC), 20U);
+    CHECK_EQ(Iosc::size_for_type(Iosc::TYPE_PUBLIC_KEY, Iosc::ObjectSubType::RSA2048), 256U);
+    CHECK_EQ(Iosc::size_for_type(Iosc::TYPE_PUBLIC_KEY, Iosc::ObjectSubType::RSA4096), 512U);
+    CHECK_EQ(Iosc::size_for_type(Iosc::TYPE_PUBLIC_KEY, Iosc::ObjectSubType::ECC233), 60U);
+    CHECK_EQ(Iosc::size_for_type(Iosc::TYPE_DATA, Iosc::ObjectSubType::Data), 0U);
+    // default handles cannot be deleted or overwritten
+    CHECK(Iosc::is_default_handle(Iosc::HANDLE_COMMON_KEY) && Iosc::is_default_handle(Iosc::HANDLE_ROOT_KEY));
+    CHECK_EQ(iosc.delete_object(Iosc::HANDLE_COMMON_KEY, Iosc::PID_ES), Iosc::IOSC_EACCES);
+    CHECK_EQ(iosc.import_secret_key(Iosc::HANDLE_COMMON_KEY, kVwii, Iosc::PID_ES), Iosc::IOSC_EACCES);
+    // a new object belongs to its creator only
+    Iosc::Handle h = 0;
+    CHECK_EQ(iosc.create_object(h, Iosc::TYPE_SECRET_KEY, Iosc::ObjectSubType::AES128, Iosc::PID_ES), Iosc::IPC_SUCCESS);
+    CHECK(h > Iosc::HANDLE_NEW_COMMON_KEY && h < Iosc::kEntries);
+    u32 owner = 0;
+    CHECK_EQ(iosc.get_ownership(h, owner), Iosc::IPC_SUCCESS);
+    CHECK_EQ(owner, 1U << Iosc::PID_ES);
+    CHECK_EQ(iosc.import_secret_key(h, kVwii, Iosc::PID_FS), Iosc::IOSC_EACCES);
+    // ImportSecretKey with decryption: what ES does with a ticket's title key
+    std::array<u8, 16> iv{};
+    for (unsigned k = 0; k < 8; ++k) iv[k] = static_cast<u8>(0x0001000052534245ULL >> (56U - 8U * k));
+    const auto enc = encrypt_title_key(kCommon, 0x0001000052534245ULL);
+    std::string err;
+    CHECK_EQ(iosc.import_secret_key(h, Iosc::HANDLE_COMMON_KEY, iv, enc, Iosc::PID_ES, err), Iosc::IPC_SUCCESS);
+    CHECK(iosc.entry(h)->provided && std::equal(iosc.entry(h)->data.begin(), iosc.entry(h)->data.end(), kTitle.begin()));
+    // the imported key works for Decrypt / Encrypt round trips
+    std::array<u8, 32> plain{}, ct{}, back{};
+    for (std::size_t i = 0; i < plain.size(); ++i) plain[i] = static_cast<u8>(i * 7U);
+    std::array<u8, 16> iv1{}, iv2{};
+    CHECK_EQ(iosc.encrypt(h, iv1, plain, ct, Iosc::PID_ES, err), Iosc::IPC_SUCCESS);
+    CHECK_EQ(iosc.decrypt(h, iv2, ct, back, Iosc::PID_ES, err), Iosc::IPC_SUCCESS);
+    CHECK(back == plain && ct != plain);
+    // a public-key object takes exactly its size, and an exponent for RSA
+    Iosc::Handle pk = 0;
+    CHECK_EQ(iosc.create_object(pk, Iosc::TYPE_PUBLIC_KEY, Iosc::ObjectSubType::RSA2048, Iosc::PID_ES), Iosc::IPC_SUCCESS);
+    CHECK_EQ(iosc.import_public_key(pk, std::vector<u8>(100, 1), 65537, Iosc::PID_ES), Iosc::IOSC_EINVAL);
+    CHECK_EQ(iosc.import_public_key(pk, std::vector<u8>(256, 1), 65537, Iosc::PID_ES), Iosc::IPC_SUCCESS);
+    CHECK_EQ(iosc.entry(pk)->misc_data, 65537U);
+    CHECK_EQ(iosc.import_public_key(h, std::vector<u8>(256, 1), 3, Iosc::PID_ES), Iosc::IOSC_INVALID_OBJTYPE);
+    // ownership: the sole owner may add owners; afterwards nobody can hand it on alone
+    CHECK_EQ(iosc.set_ownership(h, 1U << 5, Iosc::PID_FS), Iosc::IOSC_EACCES);
+    CHECK_EQ(iosc.set_ownership(h, 1U << 5, Iosc::PID_ES), Iosc::IPC_SUCCESS);
+    CHECK_EQ(iosc.get_ownership(h, owner), Iosc::IPC_SUCCESS);
+    CHECK_EQ(owner, (1U << 5) | (1U << Iosc::PID_ES));
+    CHECK_EQ(iosc.set_ownership(h, 1U << 6, Iosc::PID_ES), Iosc::IOSC_EACCES);
+    CHECK(iosc.has_ownership(h, 5));
+    // delete: the handle is free again and its value gone
+    CHECK_EQ(iosc.delete_object(h, Iosc::PID_ES), Iosc::IPC_SUCCESS);
+    CHECK(iosc.entry(h) == nullptr);
+    CHECK_EQ(iosc.delete_object(h, Iosc::PID_ES), Iosc::IOSC_EACCES);
+    // the table is finite: 32 entries, 12 of them default
+    std::vector<Iosc::Handle> taken;
+    Iosc::Handle x = 0;
+    while (iosc.create_object(x, Iosc::TYPE_SECRET_KEY, Iosc::ObjectSubType::AES128, Iosc::PID_ES) == Iosc::IPC_SUCCESS) taken.push_back(x);
+    CHECK_EQ(taken.size() + 1U, Iosc::kEntries - 12U); // pk still holds one
+    CHECK_EQ(iosc.create_object(x, Iosc::TYPE_SECRET_KEY, Iosc::ObjectSubType::AES128, Iosc::PID_ES), Iosc::IOSC_FAIL_ALLOC);
+    // title_key goes through such an object and frees it again
+    for (const Iosc::Handle t : taken) CHECK_EQ(iosc.delete_object(t, Iosc::PID_ES), Iosc::IPC_SUCCESS);
+    for (int i = 0; i < 100; ++i) {
+        const auto key = iosc.title_key(0x0001000052534245ULL, enc, 0, err);
+        CHECK(key.has_value() && *key == kTitle);
+    }
+    CHECK_EQ(iosc.create_object(x, Iosc::TYPE_SECRET_KEY, Iosc::ObjectSubType::AES128, Iosc::PID_ES), Iosc::IPC_SUCCESS);
+}
+
+TEST_CASE(iosc_build_without_default_values) {
+    // this test program is built from the repository alone: no default values,
+    // the secret entries exist but are not provided
+    if (std::string(build_time_key_bundle_origin()).empty()) {
+        CHECK(build_time_key_bundle().empty());
+        CHECK(default_values_status() == "none");
+        Iosc iosc(Iosc::ConsoleType::Retail, disc::WiiKeys{});
+        CHECK(iosc.entry(Iosc::HANDLE_COMMON_KEY)->in_use && !iosc.entry(Iosc::HANDLE_COMMON_KEY)->provided);
+        std::string err;
+        CHECK(!iosc.title_key(1, std::array<u8, 16>{}, 0, err).has_value());
+        CHECK(contains(err, "not provided"));
+    } else {
+        std::printf("    (built with ORCA_DEFAULT_KEYS_FILE=%s: values %s)\n", build_time_key_bundle_origin(), default_values_status().c_str());
+    }
+    // an invalid bundle is reported, not silently ignored
+    const char bad[] = "common_key = 12\nxx";
+    Iosc iosc(Iosc::ConsoleType::Retail, disc::WiiKeys{}, std::span<const u8>(reinterpret_cast<const u8*>(bad), sizeof bad - 1U));
+    CHECK(contains(iosc.bundle_error(), "build-time key bundle is invalid"));
+    CHECK(!iosc.entry(Iosc::HANDLE_COMMON_KEY)->provided);
 }
 
 TEST_CASE(iosc_automatic_key_provision) {

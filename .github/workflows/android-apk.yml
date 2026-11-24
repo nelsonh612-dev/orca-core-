@@ -33,8 +33,21 @@ jobs:
         with:
           gradle-version: '8.9'
       - name: Assemble
+        env:
+          # Optional repository secret: a key file (base64) whose values become OrcaIOSC's
+          # built-in defaults (include/orca/ios/key_bundle.hpp). Only for values the owner
+          # is entitled to; without it the APK has none.
+          ORCA_DEFAULT_KEYS_B64: ${{ secrets.ORCA_DEFAULT_KEYS }}
         run: |
           export ORCA_NDK_VERSION=$(basename "$ANDROID_NDK_LATEST_HOME")
+          if [ -n "$ORCA_DEFAULT_KEYS_B64" ]; then
+            echo "$ORCA_DEFAULT_KEYS_B64" | base64 -d > "$RUNNER_TEMP/orca_default_keys"
+            export ORCA_DEFAULT_KEYS_FILE="$RUNNER_TEMP/orca_default_keys"
+            echo "ORCA_BUNDLED_KEYS=1" >> "$GITHUB_ENV"
+            echo "Built-in default key values: from the ORCA_DEFAULT_KEYS secret"
+          else
+            echo "Built-in default key values: none"
+          fi
           echo "NDK $ORCA_NDK_VERSION"
           cd android
           gradle --no-daemon --stacktrace :app:assembleRelease
@@ -59,7 +72,8 @@ jobs:
             orca-core-0.1-apk.sha256
           if-no-files-found: error
       - name: Publish a prerelease (manual runs only)
-        if: github.event_name == 'workflow_dispatch' && inputs.prerelease
+        # never published publicly when the APK carries built-in key values
+        if: github.event_name == 'workflow_dispatch' && inputs.prerelease && env.ORCA_BUNDLED_KEYS != '1'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

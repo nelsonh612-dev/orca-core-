@@ -65,6 +65,29 @@ Todos los resultados son de ejecuciones reales del 2026-11-22 en este entorno, s
 - **Tercera y cuarta ejecución de mutaciones:** en 2725008 añadí una comprobación (camino lento < mitad de las instrucciones) que era incorrecta: con dividendos menores que 2^-767 el camino lento es el esperado, así que esa ejecución "detectó" las 22 mutaciones por una prueba rota (la validación de ese commit se canceló y no lo mostró). La causa real de la supervivencia de la división: `fdivs` se ejecutaba después de `fdiv` y su segundo redondeo pone FI por sí solo, ocultando el FI/FR de `fdiv`. Corregido en 7b0de24 (`fdiv` al final, comprobación eliminada). Ejecución de 7b0de24: **20 de 22 detectadas**; sobreviven solo las dos equivalentes.
 - **Error en mis expectativas:** en la prueba de DTK esperé que, tras pedir "parar al final de la pista", sonara la pista encolada; la orden para al terminar la pista actual.
 
+### OrcaIOSC completo, valores por defecto del compilado, AES ARMv8 y lecturas concurrentes
+
+Ejecutado el 2026-11-24 en x86-64: GCC, Clang y GCC + ASan + UBSan, **32 pruebas pasan en las tres, 0 advertencias; `real_images` *Skipped***.
+
+- `iosc` (7 pruebas, 287 comprobaciones; +2):
+  - tamaños por tipo, handles por defecto protegidos;
+  - `create_object` / `delete_object` y la tabla llena (`IOSC_FAIL_ALLOC`);
+  - `ImportSecretKey` descifrando la clave de título como ES; Encrypt/Decrypt de ida y vuelta;
+  - `ImportPublicKey` con tamaño y exponente; reglas de `SetOwnership`;
+  - 100 claves de título sin dejar objetos ocupados;
+  - un compilado sin valores tiene las entradas vacías; un paquete inválido se informa.
+- `key_bundle` (nueva, 4 pruebas, 30 comprobaciones): un programa enlazado con un paquete de **valores de prueba** (`tests/test_key_bundle.txt`), igual que un compilado con `-DORCA_DEFAULT_KEYS_FILE`.
+  - Las entradas toman esos valores, y los de sesión los sustituyen.
+  - Dos particiones cifradas (índices 0 y 1) se abren sin claves del usuario.
+  - **`wii_dvd_suite` arranca y lee su disco cifrado con `auto_keys = false`, sin archivo ni directorio de claves.**
+- A mano: un compilado con `-DORCA_DEFAULT_KEYS_FILE=tests/test_key_bundle.txt` (CMake: «default values from test_key_bundle.txt (176 bytes)»). Con `HOME` vacío, `orca_disc verify` descifra la imagen WBFS sintética sin claves del usuario; el compilado normal falla nombrando el handle 4.
+- `crypto` (+1): la ruta AES con instrucciones ARMv8 contra el código portable, en 200 casos aleatorios (cifrar, descifrar e IV final), y medida de velocidad.
+  - En x86-64 no aplica: el código portable da 38,8 MB/s.
+  - El archivo ARM64 compilado con `clang --target=aarch64` contiene las instrucciones `aese`, `aesd`, `aesmc` y `aesimc`.
+  - Resultado en ARM64: ver el CI.
+- `wii_disc` (+1): lectura secuencial de 140 clústeres (3 grupos) en trozos de 0x5F00 bytes, y 4 hilos con 300 lecturas aleatorias cada uno; todo igual a los datos originales (la partición protege su caché con un mutex).
+- **Diferencia encontrada al compararlo con Dolphin:** para un handle inexistente, Dolphin devuelve `IOSC_EACCES`, porque comprueba el propietario primero. La nueva versión devolvía `IOSC_EINVAL`; la prueba existente lo detectó y se corrigió.
+
 ### OrcaIOSC y provisión automática de claves
 
 Ejecutado el 2026-11-24 en x86-64: GCC, Clang y GCC + ASan + UBSan, **31 pruebas pasan en las tres, 0 advertencias; `real_images` *Skipped***.

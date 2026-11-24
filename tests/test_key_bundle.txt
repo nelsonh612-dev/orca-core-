@@ -1,0 +1,3 @@
+# Test-only values for the build-time key bundle test (NOT Nintendo's keys).
+common_key = 1032547698BADCFE0123456789ABCDEF
+korean_common_key = 5a5a5a5a0102030405060708090a0b0c

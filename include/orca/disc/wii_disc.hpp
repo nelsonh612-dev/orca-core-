@@ -32,6 +32,7 @@
 
 #include <array>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <vector>
@@ -161,6 +162,7 @@ private:
     u64 clock_{0}, decrypted_{0}, hits_{0};
     std::vector<u8> raw_; // scratch for one encrypted cluster
     std::string error_;
+    std::mutex mutex_;    // read() and verify_all() may be called from several threads
 };
 
 } // namespace orca::disc

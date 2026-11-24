@@ -12,6 +12,8 @@
 #include "test_framework.hpp"
 
 #include <algorithm>
+#include <thread>
+#include <atomic>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -416,6 +418,41 @@ TEST_CASE(wii_cluster_cache) {
     CHECK(p->read(0, b)); // evicted: decrypted again, same data
     CHECK_EQ(p->clusters_decrypted(), now + 1U);
     CHECK(std::equal(b.begin(), b.end(), plain.begin()));
+}
+
+TEST_CASE(wii_partition_sequential_random_and_concurrent_reads) {
+    const auto plain = plain_data(140); // three hash groups
+    MemoryDisc disc(build_disc(plain));
+    std::string err;
+    auto p = WiiPartition::open(disc, kPart, test_keys(), err);
+    CHECK(p != nullptr);
+    if (!p) return;
+    // sequential, in chunks that do not line up with clusters
+    std::vector<u8> seq;
+    std::vector<u8> chunk(0x5F00);
+    for (u64 at = 0; at < p->size(); at += chunk.size()) {
+        const std::size_t n = static_cast<std::size_t>(std::min<u64>(chunk.size(), p->size() - at));
+        CHECK(p->read(at, std::span<u8>(chunk.data(), n)));
+        seq.insert(seq.end(), chunk.begin(), chunk.begin() + static_cast<std::ptrdiff_t>(n));
+    }
+    CHECK(seq == plain);
+    // random reads from four threads at once, all checked against the plain data
+    std::atomic<int> bad{0};
+    std::vector<std::thread> threads;
+    for (u32 t = 0; t < 4; ++t) {
+        threads.emplace_back([&, t] {
+            u32 x = 0x9E3779B9U * (t + 1U);
+            std::vector<u8> b;
+            for (int i = 0; i < 300; ++i) {
+                x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+                const u64 at = x % p->size();
+                b.resize(std::min<std::size_t>(1U + (x >> 8) % 0x9000U, static_cast<std::size_t>(p->size() - at)));
+                if (!p->read(at, b) || !std::equal(b.begin(), b.end(), plain.begin() + static_cast<std::ptrdiff_t>(at))) ++bad;
+            }
+        });
+    }
+    for (auto& th : threads) th.join();
+    CHECK_EQ(bad.load(), 0);
 }
 
 TEST_CASE(wii_partition_rejects_tampering_at_every_level) {

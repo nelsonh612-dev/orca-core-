@@ -18,7 +18,9 @@ android {
         }
         externalNativeBuild {
             cmake {
-                arguments '-DANDROID_STL=c++_static'
+                // OrcaIOSC's built-in default values (include/orca/ios/key_bundle.hpp): a key file
+                // given by the builder through ORCA_DEFAULT_KEYS_FILE; none by default.
+                arguments '-DANDROID_STL=c++_static', "-DORCA_DEFAULT_KEYS_FILE=${System.getenv('ORCA_DEFAULT_KEYS_FILE') ?: ''}"
                 cppFlags '-std=c++20'
             }
         }

@@ -281,8 +281,9 @@ JNIEXPORT jstring JNICALL Java_org_orca_emu_NativeLib_importKeys(JNIEnv* env, jc
 JNIEXPORT jstring JNICALL Java_org_orca_emu_NativeLib_keyStatus(JNIEnv* env, jclass, jstring dir) {
     orca::disc::WiiKeys keys;
     std::string report, error;
+    const std::string built_in = orca::ios::default_values_status();
     if (!orca::ios::load_default_key_provision({str(env, dir)}, keys, report, error)) return env->NewStringUTF(("ERROR: " + error).c_str());
-    return env->NewStringUTF(orca::ios::describe_keys(keys).c_str());
+    return env->NewStringUTF(("built-in " + built_in + ", imported " + orca::ios::describe_keys(keys)).c_str());
 }
 
 // Loads the disc behind `fd` (ownership passes to the core). Returns null or an error message.

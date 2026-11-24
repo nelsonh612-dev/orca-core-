@@ -27,6 +27,12 @@ public:
     bool cbc_decrypt(std::span<u8> data, Block& iv) const noexcept;
     bool cbc_encrypt(std::span<u8> data, Block& iv) const noexcept;
 
+    // The ARMv8 Cryptography Extension path (AArch64 CPUs that have it; same
+    // results as the portable code). enabled() can be switched off to compare.
+    static bool hardware_available() noexcept;
+    static bool hardware_enabled() noexcept;
+    static void set_hardware_enabled(bool on) noexcept;
+
 private:
     std::array<u32, 44> round_keys_{};
 };

@@ -6,6 +6,20 @@
 // cipher against the Appendix C vectors.
 #include "orca/crypto/aes.hpp"
 
+#include <atomic>
+
+#if defined(__aarch64__) && (defined(__linux__) || defined(__ANDROID__))
+#include <sys/auxv.h>
+#define ORCA_AES_HW 1
+#ifndef HWCAP_AES
+#define HWCAP_AES (1UL << 3)
+#endif
+namespace orca::crypto::detail {
+void aes_hw_cbc_decrypt(const std::uint8_t* rk, std::uint8_t* data, std::size_t size, std::uint8_t* iv);
+void aes_hw_cbc_encrypt(const std::uint8_t* rk, std::uint8_t* data, std::size_t size, std::uint8_t* iv);
+} // namespace orca::crypto::detail
+#endif
+
 namespace orca::crypto {
 
 namespace {
@@ -116,8 +130,38 @@ void Aes128::decrypt_block(const u8* in, u8* out) const noexcept {
     for (unsigned i = 0; i < 16; ++i) out[i] = s[i];
 }
 
+namespace {
+#if defined(ORCA_AES_HW)
+const bool kHwAvailable = (getauxval(AT_HWCAP) & HWCAP_AES) != 0U;
+#else
+const bool kHwAvailable = false;
+#endif
+std::atomic<bool> g_hw_enabled{true};
+
+#if defined(ORCA_AES_HW)
+std::array<u8, 176> round_key_bytes(const std::array<u32, 44>& w) noexcept {
+    std::array<u8, 176> b{};
+    for (std::size_t i = 0; i < 44; ++i)
+        for (unsigned j = 0; j < 4; ++j) b[4 * i + j] = static_cast<u8>(w[i] >> (24U - 8U * j));
+    return b;
+}
+#endif
+} // namespace
+
+bool Aes128::hardware_available() noexcept { return kHwAvailable; }
+bool Aes128::hardware_enabled() noexcept { return kHwAvailable && g_hw_enabled.load(std::memory_order_relaxed); }
+void Aes128::set_hardware_enabled(bool on) noexcept { g_hw_enabled.store(on, std::memory_order_relaxed); }
+
 bool Aes128::cbc_decrypt(std::span<u8> data, Block& iv) const noexcept {
     if (data.size() % 16U != 0U) return false;
+#if defined(ORCA_AES_HW)
+    if (hardware_enabled()) {
+        auto rk = round_key_bytes(round_keys_);
+        detail::aes_hw_cbc_decrypt(rk.data(), data.data(), data.size(), iv.data());
+        secure_zero(rk.data(), rk.size());
+        return true;
+    }
+#endif
     for (std::size_t off = 0; off < data.size(); off += 16U) {
         Block c{}, p{};
         for (unsigned i = 0; i < 16; ++i) c[i] = data[off + i];
@@ -130,6 +174,14 @@ bool Aes128::cbc_decrypt(std::span<u8> data, Block& iv) const noexcept {
 
 bool Aes128::cbc_encrypt(std::span<u8> data, Block& iv) const noexcept {
     if (data.size() % 16U != 0U) return false;
+#if defined(ORCA_AES_HW)
+    if (hardware_enabled()) {
+        auto rk = round_key_bytes(round_keys_);
+        detail::aes_hw_cbc_encrypt(rk.data(), data.data(), data.size(), iv.data());
+        secure_zero(rk.data(), rk.size());
+        return true;
+    }
+#endif
     for (std::size_t off = 0; off < data.size(); off += 16U) {
         Block p{};
         for (unsigned i = 0; i < 16; ++i) p[i] = static_cast<u8>(data[off + i] ^ iv[i]);

@@ -4,6 +4,8 @@
 #include "orca/crypto/aes.hpp"
 #include "orca/crypto/sha1.hpp"
 #include "test_framework.hpp"
+#include <array>
+#include <chrono>
 
 #include <algorithm>
 #include <cstdio>
@@ -94,6 +96,51 @@ TEST_CASE(sha1_fips180_examples) {
         left -= n;
     }
     CHECK_HEX(hex_of(s.finish()), std::string("34aa973cd4c4daa4f61eeb2bdbad27316534016f"));
+}
+
+TEST_CASE(aes_hardware_path_matches_the_portable_code) {
+    // On AArch64 CPUs with the Cryptography Extension, CBC goes through AESE/AESD;
+    // both paths must give the same bytes for random keys, IVs and lengths.
+    std::printf("[crypto] ARMv8 AES instructions: %s\n", crypto::Aes128::hardware_available() ? "available, compared with the portable code" : "not available on this host (portable code only)");
+    u32 x = 0x12345678U;
+    const auto rnd = [&] { x ^= x << 13; x ^= x >> 17; x ^= x << 5; return static_cast<u8>(x); };
+    for (int round = 0; round < 200; ++round) {
+        std::array<u8, 16> key{};
+        crypto::Aes128::Block iv{};
+        for (auto& b : key) b = rnd();
+        for (auto& b : iv) b = rnd();
+        std::vector<u8> data(16U * (1U + static_cast<unsigned>(rnd()) % 64U));
+        for (auto& b : data) b = rnd();
+        const crypto::Aes128 aes(key);
+        auto sw_enc = data, hw_enc = data, sw_dec = data, hw_dec = data;
+        auto iv1 = iv, iv2 = iv, iv3 = iv, iv4 = iv;
+        crypto::Aes128::set_hardware_enabled(false);
+        CHECK(aes.cbc_encrypt(sw_enc, iv1));
+        CHECK(aes.cbc_decrypt(sw_dec, iv3));
+        crypto::Aes128::set_hardware_enabled(true);
+        CHECK(aes.cbc_encrypt(hw_enc, iv2));
+        CHECK(aes.cbc_decrypt(hw_dec, iv4));
+        CHECK(sw_enc == hw_enc && iv1 == iv2);
+        CHECK(sw_dec == hw_dec && iv3 == iv4);
+        auto back = sw_enc;
+        auto iv5 = iv;
+        CHECK(aes.cbc_decrypt(back, iv5));
+        CHECK(back == data);
+    }
+    // throughput of a Wii cluster's data (0x7C00 bytes), both paths
+    const std::array<u8, 16> key{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
+    const crypto::Aes128 aes(key);
+    std::vector<u8> cluster(0x7C00, 0x5A);
+    for (const bool hw : {false, true}) {
+        if (hw && !crypto::Aes128::hardware_available()) break;
+        crypto::Aes128::set_hardware_enabled(hw);
+        const auto t0 = std::chrono::steady_clock::now();
+        for (int i = 0; i < 64; ++i) { crypto::Aes128::Block iv{}; (void)aes.cbc_decrypt(cluster, iv); }
+        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        std::printf("[crypto] CBC decryption, %s: %.1f MB/s (64 clusters in %.2f ms)\n", hw ? "ARMv8 instructions" : "portable code",
+                    64.0 * 0x7C00 / 1e6 / (ms / 1e3), ms);
+    }
+    crypto::Aes128::set_hardware_enabled(true);
 }
 
 TEST_MAIN("crypto")

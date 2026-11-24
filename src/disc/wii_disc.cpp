@@ -189,7 +189,7 @@ WiiTicket parse_ticket(std::span<const u8> t) {
 std::optional<AesKey> decrypt_title_key(const WiiTicket& ticket, const WiiKeys& keys, std::string& error) {
     // ES asks IOSC (OrcaIOSC) to decrypt the ticket's key with the common key its
     // index selects, in the key set of the console type that issued the ticket.
-    const ios::Iosc iosc(ios::Iosc::console_type_of(ticket.issuer), keys);
+    ios::Iosc iosc(ios::Iosc::console_type_of(ticket.issuer), keys);
     auto key = iosc.title_key(ticket.title_id, ticket.encrypted_title_key, ticket.common_key_index, error);
     if (key) return key;
     const auto handle = iosc.common_key_handle(ticket.common_key_index, error);
@@ -197,9 +197,10 @@ std::optional<AesKey> decrypt_title_key(const WiiTicket& ticket, const WiiKeys& 
     const ios::Iosc::KeyEntry* e = iosc.entry(*handle);
     if (e != nullptr && !e->provided) {
         error = std::string("this encrypted partition needs the ") + e->name + " (IOSC handle " + std::to_string(*handle) +
-                "), which is not provided: Orca does not include Nintendo's keys. Import the one from your own console once "
-                "(app: \"Import Wii keys\"; tools: orca_disc import-keys FILE) and it is loaded automatically from then on "
-                "(see docs/DISCOS.md)";
+                "), which is not provided: this build has no default value for it (ORCA_DEFAULT_KEYS_FILE) and none was "
+                "imported. Import the one from your own console once (app: \"Import Wii keys\"; tools: orca_disc import-keys "
+                "FILE) and it is loaded automatically from then on (see docs/DISCOS.md)";
+        if (!iosc.bundle_error().empty()) error += "; " + iosc.bundle_error();
     }
     return std::nullopt;
 }
@@ -355,6 +356,7 @@ const u8* WiiPartition::cluster(u64 index) {
 }
 
 bool WiiPartition::read(u64 offset, std::span<u8> out) {
+    const std::lock_guard<std::mutex> lock(mutex_);
     if (!inside(offset, out.size(), size_)) {
         error_ = "read of " + std::to_string(out.size()) + " bytes at " + hex64(offset) + " is outside the partition (" + hex64(size_) + " bytes)";
         return false;
@@ -377,6 +379,7 @@ bool WiiPartition::read(u64 offset, std::span<u8> out) {
 }
 
 bool WiiPartition::verify_all() {
+    const std::lock_guard<std::mutex> lock(mutex_);
     if (!flags_.hashes) { error_ = "this disc carries no hashes to verify"; return false; }
     for (u64 i = 0; i < clusters_; ++i)
         if (cluster(i) == nullptr) return false;
