@@ -3,6 +3,7 @@
 // checked against its Appendix B/C vectors and SP 800-38A F.2 (tests/test_crypto.cpp).
 #pragma once
 #include "orca/core/bits.hpp"
+#include "orca/crypto/secure.hpp"
 
 #include <array>
 #include <span>
@@ -13,6 +14,9 @@ class Aes128 {
 public:
     using Block = std::array<u8, 16>;
     explicit Aes128(std::span<const u8, 16> key) noexcept;
+    ~Aes128() { secure_zero(round_keys_.data(), sizeof round_keys_); }
+    Aes128(const Aes128&) = default;
+    Aes128& operator=(const Aes128&) = default;
 
     void encrypt_block(const u8* in, u8* out) const noexcept;
     void decrypt_block(const u8* in, u8* out) const noexcept;

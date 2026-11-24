@@ -40,9 +40,11 @@ add_library(orca_core
     src/core/scheduler.cpp
     src/crypto/aes.cpp
     src/crypto/sha1.cpp
+    src/crypto/rsa.cpp
     src/disc/disc_image.cpp
     src/disc/fst.cpp
     src/disc/wii_disc.cpp
+    src/disc/wii_meta.cpp
     src/dsp/dsp_core.cpp
     src/dsp/hle.cpp
     src/dsp/hle_ax.cpp
