@@ -167,6 +167,16 @@ bool System::boot_disc(std::string& error) {
     if (d == nullptr) { error = "boot_disc: no disc inserted"; return false; }
     const auto header = disc::parse_header(*d, error);
     if (!header) return false;
+    if (header->wii) {
+        if (config_.console == Console::Wii) return boot_wii_disc(error);
+        error = "boot_disc: " + header->game_id + " is a Wii disc; the system has to be created as a Wii";
+        return false;
+    }
+    if (config_.console != Console::GameCube) {
+        error = "boot_disc: " + header->game_id + " is a GameCube disc; running it on a Wii needs MIOS (backward compatibility), "
+                "which is not emulated: create the system as a GameCube";
+        return false;
+    }
     const auto app = disc::parse_apploader_header(*d, error);
     if (!app) return false;
     const u32 app_bytes = app->size + app->trailer_size;
@@ -255,6 +265,11 @@ bool System::boot_wii_disc(std::string& error) {
     // The system menu opens the game partition: ES title, owner IDs
     if (!di_dev_->open_partition(*ios_, game->offset, error)) { error = "boot_wii_disc: " + error; return false; }
     disc::WiiPartition& part = *di_dev_->partition();
+    // the game's own header inside the partition (decrypted): Wii magic, DOL, FST
+    if (const auto inner = disc::parse_volume_header(part, true, error); !inner) {
+        error = "boot_wii_disc: game partition: " + error;
+        return false;
+    }
     const auto& tmd = part.tmd();
     const u32 ios_hi = static_cast<u32>(tmd[0x184]) << 24 | static_cast<u32>(tmd[0x185]) << 16 | static_cast<u32>(tmd[0x186]) << 8 | tmd[0x187];
     const u32 ios_lo = static_cast<u32>(tmd[0x188]) << 24 | static_cast<u32>(tmd[0x189]) << 16 | static_cast<u32>(tmd[0x18A]) << 8 | tmd[0x18B];

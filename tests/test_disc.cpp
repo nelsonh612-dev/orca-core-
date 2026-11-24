@@ -83,11 +83,20 @@ TEST_CASE(disc_rejections) {
     std::vector<u8> app(64, 0), dol(0x100, 0);
     auto wii = build_disc(app, dol); put32(wii, 0x1C, 0); put32(wii, 0x18, disc::kWiiMagic);
     disc::MemoryDisc w(wii);
-    CHECK(!disc::parse_header(w, err).has_value());
-    CHECK(err.find("Wii") != std::string::npos);
+    // a Wii disc's outer header is recognised (its DOL and FST are inside the game partition)
+    const auto wh = disc::parse_header(w, err);
+    CHECK(wh.has_value() && wh->wii && !wh->gamecube);
+    // ... but a GameCube system refuses to boot it, with the reason
+    {
+        system::System gc({});
+        gc.insert_disc(std::make_unique<disc::MemoryDisc>(wii));
+        CHECK(!gc.boot_disc(err));
+        CHECK(err.find("is a Wii disc") != std::string::npos);
+    }
     auto nomagic = build_disc(app, dol); put32(nomagic, 0x1C, 0);
     disc::MemoryDisc n(nomagic);
     CHECK(!disc::parse_header(n, err).has_value());
+    CHECK(err.find("neither") != std::string::npos);
     auto baddol = build_disc(app, dol); put32(baddol, 0x420, 0x7FFFFFFF);
     disc::MemoryDisc b(baddol);
     CHECK(!disc::parse_header(b, err).has_value());

@@ -126,7 +126,7 @@ int main(int argc_in, char** argv_in) {
             if (!fst) { std::fprintf(stderr, "%s\n", ferr.c_str()); return 1; }
             for (const auto& e : *fst)
                 if (e.directory) std::printf("%-48s <dir>\n", e.path.c_str());
-                else std::printf("%-48s %10u bytes @ 0x%08X\n", e.path.c_str(), e.size, e.offset);
+                else std::printf("%-48s %10llu bytes @ 0x%08llX\n", e.path.c_str(), static_cast<unsigned long long>(e.size), static_cast<unsigned long long>(e.offset));
             return 0;
         }
         sys.insert_disc(std::move(disc));

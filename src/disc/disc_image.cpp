@@ -62,7 +62,8 @@ bool FdDisc::read(u64 offset, std::span<u8> out) {
 }
 #endif
 
-std::optional<DiscHeader> parse_header(DiscReader& disc, std::string& error) {
+namespace {
+std::optional<DiscHeader> read_header(DiscReader& disc, std::string& error) {
     std::array<u8, 0x440> h{};
     if (!disc.read(0, h)) { error = "disc: image smaller than the 0x440-byte header"; return std::nullopt; }
     DiscHeader d;
@@ -77,9 +78,39 @@ std::optional<DiscHeader> parse_header(DiscReader& disc, std::string& error) {
     d.fst_offset = be32(&h[0x424]);
     d.fst_size = be32(&h[0x428]);
     d.fst_max_size = be32(&h[0x42C]);
-    if (d.wii) { error = "disc: Wii discs (encrypted partitions) are not supported yet"; return std::nullopt; }
-    if (!d.gamecube) { error = "disc: GameCube magic 0xC2339F3D not found at 0x1C"; return std::nullopt; }
-    if (d.dol_offset == 0 || d.dol_offset >= disc.size()) { error = "disc: main DOL offset outside the image"; return std::nullopt; }
+    return d;
+}
+} // namespace
+
+std::optional<DiscHeader> parse_header(DiscReader& disc, std::string& error) {
+    auto d = read_header(disc, error);
+    if (!d) return std::nullopt;
+    if (d->wii) return d; // the game's DOL and FST are inside its partition
+    if (!d->gamecube) { error = "disc: neither the GameCube magic 0xC2339F3D at 0x1C nor the Wii magic 0x5D1C9EA3 at 0x18"; return std::nullopt; }
+    if (d->dol_offset == 0 || d->dol_offset >= disc.size()) { error = "disc: main DOL offset outside the image"; return std::nullopt; }
+    return d;
+}
+
+std::optional<DiscHeader> parse_volume_header(DiscReader& volume, bool wii, std::string& error) {
+    auto d = read_header(volume, error);
+    if (!d) return std::nullopt;
+    if (wii) {
+        if (!d->wii) { error = "Wii partition: no Wii magic at 0x18 of the decrypted data (wrong key or not a game partition)"; return std::nullopt; }
+        d->offset_shift = 2;
+        d->dol_offset <<= 2;
+        d->fst_offset <<= 2;
+        d->fst_size <<= 2;
+        d->fst_max_size <<= 2;
+    } else if (!d->gamecube) {
+        error = "disc: GameCube magic 0xC2339F3D not found at 0x1C";
+        return std::nullopt;
+    }
+    const u64 size = volume.size();
+    if (d->dol_offset < 0x2440U || d->dol_offset >= size) { error = "disc: main DOL offset outside the volume"; return std::nullopt; }
+    if (d->fst_size != 0U && (d->fst_offset > size || d->fst_size > size - d->fst_offset)) {
+        error = "disc: FST outside the volume";
+        return std::nullopt;
+    }
     return d;
 }
 

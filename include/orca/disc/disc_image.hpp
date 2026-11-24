@@ -9,8 +9,10 @@
 //   0x14 code size, 0x18 trailer size; code starts at 0x2460 and is loaded
 //   at 0x81200000.
 //
-// Wii discs (encrypted partitions) are detected and rejected explicitly.
-// Compressed formats (CISO, GCZ, RVZ, WBFS) are not supported.
+// Wii discs: the outer header carries the Wii magic and the partition table
+// (wii_disc.hpp); the game's own header, apploader, DOL and FST are inside the
+// game partition, where 0x420/0x424/0x428 are stored >> 2 (offset_shift = 2,
+// as Dolphin's GetOffsetShift for Wii volumes). Image formats: see blob.hpp.
 #pragma once
 #include "orca/core/bits.hpp"
 
@@ -80,10 +82,11 @@ struct DiscHeader {
     u8 version{0};
     bool gamecube{false};
     bool wii{false};
-    u32 dol_offset{0};
-    u32 fst_offset{0};
-    u32 fst_size{0};
-    u32 fst_max_size{0};
+    u8 offset_shift{0};    // 0 GameCube, 2 inside a Wii partition
+    u64 dol_offset{0};     // already shifted
+    u64 fst_offset{0};
+    u64 fst_size{0};
+    u64 fst_max_size{0};
 };
 
 struct ApploaderHeader {
@@ -93,7 +96,14 @@ struct ApploaderHeader {
     u32 trailer_size{0};
 };
 
+// The header at offset 0 of an image. GameCube: checks the magic and that the
+// DOL is inside the image. Wii: returns the ID, name and wii = true; the game's
+// DOL and FST are found with parse_volume_header on the game partition.
 std::optional<DiscHeader> parse_header(DiscReader& disc, std::string& error);
+// The header of a volume whose data is read directly: a GameCube disc, or a
+// decrypted Wii partition (`wii`: offsets stored >> 2). Checks the DOL and FST
+// ranges against the volume's size.
+std::optional<DiscHeader> parse_volume_header(DiscReader& volume, bool wii, std::string& error);
 std::optional<ApploaderHeader> parse_apploader_header(DiscReader& disc, std::string& error);
 
 } // namespace orca::disc
