@@ -48,7 +48,7 @@ Orca sigue el mismo procedimiento (mismos offsets, mismo IV, misma estructura de
   - el índice mayor que 2 se rechaza. Dolphin usa la clave 0 tras una alerta. Orca admite el índice 2 (vWii) si el usuario aporta esa clave; Dolphin no tiene ranura para él.
 - **Archivos de claves** (`--wii-keys=` en las herramientas; el selector de la app):
   - 16 bytes exactos: una clave (índice 0 por defecto).
-  - `keys.bin` de BootMii: 0x400 bytes, encabezado de texto «BackupMii v1» de 0x100 bytes y luego la OTP de la consola. Solo se lee la clave común (OTP 0x14 = archivo 0x114). Las claves privadas de la consola que también contiene no se usan ni se guardan. Un archivo de 1 KiB sin ese encabezado se rechaza: **no es el mismo formato que usa Dolphin internamente**.
+  - `keys.bin` de BootMii: 0x400 bytes, encabezado «BackupMii» de 0x100 bytes y estructura de volcado de consola. Orca importa únicamente los dos campos de descifrado de títulos documentados en el formato: clave común en 0x114 y clave coreana en 0x274. No importa ni conserva las claves privadas NG, NAND AES/HMAC, backup, identificadores ni firmas de consola. Un archivo de 1 KiB sin ese encabezado se rechaza.
   - Texto, una clave por línea: `common_key = <32 hex>`, `korean_common_key = …`, `vwii_common_key = …`, `dev_common_key = …`, y opcionalmente `root_key_file = <ruta>` (módulo de 512 bytes, o módulo + exponente, o un certificado).
 - **Discos sin cifrado** (encabezado 0x61 ≠ 0): no necesitan ninguna clave.
 
