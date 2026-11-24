@@ -8,7 +8,7 @@
 //   0x004 PPCCTRL    control: bit0 X1 (execute, set by Broadway, cleared by
 //                    Starlet when it takes the request), bit1 Y2 (Starlet
 //                    acknowledged; write 1 to clear), bit2 Y1 (Starlet replied;
-//                    write 1 to clear), bit3 X2 (relaunch), bit4 IY1, bit5 IY2
+//                    write 1 to clear), bit3 X2 (reply taken; kept, as in Dolphin), bit4 IY1, bit5 IY2
 //                    (interrupt enables for Y1 / Y2)
 //   0x008 ARMMSG     reply address from Starlet
 //   0x024 VISOLID    solid-colour video output (bit0 enable)

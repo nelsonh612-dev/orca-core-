@@ -13,6 +13,8 @@
 #include "orca/disc/disc_image.hpp"
 #include "test_port.hpp"
 #include "wii_disc_builder.hpp"
+#include "image_writers.hpp"
+#include "orca/disc/blob.hpp"
 #include "orca/memory/console_maps.hpp"
 #include "orca/system/system.hpp"
 #include "test_framework.hpp"
@@ -995,6 +997,89 @@ TEST_CASE(wii_disc_boot_runs_the_integer_suite) {
     CHECK(port.exited);
     CHECK_EQ(port.exit_code, 0U);
     std::printf("[ios] integer_suite booted from a Wii disc partition: %zu values, exit %u\n", port.log.size(), port.exit_code);
+}
+
+namespace {
+// The partition data of a test Wii disc: header (DOL at 0x20000, in words at 0x420),
+// apploader at 0x2440, the DOL, and the words 0xA5000000 + i at 0x44000-0x48000.
+std::vector<u8> wii_program_partition(const char* dol_name) {
+    const auto app = read_file(ORCA_PROGRAMS_DIR "/apploader_wii.bin");
+    const auto dol = read_file((std::string(ORCA_PROGRAMS_DIR) + "/" + dol_name).c_str());
+    CHECK(!app.empty() && !dol.empty());
+    const u32 dol_at = 0x20000;
+    const u64 bytes = std::max<u64>(dol_at + dol.size(), 0x48000U);
+    std::vector<u8> plain = test_wii::plain_data((bytes + disc::kWiiClusterData - 1U) / disc::kWiiClusterData);
+    std::fill(plain.begin() + 0x20, plain.begin() + 0x2440 + 0x20 + static_cast<std::ptrdiff_t>(app.size()), u8{0});
+    put_be32(plain, 0x420, dol_at >> 2);
+    const char date[] = "2026/11/24";
+    std::copy(date, date + sizeof date, plain.begin() + 0x2440);
+    put_be32(plain, 0x2450, 0x81200000U);
+    put_be32(plain, 0x2454, static_cast<u32>((app.size() + 31U) & ~std::size_t{31}));
+    put_be32(plain, 0x2458, 0);
+    std::copy(app.begin(), app.end(), plain.begin() + 0x2460);
+    std::copy(dol.begin(), dol.end(), plain.begin() + dol_at);
+    for (u32 i = 0; i < 0x1000; ++i) put_be32(plain, 0x44000 + 4 * i, 0xA5000000U + i);
+    return plain;
+}
+
+void make_menu_nand(const std::filesystem::path& root) {
+    ios::NandFs nand(root);
+    std::string error;
+    CHECK(nand.load(error));
+    for (const char* d : {"/title", "/title/00000001", "/title/00000001/00000002", "/title/00000001/00000002/data"})
+        CHECK_EQ(nand.create(0, 0, d, 0, {3, 3, 1}, false), 0);
+    CHECK_EQ(nand.create(0, 0, "/title/00000001/00000002/data/setting.txt", 0, {3, 3, 1}, true), 0);
+    const s32 h = nand.open(0, 0, "/title/00000001/00000002/data/setting.txt", 3);
+    std::vector<u8> st(0x100, 0x11);
+    CHECK_EQ(nand.write(h, st), 0x100);
+    nand.close(h);
+}
+} // namespace
+
+TEST_CASE(wii_program_reads_the_disc_through_ios_at_run_time) {
+    const auto plain = wii_program_partition("wii_dvd_suite.dol");
+    const auto raw = test_wii::build_disc(plain);
+    TempDir dir("dvd");
+    make_menu_nand(dir.p);
+    for (const bool wbfs : {false, true}) { // the same disc raw and as a WBFS image
+        system::SystemConfig cfg;
+        cfg.console = system::Console::Wii;
+        cfg.nand_root = dir.p.string();
+        cfg.wii_keys = test_wii::test_keys();
+        system::System sys(cfg);
+        test::TestPort port;
+        port.cpu = &sys.cpu();
+        sys.bus().map_mmio("test-port", test::TestPort::kPhysical, 0x1000, port);
+        std::string error;
+        disc::ImageFormat format{};
+        auto d = disc::open_image(std::make_unique<disc::MemoryDisc>(wbfs ? test_images::make_wbfs(raw) : raw), &format, error);
+        CHECK(d != nullptr);
+        if (!d) { std::printf("    %s\n", error.c_str()); return; }
+        CHECK(format == (wbfs ? disc::ImageFormat::Wbfs : disc::ImageFormat::Raw));
+        sys.insert_disc(std::move(d));
+        const bool booted = sys.boot_disc(error); // dispatches to the Wii boot
+        if (!booted) std::fprintf(stderr, "    boot_disc: %s\n", error.c_str());
+        CHECK(booted);
+        if (!booted) return;
+        const auto res = sys.run(4000000000ULL);
+        if (res.device_stop) std::fprintf(stderr, "    stopped: %s\n", res.device_error.c_str());
+        CHECK(res.stop == ppc::StepResult::Halted);
+        CHECK(port.exited);
+        CHECK_EQ(port.exit_code, 0U);
+        const std::vector<u32> expected = {
+            0,                              // /dev/di opened as fd 0
+            1, 0x52534245U, disc::kWiiMagic, // ReadDiscID: "RSBE", Wii magic
+            1, 0xA5000000U, 0xA5000007U,     // partition read inside a cluster
+            1, 0xA5000000U + 0x6F0U, 0xA5000000U + 0x6FFU, 0xA5000000U + 0x70EU, 0xA5000000U + 0x70FU, // across 0x45C00
+            2,                              // past the partition: drive error
+            1, 2,                           // cover status: disc present
+            0,                              // close
+        };
+        CHECK(port.log == expected);
+        if (port.log != expected) for (u32 v : port.log) std::fprintf(stderr, "    got %08X\n", v);
+        std::printf("[ios] wii_dvd_suite (%s image): %zu values from /dev/di at run time %s\n", wbfs ? "WBFS" : "raw", port.log.size(),
+                    port.log == expected ? "as expected" : "MISMATCH");
+    }
 }
 
 TEST_CASE(wii_disc_boot_failures_are_explicit) {

@@ -1,12 +1,16 @@
 // Disc images, MMIO page splitter, Disc Interface, and HLE disc boot through a
 // real apploader (compiled with clang) on synthetic GameCube discs.
+#include "orca/disc/blob.hpp"
 #include "orca/disc/disc_image.hpp"
 #include "orca/hw/disc_interface.hpp"
 #include "orca/hw/mmio_splitter.hpp"
 #include "orca/system/system.hpp"
+#include "image_writers.hpp"
 #include "ppc_asm.hpp"
 #include "test_framework.hpp"
 #include "test_port.hpp"
+
+#include <fcntl.h>
 
 #include <algorithm>
 #include <cstdio>
@@ -123,6 +127,108 @@ TEST_CASE(file_disc_reads_ranges) {
     CHECK(d->read(0, w)); // still usable after a failed read
     CHECK_EQ(w[0], static_cast<u8>('O'));
     CHECK(disc::FileDisc::open("/nonexistent/disc.iso", err) == nullptr);
+}
+
+// ------------------------------------------------------------ image formats
+TEST_CASE(image_formats_read_like_the_raw_image) {
+    std::vector<u8> app(64, 0), dol(0x100, 0);
+    const auto raw = build_disc(app, dol);
+    std::string err;
+    struct Case { const char* name; std::vector<u8> file; disc::ImageFormat format; };
+    std::vector<Case> cases;
+    cases.push_back({"raw", raw, disc::ImageFormat::Raw});
+    cases.push_back({"CISO 32 KiB", test_images::make_ciso(raw, 0x8000), disc::ImageFormat::Ciso});
+    cases.push_back({"CISO 2 KiB", test_images::make_ciso(raw, 0x800), disc::ImageFormat::Ciso});
+#if defined(ORCA_HAVE_ZLIB)
+    cases.push_back({"GCZ 16 KiB", test_images::make_gcz(raw, 0x4000), disc::ImageFormat::Gcz});
+    CHECK(disc::gcz_supported());
+#endif
+    for (const Case& c : cases) {
+        disc::ImageFormat f{};
+        auto d = disc::open_image(std::make_unique<disc::MemoryDisc>(c.file), &f, err);
+        CHECK(d != nullptr);
+        if (!d) { std::printf("    %s: %s\n", c.name, err.c_str()); continue; }
+        CHECK(f == c.format);
+        CHECK(d->size() >= raw.size());
+        std::vector<u8> all(raw.size());
+        CHECK(d->read(0, all));
+        CHECK(all == raw);
+        for (const u64 at : {u64{0x7FF}, u64{0x3FFF}, u64{0x100000 - 3}}) { // unaligned, across blocks
+            std::vector<u8> piece(0x4005);
+            CHECK(d->read(at, piece));
+            CHECK(std::equal(piece.begin(), piece.end(), raw.begin() + static_cast<std::ptrdiff_t>(at)));
+        }
+        std::vector<u8> past(8);
+        CHECK(!d->read(d->size() - 4U, past));
+        const auto h = disc::parse_header(*d, err);
+        CHECK(h.has_value() && h->game_id == "ORCA01");
+    }
+    { // NKit images are raw-compatible
+        auto n = raw;
+        std::memcpy(&n[0x200], "NKIT", 4);
+        disc::ImageFormat f{};
+        CHECK(disc::open_image(std::make_unique<disc::MemoryDisc>(n), &f, err) != nullptr);
+        CHECK(f == disc::ImageFormat::NKit);
+    }
+    { // from a file and from a file descriptor
+        const char* path = "/tmp/orca_test_image.ciso";
+        {
+            const auto c = test_images::make_ciso(raw, 0x8000);
+            std::ofstream o(path, std::ios::binary);
+            o.write(reinterpret_cast<const char*>(c.data()), static_cast<std::streamsize>(c.size()));
+        }
+        disc::ImageFormat f{};
+        auto d = disc::open_image_file(path, &f, err);
+        CHECK(d != nullptr && f == disc::ImageFormat::Ciso);
+        auto e = disc::open_image_fd(::open(path, O_RDONLY), &f, err);
+        CHECK(e != nullptr && f == disc::ImageFormat::Ciso);
+        std::vector<u8> w(4);
+        if (e) { CHECK(e->read(0x100004, w)); CHECK_EQ(w[3], 0x01U); }
+        CHECK(disc::open_image_file("/nonexistent/x.iso", &f, err) == nullptr);
+    }
+}
+
+TEST_CASE(image_format_errors_are_explicit) {
+    std::vector<u8> app(64, 0), dol(0x100, 0);
+    const auto raw = build_disc(app, dol);
+    std::string err;
+    const auto open = [&](std::vector<u8> file) { return disc::open_image(std::make_unique<disc::MemoryDisc>(std::move(file)), nullptr, err); };
+    const auto refused = [&](std::vector<u8> file, const char* why) {
+        CHECK(open(std::move(file)) == nullptr);
+        const bool ok = err.find(why) != std::string::npos;
+        if (!ok) std::printf("    expected \"%s\" in: %s\n", why, err.c_str());
+        CHECK(ok);
+    };
+    std::vector<u8> m(0x1000, 0);
+    std::memcpy(m.data(), "RVZ\x01", 4); refused(m, "RVZ images are not supported");
+    std::memcpy(m.data(), "WIA\x01", 4); refused(m, "WIA images are not supported");
+    std::memcpy(m.data(), "EGGS", 4); refused(m, "NFS");
+    m[0] = 0xAE; m[1] = 0x0F; m[2] = 0x38; m[3] = 0xA2; refused(m, "TGC");
+    std::fill(m.begin(), m.end(), 0x5A); refused(m, "not a GameCube or Wii disc");
+    refused(std::vector<u8>(2, 0), "too small");
+    { auto c = test_images::make_ciso(raw, 0x8000); c[8 + 3] = 7; refused(c, "invalid map entry"); }
+    { auto c = test_images::make_ciso(raw, 0x8000); c[4] = 3; refused(c, "power of two"); }
+    { auto c = test_images::make_ciso(raw, 0x8000); c.resize(c.size() - 0x100); refused(c, "truncated"); }
+#if defined(ORCA_HAVE_ZLIB)
+    { auto g = test_images::make_gcz(raw, 0x4000); g.resize(g.size() - 0x10); refused(g, "truncated"); }
+    { auto g = test_images::make_gcz(raw, 0x4000); test_images::le32(g, 24, 0); refused(g, "block size"); }
+    { // a corrupt block: reads of other blocks work, that one fails with the reason
+        auto g = test_images::make_gcz(raw, 0x4000);
+        const std::size_t data = 32 + 12U * (raw.size() / 0x4000);
+        u64 p3 = 0;
+        for (unsigned k = 0; k < 8; ++k) p3 |= u64{g[32 + 8 * 3 + k]} << (8 * k);
+        g[data + static_cast<std::size_t>(p3 & ~(1ULL << 63)) + 2] ^= 0xFF;
+        auto d = open(g);
+        CHECK(d != nullptr);
+        if (d) {
+            std::vector<u8> b(0x100);
+            CHECK(d->read(0, b));
+            CHECK(!d->read(3U * 0x4000U + 8U, b));
+            CHECK(d->failure_reason().find("block 3") != std::string::npos);
+            CHECK(d->failure_reason().find("Adler-32") != std::string::npos);
+        }
+    }
+#endif
 }
 
 // ------------------------------------------------------------ MMIO splitter
@@ -259,6 +365,38 @@ TEST_CASE(di_errors_are_explicit) {
     CHECK(empty.mmio_read(0x00, 4, sr));
     CHECK_EQ(sr & hw::di::DISR_DEINT, hw::di::DISR_DEINT);
     CHECK(empty.drive_error() == hw::di::DriveError::MediumNotPresent);
+}
+
+TEST_CASE(di_stops_when_the_image_cannot_deliver_data) {
+    struct Broken final : disc::DiscReader {
+        std::vector<u8> d;
+        u64 size() const override { return d.size(); }
+        bool read(u64 off, std::span<u8> out) override {
+            if (off + out.size() > d.size() || (off <= 0x100000U && off + out.size() > 0x100000U)) return false;
+            std::copy_n(d.begin() + static_cast<std::ptrdiff_t>(off), out.size(), out.begin());
+            return true;
+        }
+        std::string failure_reason() const override { return "block 64 is corrupt"; }
+    };
+    DiRig t;
+    auto b = std::make_unique<Broken>();
+    std::vector<u8> app(64, 0), dol(0x100, 0);
+    b->d = build_disc(app, dol);
+    t.di.insert(std::move(b));
+    t.di.after_ipl_boot(false, 0);
+    t.read_cmd(0x2000, 0x40, 0x0FFFE0); // a range the image cannot deliver
+    t.w(0x1C, 3);
+    t.sched.advance_to(t.sched.now() + 1);
+    CHECK(t.di.image_failed());
+    CHECK(t.di.image_failure().find("block 64 is corrupt") != std::string::npos);
+    CHECK(t.di.image_failure().find("0xFFFE0") != std::string::npos);
+    // past the end of the disc is the game's business (DEINT), not an image failure
+    DiRig u;
+    u.read_cmd(0x2000, 0x20, 0x1FFFF0);
+    u.w(0x1C, 3);
+    u.sched.advance_to(u.sched.now() + 1);
+    CHECK(!u.di.image_failed());
+    CHECK((u.r(0x00) & hw::di::DISR_DEINT) != 0U);
 }
 
 TEST_CASE(di_drive_states_and_immediate_commands) {
@@ -401,9 +539,11 @@ TEST_CASE(cpu_stop_reason_names_the_device) {
 // ------------------------------------------------------------ HLE disc boot
 #ifdef ORCA_PROGRAMS_DIR
 namespace {
-struct BootRun { bool booted = false; std::string error; ppc::StepResult stop{}; std::vector<u32> log; u32 exit_code = 99; u32 entry = 0; };
+struct BootRun { bool booted = false; std::string error; ppc::StepResult stop{}; std::vector<u32> log; u32 exit_code = 99; u32 entry = 0; disc::ImageFormat format{}; };
 
-BootRun boot_and_run(const char* dol_name) {
+enum class Wrap { Raw, Ciso, Gcz };
+
+BootRun boot_and_run(const char* dol_name, Wrap wrap = Wrap::Raw) {
     BootRun r;
     const auto app = read_file(ORCA_PROGRAMS_DIR "/apploader.bin");
     const auto dol = read_file((std::string(ORCA_PROGRAMS_DIR) + "/" + dol_name).c_str());
@@ -412,7 +552,16 @@ BootRun boot_and_run(const char* dol_name) {
     test::TestPort port;
     port.cpu = &sys.cpu();
     sys.bus().map_mmio("test-port", test::TestPort::kPhysical, 0x1000, port);
-    sys.insert_disc(std::make_unique<disc::MemoryDisc>(build_disc(app, dol)));
+    std::vector<u8> image = build_disc(app, dol);
+    if (wrap == Wrap::Ciso) image = test_images::make_ciso(image, 0x8000);
+#if defined(ORCA_HAVE_ZLIB)
+    if (wrap == Wrap::Gcz) image = test_images::make_gcz(image, 0x4000);
+#endif
+    disc::ImageFormat format = disc::ImageFormat::Raw;
+    auto d = disc::open_image(std::make_unique<disc::MemoryDisc>(std::move(image)), &format, r.error);
+    if (!d) { std::fprintf(stderr, "    open_image: %s\n", r.error.c_str()); return r; }
+    r.format = format;
+    sys.insert_disc(std::move(d));
     r.booted = sys.boot_disc(r.error);
     if (!r.booted) { std::fprintf(stderr, "    boot_disc: %s\n", r.error.c_str()); return r; }
     r.entry = sys.cpu().state().pc;
@@ -460,6 +609,25 @@ TEST_CASE(boot_dvd_suite_reads_disc_through_di) {
     CHECK(r.log == expected);
     if (r.log != expected) for (u32 v : r.log) std::fprintf(stderr, "    got %08X\n", v);
     std::printf("[disc] dvd_suite booted from disc: %zu values %s\n", r.log.size(), r.log == expected ? "as expected" : "MISMATCH");
+}
+
+TEST_CASE(boot_from_compressed_images) {
+    // the same programs from a CISO and a GCZ image: same results as the raw image
+    const BootRun c = boot_and_run("integer_suite.dol", Wrap::Ciso);
+    CHECK(c.booted && c.format == disc::ImageFormat::Ciso);
+    CHECK(c.stop == StepResult::Halted);
+    CHECK_EQ(c.exit_code, 0U);
+#if defined(ORCA_HAVE_ZLIB)
+    const BootRun raw = boot_and_run("dvd_suite.dol");
+    const BootRun g = boot_and_run("dvd_suite.dol", Wrap::Gcz); // reads the disc through the DI while it runs
+    CHECK(g.booted && g.format == disc::ImageFormat::Gcz);
+    CHECK(g.stop == StepResult::Halted);
+    CHECK_EQ(g.exit_code, 0U);
+    CHECK(!g.log.empty() && g.log == raw.log);
+    std::printf("[disc] dvd_suite from a GCZ image: %zu values %s\n", g.log.size(), g.log == raw.log ? "identical to the raw image" : "MISMATCH");
+#else
+    CHECK(!disc::gcz_supported());
+#endif
 }
 
 TEST_CASE(boot_disc_failures_are_reported) {

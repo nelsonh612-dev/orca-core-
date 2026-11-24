@@ -98,7 +98,9 @@ bool HollywoodIpc::mmio_write(u32 offset, unsigned size, u64 value64) {
         ctrl_ = c;
         if (((v & CTRL_Y1) != 0U && (c & CTRL_IY1) != 0U) || ((v & CTRL_Y2) != 0U && (c & CTRL_IY2) != 0U))
             flags_ |= IRQ_IPC_BROADWAY;
-        if ((c & CTRL_X2) != 0U) return fail("PPCCTRL X2 (relaunch Starlet) is not emulated");
+        // X2: Broadway tells Starlet it has taken the reply (libogc and the SDK write it
+        // after every reply, and 0x38 when initialising). Starlet's IOS does not wait
+        // for it, so, as in Dolphin, it is only kept in the register.
         if ((c & CTRL_X1) != 0U && execute_listener_) execute_listener_(ppc_msg_);
         if (ready_listener_) ready_listener_();
         update_interrupt();

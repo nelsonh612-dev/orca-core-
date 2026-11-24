@@ -244,9 +244,11 @@ std::unique_ptr<WiiPartition> WiiPartition::open(DiscReader& disc, u64 po, const
     if (tmd_off < 0x2C0U || !inside(tmd_off, tmd_size, room)) { error = "TMD at partition offset " + hex64(tmd_off) + " is outside the image"; return nullptr; }
     if (cert_off < 0x2C0U || !inside(cert_off, cert_size, room)) { error = "certificate chain at partition offset " + hex64(cert_off) + " is outside the image"; return nullptr; }
     if (data_off < 0x2C0U || data_size == 0U) { error = "partition data offset/size invalid"; return nullptr; }
-    if (!inside(data_off, data_size, room)) {
-        error = "partition data (" + hex64(po + data_off) + " + " + hex64(data_size) + ") extends past the end of the image (" +
-                hex64(disc_size) + " bytes): truncated image?";
+    // As in Dolphin, the data may extend past the end of a trimmed image: only the
+    // clusters actually read must be present (a missing one is reported then).
+    if (data_off >= room) {
+        error = "partition data starts at " + hex64(po + data_off) + ", past the end of the image (" + hex64(disc_size) +
+                " bytes): truncated image";
         return nullptr;
     }
     std::vector<u8> tmd_bytes(tmd_size);
@@ -315,7 +317,12 @@ const u8* WiiPartition::cluster(u64 index) {
     slot->index = ~u64{0}; // invalid until verified
     slot->data.resize(kWiiClusterData);
     raw_.resize(kWiiClusterSize);
-    if (!disc_.read(data_offset_ + index * kWiiClusterSize, raw_)) { error_ = "cluster " + std::to_string(index) + " is outside the image"; return nullptr; }
+    if (!disc_.read(data_offset_ + index * kWiiClusterSize, raw_)) {
+        error_ = "cluster " + std::to_string(index) + " lies past the end of the image or cannot be read (truncated or trimmed image)";
+        const std::string why = disc_.failure_reason();
+        if (!why.empty()) error_ += ": " + why;
+        return nullptr;
+    }
     std::array<u8, kWiiClusterHeader> hashes{};
     std::memcpy(hashes.data(), raw_.data(), hashes.size());
     std::memcpy(slot->data.data(), raw_.data() + kWiiClusterHeader, kWiiClusterData);
@@ -355,7 +362,7 @@ bool WiiPartition::read(u64 offset, std::span<u8> out) {
         return false;
     }
     if (!flags_.hashes) { // contiguous, unencrypted data (see open())
-        if (!disc_.read(data_offset_ + offset, out)) { error_ = "partition data outside the image"; return false; }
+        if (!disc_.read(data_offset_ + offset, out)) { error_ = "partition data past the end of the image (truncated or trimmed image)"; return false; }
         return true;
     }
     std::size_t done = 0;

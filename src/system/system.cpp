@@ -358,6 +358,7 @@ RunResult System::run(u64 max_cycles) {
         if (dsp_->dsp_failed()) { r.device_stop = true; r.device_error = dsp_->dsp_error(); break; }
         if (cp_->stopped()) { r.device_stop = true; r.device_error = cp_->stop_reason(); break; }
         if (ios_ && ios_->stopped()) { r.device_stop = true; r.device_error = ios_->stop_reason(); break; }
+        if (di_->image_failed()) { r.device_stop = true; r.device_error = di_->image_failure(); break; }
         if (stop_pc_ && cpu_->state().pc == *stop_pc_) { r.reached_stop_pc = true; break; }
         ppc::StepResult s;
         u64 steps = 1;

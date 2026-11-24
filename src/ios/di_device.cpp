@@ -168,8 +168,10 @@ std::optional<Result> DiDevice::start(Kernel& k, const Pending& p) {
         if (p.out_size < length) return done(di_res::kSecurity);
         last_length_ = position; // IOS keeps the offset here (its own bug)
         if (!drive_.begin_host_read()) return done(di_res::kDriveError);
+        const u64 at = u64{position} << 2;
+        if (at > partition_->size() || length > partition_->size() - at) return done(di_res::kDriveError); // the drive's "block out of bounds"
         std::vector<u8> data(length);
-        if (!partition_->read(u64{position} << 2, data))
+        if (!partition_->read(at, data)) // inside the partition, but corrupt or missing in the image
             return Result::stop("IOS /dev/di: partition read at 0x" + hex(position) + " failed: " + partition_->last_error());
         if (!k.write_bytes(p.out, data)) return Result::stop("IOS /dev/di: read destination is not in RAM");
         return done(di_res::kSuccess);

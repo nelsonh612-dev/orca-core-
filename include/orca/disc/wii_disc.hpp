@@ -118,6 +118,7 @@ public:
     u64 data_size() const noexcept { return data_size_; }     // on the disc, hashes included
     WiiDiscFlags flags() const noexcept { return flags_; }
     const std::string& last_error() const noexcept { return error_; }
+    std::string failure_reason() const override { return error_; }
     ChainReport verify_signatures(const crypto::RsaPublicKey* root_key) const;
     // Decrypts and verifies every cluster; false at the first failure (last_error()).
     bool verify_all();

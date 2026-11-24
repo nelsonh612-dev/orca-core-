@@ -95,6 +95,10 @@ public:
     // must read the disc ID again, otherwise its motor is stopped.
     void reset_drive(bool spinup);
     const std::string& last_error() const noexcept { return last_error_; }
+    // A read inside the disc that the image could not deliver (corrupt or
+    // missing data): the emulation stops with this reason.
+    bool image_failed() const noexcept { return !image_failure_.empty(); }
+    const std::string& image_failure() const noexcept { return image_failure_; }
 
     bool mmio_read(u32 offset, unsigned size, u64& value) override;
     bool mmio_write(u32 offset, unsigned size, u64 value) override;
@@ -126,6 +130,7 @@ private:
     std::function<void(bool)> completion_;
     bool wii_{false};
     std::string last_error_;
+    std::string image_failure_;
 };
 
 // DTK ADPCM: one 32-byte block (header byte 0 left, 1 right; 28 data bytes, low

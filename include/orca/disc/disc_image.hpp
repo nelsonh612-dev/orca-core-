@@ -36,6 +36,8 @@ public:
     virtual u64 size() const = 0;
     // Reads exactly out.size() bytes; false if the range is outside the image.
     virtual bool read(u64 offset, std::span<u8> out) = 0;
+    // Why the last read inside the image failed (corrupt or missing data), if known.
+    virtual std::string failure_reason() const { return {}; }
 };
 
 class MemoryDisc final : public DiscReader {

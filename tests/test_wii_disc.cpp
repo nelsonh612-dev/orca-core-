@@ -428,7 +428,6 @@ TEST_CASE(wii_partition_header_offsets_are_checked) {
         {0x2B0, 0x7FFFFFFF, "certificate chain at"},
         {0x2B4, 0x7FFFFFFF, "H3 table at"},
         {0x2B8, 0x7FFFFFF0, "past the end"},           // data offset outside
-        {0x2BC, 0x7FFFFFF0, "past the end"},           // data size beyond the image
         {0x2BC, (kWiiClusterSize + 0x100) >> 2, "whole number"},
         {0x2B0, (kTmdOff + 0x10) >> 2, "certificate chain"}, // chain read from the wrong place
     };
@@ -439,11 +438,24 @@ TEST_CASE(wii_partition_header_offsets_are_checked) {
         CHECK(WiiPartition::open(disc, kPart, test_keys(), err) == nullptr);
         CHECK(contains(err, c.expect));
     }
-    { // truncated image: the data area is cut short
+    { // truncated image: the data area is cut short; the clusters still present read,
+      // the missing one is reported (as in Dolphin, which opens trimmed images)
         auto img = good;
         img.resize(img.size() - 0x1000);
         MemoryDisc disc(img);
-        CHECK(WiiPartition::open(disc, kPart, test_keys(), err) == nullptr);
+        auto p = WiiPartition::open(disc, kPart, test_keys(), err);
+        CHECK(p != nullptr);
+        if (p) {
+            std::vector<u8> first(kWiiClusterData);
+            CHECK(p->read(0, first));
+            std::vector<u8> last(16);
+            CHECK(!p->read(p->size() - 16U, last));
+            CHECK(contains(p->last_error(), "cluster 1"));
+            CHECK(contains(p->last_error(), "truncated or trimmed"));
+        }
+        img.resize(kPart + kDataOff); // no data at all
+        MemoryDisc none(img);
+        CHECK(WiiPartition::open(none, kPart, test_keys(), err) == nullptr);
         CHECK(contains(err, "truncated image"));
     }
     { // a partition offset in the middle of nowhere

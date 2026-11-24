@@ -222,7 +222,17 @@ bool DiscInterface::start_command() {
 void DiscInterface::finish(bool ok, u32 from_disc, u64 offset) {
     if (ok && from_disc != 0U) {
         std::vector<u8> data(from_disc);
-        if (!disc_ || !disc_->read(offset, data)) { ok = false; error_ = DriveError::BlockOutOfBounds; }
+        if (!disc_ || !disc_->read(offset, data)) {
+            ok = false;
+            error_ = DriveError::BlockOutOfBounds;
+            if (disc_ && offset + from_disc <= disc_->size()) {
+                char b[96];
+                std::snprintf(b, sizeof b, "DI: the disc image could not deliver 0x%X bytes at 0x%llX", from_disc, static_cast<unsigned long long>(offset));
+                image_failure_ = b;
+                const std::string why = disc_->failure_reason();
+                if (!why.empty()) image_failure_ += ": " + why;
+            }
+        }
         else (void)bus_.dma_write(dimar_, data);
     }
     if (ok) {
@@ -268,7 +278,15 @@ std::size_t DiscInterface::dtk_pull(std::span<s16> out, std::size_t frames) {
             if (stop_at_track_end_) { stop_at_track_end_ = false; stream_ = false; break; }
             std::fill(std::begin(hist_), std::end(hist_), 0);
         }
-        if (!disc_ || !disc_->read(audio_position_, block)) { stream_ = false; break; } // past the disc: the stream ends
+        if (!disc_ || !disc_->read(audio_position_, block)) {
+            if (disc_ && audio_position_ + sizeof block <= disc_->size()) {
+                image_failure_ = "DI: streaming audio: the disc image could not deliver its data";
+                const std::string why = disc_->failure_reason();
+                if (!why.empty()) image_failure_ += ": " + why;
+            }
+            stream_ = false;
+            break;
+        } // past the disc: the stream ends
         decode_dtk_block(block, out.data() + 2U * done, hist_);
         audio_position_ += 32U;
         done += 28U;

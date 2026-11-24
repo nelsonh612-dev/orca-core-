@@ -41,6 +41,7 @@ add_library(orca_core
     src/crypto/aes.cpp
     src/crypto/sha1.cpp
     src/crypto/rsa.cpp
+    src/disc/blob.cpp
     src/disc/disc_image.cpp
     src/disc/fst.cpp
     src/disc/wii_disc.cpp
@@ -100,6 +101,16 @@ add_library(orca_core
 # The FP engine changes the host rounding mode at run time.
 set_source_files_properties(src/ppc/fpu.cpp PROPERTIES COMPILE_OPTIONS "-frounding-math")
 target_include_directories(orca_core PUBLIC include)
+# GCZ disc images need zlib (present on Linux and in the Android NDK); without it
+# GCZ images are refused with the reason.
+find_package(ZLIB)
+if(ZLIB_FOUND)
+    target_link_libraries(orca_core PUBLIC ZLIB::ZLIB)
+    target_compile_definitions(orca_core PUBLIC ORCA_HAVE_ZLIB=1)
+    message(STATUS "Orca: zlib found, GCZ images supported")
+else()
+    message(STATUS "Orca: zlib not found, GCZ images are refused")
+endif()
 target_compile_options(orca_core PRIVATE $<$<CXX_COMPILER_ID:GNU,Clang>:${ORCA_WARNINGS}>)
 
 # --- OpenGL ES 3.2 backend (optional: needs EGL and GLESv2/GLESv3 libraries) ------------
@@ -208,7 +219,7 @@ if(ORCA_BUILD_TESTS)
         add_custom_command(OUTPUT ${ODIR}/runtime.o COMMAND ${ORCA_PPC_CLANG} ${PPC_FLAGS} -c ${PDIR}/runtime.c -o ${ODIR}/runtime.o
                            DEPENDS ${PDIR}/runtime.c)
         set(PPC_OUTPUTS)
-        foreach(prog integer_suite float_suite hardware_suite dvd_suite av_suite exi_suite aram_suite dsp_suite gpu_suite gpu_draw)
+        foreach(prog integer_suite float_suite hardware_suite dvd_suite wii_dvd_suite av_suite exi_suite aram_suite dsp_suite gpu_suite gpu_draw)
             add_custom_command(
                 OUTPUT ${ODIR}/${prog}.elf ${ODIR}/${prog}.dol
                 COMMAND ${ORCA_PPC_CLANG} ${PPC_FLAGS} -c ${PDIR}/${prog}.c -o ${ODIR}/${prog}.o
