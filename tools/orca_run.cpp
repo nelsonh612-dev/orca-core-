@@ -1,24 +1,32 @@
 // orca_run: headless runner. Loads a DOL/ELF, boots it (HLE) and runs for a
 // number of cycles, then prints why it stopped and the CPU state.
-// Usage: orca_run [--ipl-rom=FILE] [--rtc=SECONDS] [--dsp-irom=FILE] [--dsp-coef=FILE] [--card-a=FILE] [--card-b=FILE] [--dump-xfb=FILE.ppm] [--dump-audio=FILE.wav] [--dsp-hle] [--jit] [--list-files] [--nand=DIR] [--create-nand=usa|eur|jpn|kor] [--wii-keys=FILE] file.(dol|elf|iso|gcm) [cycles] [gc|wii]
+// Usage: orca_run [--ipl-rom=FILE] [--rtc=SECONDS] [--dsp-irom=FILE] [--dsp-coef=FILE] [--card-a=FILE] [--card-b=FILE] [--dump-xfb=FILE.ppm] [--dump-audio=FILE.wav] [--dsp-hle] [--jit] [--list-files] [--nand=DIR] [--create-nand=usa|eur|jpn|kor] [--wii-keys=FILE] file [cycles] [gc|wii]
+//   file: a DOL/ELF, or a disc image in any supported format (ISO/GCM, CISO,
+//         WBFS, GCZ; detected from its contents). A disc picks the console by
+//         itself (Wii magic -> Wii); gc|wii only matters for DOL/ELF files.
 //   --ipl-rom: IPL ROM image (descrambled, as the CPU reads it) for EXI0/CS1
 //   --rtc:     initial RTC counter value (seconds); default 0
-//   --list-files: print the disc FST (.iso/.gcm) and exit
+//   --list-files: print the disc's files (GameCube: the FST; Wii: the game partition's) and exit
 //   --dsp-irom / --dsp-coef: DSP ROM dumps (8 KiB / 4 KiB, big-endian words)
 //   --card-a / --card-b: raw memory card image for slot A/B (4-128 Mbit). A
 //                        missing file creates a blank 16 Mbit card; the image is
 //                        written back after the run if the game changed it.
-// .iso/.gcm images are booted through the HLE IPL + apploader path.
+// Disc images are booted through the HLE IPL + apploader path.
+#include "orca/disc/blob.hpp"
 #include "orca/disc/fst.hpp"
+#include "orca/disc/wii_disc.hpp"
 #include "orca/system/system.hpp"
 #include "orca/ios/nand_setup.hpp"
 #include "orca/video/xfb.hpp"
 
+#include <array>
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <iterator>
+#include <memory>
 #include <vector>
 
 int main(int argc_in, char** argv_in) {
@@ -70,6 +78,26 @@ int main(int argc_in, char** argv_in) {
         if (!orca::disc::load_wii_key_file(keys_path, cfg.wii_keys, 0, kerr)) { std::fprintf(stderr, "%s\n", kerr.c_str()); return 1; }
     }
     cfg.console = (argc > 3 && std::strcmp(argv[3], "wii") == 0) ? orca::system::Console::Wii : orca::system::Console::GameCube;
+    // a disc image (any supported format) decides the console by itself
+    const std::string path = argv[1];
+    const auto ends_with = [&](const char* ext) {
+        const std::size_t n = std::strlen(ext);
+        if (path.size() < n) return false;
+        for (std::size_t k = 0; k < n; ++k)
+            if (std::tolower(static_cast<unsigned char>(path[path.size() - n + k])) != ext[k]) return false;
+        return true;
+    };
+    std::unique_ptr<orca::disc::DiscReader> disc;
+    orca::disc::ImageFormat format{};
+    if (!ends_with(".dol") && !ends_with(".elf")) {
+        std::string derr;
+        disc = orca::disc::open_image_file(path, &format, derr);
+        if (!disc) { std::fprintf(stderr, "%s\n", derr.c_str()); return 1; }
+        std::array<orca::u8, 4> m{};
+        (void)disc->read(0x18, m);
+        const bool wii = (orca::u32{m[0]} << 24 | orca::u32{m[1]} << 16 | orca::u32{m[2]} << 8 | m[3]) == orca::disc::kWiiMagic;
+        cfg.console = wii ? orca::system::Console::Wii : orca::system::Console::GameCube;
+    }
     cfg.dsp_hle = dsp_hle;
     cfg.use_jit = use_jit;
     orca::system::System sys(cfg);
@@ -111,20 +139,27 @@ int main(int argc_in, char** argv_in) {
             return 1;
         }
     }
-    const std::string path = argv[1];
-    const auto ends_with = [&](const char* ext) { const std::size_t n = std::strlen(ext); return path.size() >= n && path.compare(path.size() - n, n, ext) == 0; };
-    if (ends_with(".iso") || ends_with(".gcm") || ends_with(".ISO") || ends_with(".GCM")) {
-        auto disc = orca::disc::FileDisc::open(path, error);
-        if (!disc) { std::fprintf(stderr, "%s\n", error.c_str()); return 1; }
+    if (disc) {
         std::string herr;
         const auto header = orca::disc::parse_header(*disc, herr);
-        if (header) std::printf("disc: %s \"%s\"\n", header->game_id.c_str(), header->name.c_str());
+        if (header) std::printf("disc: %s \"%s\" (%s, %s)\n", header->game_id.c_str(), header->name.c_str(), orca::disc::image_format_name(format),
+                                header->wii ? "Wii" : "GameCube");
         if (list_files) {
             if (!header) { std::fprintf(stderr, "%s\n", herr.c_str()); return 1; }
             std::string ferr;
-            const auto fst = orca::disc::parse_fst(*disc, *header, ferr);
-            if (!fst) { std::fprintf(stderr, "%s\n", ferr.c_str()); return 1; }
-            for (const auto& e : *fst)
+            std::unique_ptr<orca::disc::WiiPartition> part;
+            orca::disc::DiscReader* volume = disc.get();
+            if (header->wii) {
+                const auto parts = orca::disc::list_wii_partitions(*disc, ferr);
+                if (!parts) { std::fprintf(stderr, "%s\n", ferr.c_str()); return 1; }
+                for (const auto& p : *parts)
+                    if (p.type == 0U) { part = orca::disc::WiiPartition::open(*disc, p.offset, cfg.wii_keys, ferr); break; }
+                if (!part) { std::fprintf(stderr, "game partition: %s\n", ferr.empty() ? "none" : ferr.c_str()); return 1; }
+                volume = part.get();
+            }
+            const auto fs = orca::disc::FileSystem::open(*volume, header->wii, ferr);
+            if (!fs) { std::fprintf(stderr, "%s\n", ferr.c_str()); return 1; }
+            for (const auto& e : fs->entries())
                 if (e.directory) std::printf("%-48s <dir>\n", e.path.c_str());
                 else std::printf("%-48s %10llu bytes @ 0x%08llX\n", e.path.c_str(), static_cast<unsigned long long>(e.size), static_cast<unsigned long long>(e.offset));
             return 0;
@@ -132,7 +167,7 @@ int main(int argc_in, char** argv_in) {
         sys.insert_disc(std::move(disc));
         const bool wii_disc = cfg.console == orca::system::Console::Wii;
         if (wii_disc && !sys.nand_error().empty()) { std::fprintf(stderr, "NAND: %s\n", sys.nand_error().c_str()); return 1; }
-        if (!(wii_disc ? sys.boot_wii_disc(error) : sys.boot_disc(error))) { std::fprintf(stderr, "disc boot failed: %s\n", error.c_str()); return 1; }
+        if (!sys.boot_disc(error)) { std::fprintf(stderr, "disc boot failed: %s\n", error.c_str()); return 1; }
         std::printf("apploader finished: game entry point %08X\n", sys.cpu().state().pc);
     } else {
         std::ifstream in(path, std::ios::binary);

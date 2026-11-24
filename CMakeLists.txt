@@ -142,6 +142,13 @@ if(ORCA_BUILD_TESTS)
         target_include_directories(orca_test_${suite} PRIVATE tests)
         add_test(NAME ${suite} COMMAND orca_test_${suite})
     endforeach()
+    # Real disc images: only with ORCA_GC_IMAGE / ORCA_WII_IMAGE set (see the
+    # source); otherwise ctest reports the test as skipped, never as passed.
+    add_executable(orca_test_real_images tests/test_real_images.cpp)
+    target_link_libraries(orca_test_real_images PRIVATE orca_core)
+    target_compile_options(orca_test_real_images PRIVATE $<$<CXX_COMPILER_ID:GNU,Clang>:${ORCA_WARNINGS}>)
+    add_test(NAME real_images COMMAND orca_test_real_images)
+    set_tests_properties(real_images PROPERTIES SKIP_RETURN_CODE 77)
 
     # --- Whole-program tests -------------------------------------------------
     # Host build of the portable programs (same C source, native compiler).
@@ -298,7 +305,7 @@ if(ORCA_BUILD_TESTS)
     set_tests_properties(jit PROPERTIES TIMEOUT ${ORCA_TEST_TIMEOUT})
 endif()
 
-foreach(tool bench_interpreter elf2dol orca_run)
+foreach(tool bench_interpreter elf2dol orca_run orca_disc)
     string(REGEX REPLACE "^orca_" "" tool_name ${tool})
     add_executable(orca_${tool_name} tools/${tool}.cpp)
     target_link_libraries(orca_${tool_name} PRIVATE orca_core)

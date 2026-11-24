@@ -49,8 +49,8 @@ bool Emulator::make_system(bool wii, std::string& error) {
         if (nand.metadata(0, 0, "/shared2/sys/SYSCONF", m) != 0 && !ios::create_nand(nand, settings_.new_nand, error))
             return false;
         cfg.nand_root = settings_.nand_dir;
-        if (settings_.wii_key_file.empty()) { error = "Wii: no common key file configured"; return false; }
-        if (!disc::load_wii_key_file(settings_.wii_key_file, cfg.wii_keys, 0, error)) return false;
+        // keys are needed only by encrypted partitions; WiiPartition names the missing one
+        if (!settings_.wii_key_file.empty() && !disc::load_wii_key_file(settings_.wii_key_file, cfg.wii_keys, 0, error)) return false;
     }
     sys_ = std::make_unique<system::System>(cfg);
     if (roms && !(sys_->dsp().core().load_irom(irom) && sys_->dsp().core().load_coef(coef))) {
@@ -71,9 +71,12 @@ bool Emulator::make_system(bool wii, std::string& error) {
     return true;
 }
 
-bool Emulator::load_disc(std::unique_ptr<disc::DiscReader> d, std::string& error) {
+bool Emulator::load_disc(std::unique_ptr<disc::DiscReader> file, std::string& error) {
+    // the image file's format (ISO/GCM, CISO, WBFS, GCZ) is detected here
+    auto d = disc::open_image(std::move(file), &format_, error);
+    if (!d) return false;
     std::array<u8, 0x20> id{};
-    if (!d || !d->read(0, id)) { error = "the disc image is unreadable"; return false; }
+    if (!d->read(0, id)) { error = "the disc image is unreadable"; return false; }
     const auto word = [&](std::size_t o) { return static_cast<u32>(id[o]) << 24 | static_cast<u32>(id[o + 1]) << 16 | static_cast<u32>(id[o + 2]) << 8 | id[o + 3]; };
     const bool wii = word(0x18) == disc::kWiiMagic;
     if (!wii && word(0x1C) != disc::kGameCubeMagic) { error = "not a GameCube or Wii disc image (no magic word)"; return false; }

@@ -1,6 +1,7 @@
 // Frontend layer: loading, frames, controls, Wii prerequisites.
 #include "orca/frontend/emulator.hpp"
 #include "test_framework.hpp"
+#include "wii_disc_builder.hpp"
 #include "test_port.hpp"
 
 #include <filesystem>
@@ -25,9 +26,8 @@ TEST_CASE(frontend_rejects_what_it_cannot_load) {
     CHECK(emu.error() == "nothing loaded");
     CHECK(!emu.load_disc(std::make_unique<disc::MemoryDisc>(std::vector<u8>(0x100, 0)), error));
     CHECK(error.find("magic") != std::string::npos);
-    // a Wii disc without NAND / key settings
-    std::vector<u8> wii(0x100, 0);
-    wii[0x18] = 0x5D; wii[0x19] = 0x1C; wii[0x1A] = 0x9E; wii[0x1B] = 0xA3;
+    // an encrypted Wii disc without NAND / key settings
+    const std::vector<u8> wii = test_wii::build_disc(test_wii::plain_data(1));
     CHECK(!emu.load_disc(std::make_unique<disc::MemoryDisc>(wii), error));
     CHECK(error.find("NAND") != std::string::npos);
     const auto dir = std::filesystem::temp_directory_path() / "orca_frontend_nand";
@@ -36,7 +36,7 @@ TEST_CASE(frontend_rejects_what_it_cannot_load) {
     w.nand_dir = dir.string();
     frontend::Emulator emu2(w);
     CHECK(!emu2.load_disc(std::make_unique<disc::MemoryDisc>(wii), error));
-    CHECK(error.find("key") != std::string::npos);
+    CHECK(error.find("needs the common key (index 0)") != std::string::npos);
     // the NAND was prepared on the way (SYSCONF and setting.txt)
     CHECK(std::filesystem::exists(dir / "shared2" / "sys" / "SYSCONF"));
     std::filesystem::remove_all(dir);

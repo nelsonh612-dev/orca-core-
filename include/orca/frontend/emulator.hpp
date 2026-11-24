@@ -1,9 +1,11 @@
 // Orca Core — the frontend layer shared by the Android app and desktop tools:
 // one emulated console, its picture, sound and controls.
 //
-//   * load_disc(): GameCube or Wii disc (decided by the magic words at 0x18 /
-//     0x1C); a Wii disc needs the NAND directory (created with the chosen
-//     region if missing) and the common key file.
+//   * load_disc(): a disc image in any supported format (ISO/GCM, CISO, WBFS,
+//     GCZ; see disc/blob.hpp), GameCube or Wii (decided by the magic words at
+//     0x18 / 0x1C); a Wii disc needs the NAND directory (created with the chosen
+//     region if missing) and, when its partition is encrypted, the user's common
+//     key (the error names the key that is missing or wrong).
 //   * run_frame(): emulates until the next video field starts (at most 1/10 s
 //     of console time); the field's frame buffer is decoded to RGBA.
 //   * audio: the mixer's 48 kHz stereo output is collected; take_audio() hands
@@ -13,6 +15,7 @@
 //     Nunchuk when its state is set), reset/power buttons.
 // CPU identification (PVR): Gekko 0x00083214, Broadway 0x00087102.
 #pragma once
+#include "orca/disc/blob.hpp"
 #include "orca/disc/disc_image.hpp"
 #include "orca/hw/serial_interface.hpp"
 #include "orca/ios/nand_setup.hpp"
@@ -36,7 +39,7 @@ struct Settings {
     bool dsp_hle{true};
     std::string dsp_irom_file, dsp_coef_file;
     std::string nand_dir;      // Wii
-    std::string wii_key_file;  // Wii: 16-byte common key or BootMii keys.bin
+    std::string wii_key_file;  // Wii: a key file load_wii_key_file accepts (optional for unencrypted discs)
     ios::NandSetup new_nand;   // used when the NAND has no SYSCONF yet
 };
 
@@ -58,6 +61,7 @@ public:
     bool loaded() const noexcept { return sys_ != nullptr; }
     bool wii() const noexcept { return wii_; }
     const std::string& game_id() const noexcept { return game_id_; }
+    disc::ImageFormat image_format() const noexcept { return format_; }
 
     // False when emulation stopped (error() says why).
     bool run_frame();
@@ -88,6 +92,7 @@ private:
     std::array<std::shared_ptr<hw::StandardController>, 4> pads_{};
     bool wii_{false};
     std::string game_id_;
+    disc::ImageFormat format_{disc::ImageFormat::Raw};
     Frame frame_;
     bool field_seen_{false};
     u64 cycles_{0};

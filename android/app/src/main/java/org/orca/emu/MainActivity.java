@@ -43,12 +43,12 @@ public final class MainActivity extends Activity {
         root.addView(title);
 
         Button game = new Button(this);
-        game.setText("Choose a game (ISO/GCM)");
+        game.setText("Choose a game (ISO/GCM, CISO, WBFS, GCZ)");
         game.setOnClickListener(v -> pick(PICK_GAME));
         root.addView(game);
 
         Button key = new Button(this);
-        key.setText("Choose the Wii common key file (Wii games)");
+        key.setText("Wii key file from your console (keys.bin, 16-byte key or text keys; encrypted Wii discs)");
         key.setOnClickListener(v -> pick(PICK_KEY));
         root.addView(key);
         keyState = new TextView(this);
