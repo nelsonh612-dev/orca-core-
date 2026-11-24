@@ -222,16 +222,25 @@ TEST_CASE(iosc_automatic_key_provision) {
         CHECK(k.common[1].has_value() && *k.common[1] == kVwii); // kept
         ::unsetenv("ORCA_WII_KEYS");
     }
-    { // a BootMii keys.bin is only one of the sources, and only its common key is read
+    { // BootMii's 0x400-byte dump contains common and Korean common keys
         TempDir c("c");
         std::vector<u8> dump(0x400, 0x33);
         std::memcpy(dump.data(), "BackupMii v1, ConsoleID: 0badc0de\n", 34);
         std::memcpy(&dump[0x114], kCommon.data(), 16);
+        std::memcpy(&dump[0x274], kKorean.data(), 16);
         write(c.p / "keys.bin", dump.data(), dump.size());
         disc::WiiKeys k;
         CHECK(load_default_key_provision({c.p.string()}, k, report, err));
         CHECK(k.common[0].has_value() && *k.common[0] == kCommon);
-        CHECK(!k.common[1].has_value() && !k.dev_common.has_value());
+        CHECK(k.common[1].has_value() && *k.common[1] == kKorean);
+        CHECK(!k.common[2].has_value() && !k.dev_common.has_value());
+        // A dump with one populated key slot remains useful.
+        std::fill(dump.begin() + 0x114, dump.begin() + 0x124, 0);
+        write(c.p / "keys.bin", dump.data(), dump.size());
+        disc::WiiKeys korean_only;
+        CHECK(load_default_key_provision({c.p.string()}, korean_only, report, err));
+        CHECK(!korean_only.common[0].has_value());
+        CHECK(korean_only.common[1].has_value() && *korean_only.common[1] == kKorean);
         std::vector<u8> bad(0x400, 0x33); // 1 KiB, not a BootMii dump
         write(c.p / "keys.bin", bad.data(), bad.size());
         disc::WiiKeys k2;
