@@ -139,7 +139,8 @@ struct FullRun {
     u64 block_steps = 0, blocks = 0, helper_steps = 0;
     double ms = 0;
 };
-FullRun run_full(const char* path, bool jit, bool idle_skip = true, u64* skipped = nullptr) {
+FullRun run_full(const char* path, bool jit, bool idle_skip = true, u64* skipped = nullptr,
+                 u64 budget = 4000000000ULL) {
     FullRun r;
     std::ifstream in(path, std::ios::binary);
     const std::vector<u8> file((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
@@ -153,7 +154,7 @@ FullRun run_full(const char* path, bool jit, bool idle_skip = true, u64* skipped
     std::string err;
     if (!sys.load_executable(file, err)) return r;
     const auto t0 = std::chrono::steady_clock::now();
-    const auto res = sys.run(4000000000ULL);
+    const auto res = sys.run(budget);
     r.ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     r.stop = res.stop;
     r.instructions = res.instructions;
@@ -200,34 +201,44 @@ TEST_CASE(programs_identical_with_the_jit) {
 }
 
 TEST_CASE(busy_wait_skip_changes_nothing) {
-    // The programs, with and without the busy-wait skip (and with the JIT on ARM64):
-    // (dvd_suite, which waits almost all the time, takes 175 s without the skip
-    // and 0.17 s with it on the x86 host; it is left out to keep the suite short)
-    // same results, state, RAM, cycles and retired instructions. Only the programs that
-    // wait: integer_suite and float_suite skip 0 instructions and already run with the
-    // skip on (the default) in the tests above, against their host references; running
-    // them a second time without it pushed the ARM64 ASan job past its time limit.
+    // With and without the busy-wait skip (and with the JIT on ARM64): same results, state,
+    // RAM, cycles and retired instructions. hardware_suite runs to the end. av_suite
+    // (45 M instructions, 40 M of them waiting) is compared when stopped at two cycle
+    // budgets, one of them odd so it falls inside a wait: the skip must stop exactly at
+    // the budget. Running av_suite to the end without the skip took 44 s here under ASan
+    // and pushed the ARM64 ASan job (20-100x slower) past its time limit, as did
+    // integer_suite and float_suite, which skip nothing and already run with the skip
+    // on (the default) against their host references in the tests above.
+    // (dvd_suite takes 175 s without the skip and 0.17 s with it on the x86 host.)
     u64 total = 0;
+    const char* hw = ORCA_PROGRAMS_DIR "/hardware_suite.elf";
+    const char* av = ORCA_PROGRAMS_DIR "/av_suite.elf";
     for (const bool jit : {false, true}) {
         if (jit && !jit::host_can_execute()) continue;
-        for (const char* f : {ORCA_PROGRAMS_DIR "/hardware_suite.elf", ORCA_PROGRAMS_DIR "/av_suite.elf"}) {
-            std::ifstream probe(f);
-            if (!probe) continue;
+        const FullRun full = run_full(av, jit, true);
+        CHECK(full.cycles > 0U);
+        struct Case { const char* file; u64 budget; };
+        const Case cases[] = {{hw, 4000000000ULL}, {av, full.cycles / 20}, {av, full.cycles / 20 + 12345}};
+        for (const Case& c : cases) {
             u64 skipped = 0;
-            const FullRun a = run_full(f, jit, false), b = run_full(f, jit, true, &skipped);
+            const FullRun a = run_full(c.file, jit, false, nullptr, c.budget);
+            const FullRun b = run_full(c.file, jit, true, &skipped, c.budget);
             CHECK(a.stop == b.stop);
             CHECK_EQ(a.instructions, b.instructions);
             CHECK_EQ(a.cycles, b.cycles);
             CHECK(a.log == b.log);
             CHECK(a.state == b.state);
             CHECK_EQ(a.ram_hash, b.ram_hash);
+            CHECK(skipped > 0U);
             total += skipped;
-            std::printf("[programs] %-20s %s busy-wait skip: %llu of %llu instructions not executed, %.1f ms -> %.1f ms\n",
-                        f + std::string(f).rfind('/') + 1, jit ? "JIT" : "interpreter",
-                        static_cast<unsigned long long>(skipped), static_cast<unsigned long long>(b.instructions), a.ms, b.ms);
+            std::printf("[programs] %-20s %s budget %llu: busy-wait skip: %llu of %llu instructions not executed, %.1f ms -> %.1f ms\n",
+                        c.file + std::string(c.file).rfind('/') + 1, jit ? "JIT" : "interpreter",
+                        static_cast<unsigned long long>(c.budget), static_cast<unsigned long long>(skipped),
+                        static_cast<unsigned long long>(b.instructions), a.ms, b.ms);
+            std::fflush(stdout);
         }
     }
-    CHECK(total > 0U); // at least one program waits in a loop the skip recognises
+    CHECK(total > 0U);
 }
 
 TEST_MAIN("programs")
