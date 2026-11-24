@@ -109,7 +109,11 @@ Ejecutado el 2026-11-24 en x86-64: GCC Release, Clang Release y GCC Debug + ASan
   6. `snprintf` con un búfer justo (`-Wformat-truncation`).
   7. Colisión de nombres entre el espacio de las claves RSA de prueba y `test_keys()`.
   8. Mi script de verificación mostraba una línea vacía cuando ctest informa de pruebas omitidas: corregido para mostrar el resumen y las omitidas.
-- **No ejecutado:** QEMU para ARM64 (no está instalado y la red del entorno no permite instalar paquetes). Las pruebas ARM64 corren en runners ARM64 nativos de GitHub Actions; resultados abajo.
+- **No ejecutado:** QEMU para ARM64 (no está instalado y la red del entorno no permite instalar paquetes). Las pruebas ARM64 corren en runners ARM64 nativos de GitHub Actions.
+- **CI (GitHub Actions):**
+  - validación de 920b260 y de c18810f (este último contiene todo el código de la lectura de discos): GCC, Clang y ASan+UBSan en ARM64 nativo, todas las suites incluidas `wii_disc`, `filesystem`, `disc`, `ios` y `jit`, con `real_images` *Skipped*; más la compilación del núcleo con el NDK. **Todo correcto.**
+  - App Android (fuentes) y APK: correctos en 62eb5a6 y 7b5e4ad;
+  - APK publicada desde c18810f: 1.858.326 bytes, SHA-256 `8b5a00e03375cb83d60627f4b92e079cf57963f7c4c1d62bda0f47c0b6a9f1e3`, `liborca_android.so` AArch64 con zlib (GCZ). **No instalada en un teléfono.**
 
 ### Integración final: Bluetooth, Wii Remote, NAND nueva, frontend, app Android y optimización
 
