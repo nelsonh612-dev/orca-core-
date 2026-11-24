@@ -37,6 +37,8 @@ jobs:
         env:
           EGL_PLATFORM: surfaceless
         run: ctest --test-dir build --output-on-failure
+      - name: AES report (ARMv8 instructions vs portable code)
+        run: ./build/orca_test_crypto | grep -E "^\[crypto\]"
       - name: JIT report (native AArch64 execution)
         run: |
           ./build/orca_test_jit | grep -E "^\[jit\]"
