@@ -72,7 +72,7 @@ bool parse_wii_keys(std::span<const u8> data, WiiKeys& keys, unsigned index, std
         // private material, NAND keys, IDs and signatures are deliberately
         // neither copied into WiiKeys nor used by the disc reader.
         if (std::memcmp(data.data(), "BackupMii", 9) != 0) {
-            error = "a 1024-byte key file must be a BootMii keys.bin (it starts with \\"BackupMii\\")";
+            error = "a 1024-byte key file must be a BootMii keys.bin (it starts with \"BackupMii\")";
             return false;
         }
         AesKey common{}, korean{};
