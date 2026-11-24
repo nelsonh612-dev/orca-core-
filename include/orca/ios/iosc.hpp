@@ -112,7 +112,7 @@ private:
 //   2. in each of `dirs`, then $ORCA_KEYS_DIR, $XDG_CONFIG_HOME/orca and
 //      $HOME/.config/orca: wii_keys.txt (text form), common-key.bin,
 //      korean-common-key.bin, vwii-common-key.bin, dev-common-key.bin (16 bytes
-//      each), keys.bin (BootMii dump: its common key only).
+//      each), keys.bin (BootMii dump: common and Korean common key fields).
 // Slots already filled in `keys` are kept. `report` lists what was loaded from
 // where. False only when a file exists but is invalid (`error` says which).
 bool load_default_key_provision(const std::vector<std::string>& dirs, disc::WiiKeys& keys, std::string& report, std::string& error);
@@ -121,7 +121,7 @@ std::string key_provision_places(const std::vector<std::string>& dirs);
 
 // Provisioning once: imports key material the user extracted from their own
 // console (any form disc::parse_wii_keys accepts: a 16-byte key stored at `index`,
-// a BootMii keys.bin - its common key only -, or a text key file) into
+// a BootMii keys.bin - its common and Korean key fields -, or a text key file) into
 // `dir`/wii_keys.txt, merged with the keys already there (new values replace old
 // ones), so that load_default_key_provision finds them by itself from then on.
 // The file is written with owner-only permissions. `summary` names the keys the
