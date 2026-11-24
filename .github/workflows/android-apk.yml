@@ -62,9 +62,17 @@ jobs:
           bt=$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)
           "$ANDROID_HOME/build-tools/$bt/apksigner" verify --print-certs "$apk"
           "$ANDROID_HOME/build-tools/$bt/aapt2" dump badging "$apk" | head -5
+          # without the secret the generated bundle must be empty: no key value in the APK
+          gen=$(find android/app/.cxx -name orca_key_bundle.cpp -path "*generated*" | head -1)
+          if [ "$ORCA_BUNDLED_KEYS" != "1" ]; then
+            test -n "$gen" && grep -q "kBundleSize = 0" "$gen"
+            echo "Built-in key bundle: empty ($gen)"
+          fi
           cp "$apk" "orca-core-0.1-${GITHUB_SHA::7}-arm64-v8a.apk"
           sha256sum orca-core-0.1-*.apk | tee orca-core-0.1-apk.sha256
       - uses: actions/upload-artifact@v4
+        # an APK with built-in key values is never uploaded as an (downloadable) artifact
+        if: env.ORCA_BUNDLED_KEYS != '1'
         with:
           name: orca-core-0.1-apk-${{ github.sha }}
           path: |
