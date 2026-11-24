@@ -7,6 +7,7 @@
 #include "orca/ios/iosc.hpp"
 #include "test_framework.hpp"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
