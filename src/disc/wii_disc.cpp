@@ -65,14 +65,31 @@ bool parse_wii_keys(std::span<const u8> data, WiiKeys& keys, unsigned index, std
         crypto::secure_zero(k.data(), k.size());
         return true;
     }
-    if (data.size() == 0x400U) { // BootMii keys.bin: header (0x100) + OTP (common key at OTP 0x14)
+    if (data.size() == 0x400U) {
+        // BootMii's packed dump layout (same documented offsets as Dolphin's
+        // BootMiiKeyDump): common key at 0x114 and Korean key at 0x274.
+        // Only these two title-decryption keys are imported here. Console
+        // private material, NAND keys, IDs and signatures are deliberately
+        // neither copied into WiiKeys nor used by the disc reader.
         if (std::memcmp(data.data(), "BackupMii", 9) != 0) {
-            error = "a 1024-byte key file must be a BootMii keys.bin (it starts with \"BackupMii\")";
+            error = "a 1024-byte key file must be a BootMii keys.bin (it starts with \\"BackupMii\\")";
             return false;
         }
-        std::copy_n(data.begin() + 0x114, 16, k.begin());
-        if (std::all_of(k.begin(), k.end(), [](u8 b) { return b == 0U; })) { error = "keys.bin: the common key field is empty"; return false; }
-        keys.common[0] = k;
+        AesKey common{}, korean{};
+        std::copy_n(data.begin() + 0x114, common.size(), common.begin());
+        std::copy_n(data.begin() + 0x274, korean.size(), korean.begin());
+        const bool has_common = !std::all_of(common.begin(), common.end(), [](u8 b) { return b == 0U; });
+        const bool has_korean = !std::all_of(korean.begin(), korean.end(), [](u8 b) { return b == 0U; });
+        if (!has_common && !has_korean) {
+            crypto::secure_zero(common.data(), common.size());
+            crypto::secure_zero(korean.data(), korean.size());
+            error = "keys.bin: both common-key fields are empty";
+            return false;
+        }
+        if (has_common) keys.common[0] = common;
+        if (has_korean) keys.common[1] = korean;
+        crypto::secure_zero(common.data(), common.size());
+        crypto::secure_zero(korean.data(), korean.size());
         crypto::secure_zero(k.data(), k.size());
         return true;
     }
