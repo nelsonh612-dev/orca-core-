@@ -59,9 +59,9 @@ struct WiiKeys {
 
 // Reads key material the user extracted from their own console:
 //   - exactly 16 bytes: one common key, stored at `index` (0-2; 3 = development);
-//   - 0x400 bytes: a BootMii keys.bin ("BackupMii v1" text header of 0x100 bytes, then
-//     the console's OTP; only the common key, OTP 0x14 = file 0x114, is read: the
-//     console's private keys in it are neither used nor kept);
+//   - 0x400 bytes: a BootMii keys.bin ("BackupMii v1", 0x100-byte header),
+//     reading the retail common key at 0x114 and Korean common key at 0x274.
+//     Other console-specific fields are neither used nor retained by the disc reader;
 //   - text: lines "name = 32 hex digits" with the names common_key, korean_common_key,
 //     vwii_common_key, dev_common_key, and optionally root_key_file = path (a root
 //     key in a form parse_root_key accepts); '#' starts a comment.
