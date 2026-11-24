@@ -203,12 +203,14 @@ TEST_CASE(busy_wait_skip_changes_nothing) {
     // The programs, with and without the busy-wait skip (and with the JIT on ARM64):
     // (dvd_suite, which waits almost all the time, takes 175 s without the skip
     // and 0.17 s with it on the x86 host; it is left out to keep the suite short)
-    // same results, state, RAM, cycles and retired instructions.
+    // same results, state, RAM, cycles and retired instructions. Only the programs that
+    // wait: integer_suite and float_suite skip 0 instructions and already run with the
+    // skip on (the default) in the tests above, against their host references; running
+    // them a second time without it pushed the ARM64 ASan job past its time limit.
     u64 total = 0;
     for (const bool jit : {false, true}) {
         if (jit && !jit::host_can_execute()) continue;
-        for (const char* f : {ORCA_PROGRAMS_DIR "/integer_suite.elf", ORCA_PROGRAMS_DIR "/float_suite.elf",
-                              ORCA_PROGRAMS_DIR "/hardware_suite.elf", ORCA_PROGRAMS_DIR "/av_suite.elf"}) {
+        for (const char* f : {ORCA_PROGRAMS_DIR "/hardware_suite.elf", ORCA_PROGRAMS_DIR "/av_suite.elf"}) {
             std::ifstream probe(f);
             if (!probe) continue;
             u64 skipped = 0;
