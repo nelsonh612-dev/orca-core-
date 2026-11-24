@@ -98,6 +98,10 @@ public:
 
     ConsoleType console_type() const noexcept { return type_; }
     const KeyEntry* entry(Handle h) const noexcept;
+    // Certificate IDs of the console (keys.bin SEEPROM; defaults: retail 2/1, RVT 3/2).
+    u32 ms_id() const noexcept { return ms_id_; }
+    u32 ca_id() const noexcept { return ca_id_; }
+    u32 console_key_id() const noexcept { return console_key_id_; }
     // Problems with the default-value bundle (invalid file, wrong sizes); empty if none.
     const std::string& bundle_error() const noexcept { return bundle_error_; }
 
@@ -138,6 +142,7 @@ private:
     KeyEntry root_;
     KeyEntry vwii_;
     std::string bundle_error_;
+    u32 ms_id_{2}, ca_id_{1}, console_key_id_{0};
 };
 
 // The default values compiled into this build (key_bundle.hpp), parsed: which

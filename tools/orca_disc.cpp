@@ -4,12 +4,15 @@
 // Usage: orca_disc [--wii-keys=FILE] info|verify|ls IMAGE
 //        orca_disc [--wii-keys=FILE] extract IMAGE /path/in/disc OUTPUT
 //        orca_disc import-keys FILE [INDEX] [DIR]
+//        orca_disc check-keys FILE
 //   Keys: OrcaIOSC loads the keys the user imported once (import-keys) by itself
 //   ($ORCA_WII_KEYS, $ORCA_KEYS_DIR, $XDG_CONFIG_HOME/orca, ~/.config/orca);
 //   --wii-keys adds a file for this run only.
 //   import-keys stores a key from the user's own console (16-byte key at INDEX
 //   0-3, BootMii keys.bin, or text key file) in DIR/wii_keys.txt (default:
 //   $ORCA_KEYS_DIR, else $XDG_CONFIG_HOME/orca, else ~/.config/orca).
+//   check-keys validates a BootMii keys.bin (1024 bytes) and lists the fields
+//   found and the checks passed, never their values; it stores nothing.
 //   info    format, header, Wii partitions (type, offset, sizes, title, IOS,
 //           common key index, header flags) and signature status
 //   verify  reads the whole image: GCZ blocks (Adler-32), every Wii cluster of
@@ -39,7 +42,9 @@ namespace {
 
 int usage() {
     std::fprintf(stderr, "usage: orca_disc [--wii-keys=FILE] info|verify|ls IMAGE\n"
-                         "       orca_disc [--wii-keys=FILE] extract IMAGE /path/in/disc OUTPUT\n");
+                         "       orca_disc [--wii-keys=FILE] extract IMAGE /path/in/disc OUTPUT\n"
+                         "       orca_disc import-keys FILE [INDEX] [DIR]\n"
+                         "       orca_disc check-keys FILE\n");
     return 2;
 }
 
@@ -183,6 +188,16 @@ int main(int argc, char** argv) {
     }
     if (args.size() < 2U) return usage();
     std::string err;
+    if (args[0] == "check-keys") {
+        std::ifstream in(args[1], std::ios::binary);
+        if (!in) { std::fprintf(stderr, "cannot open %s\n", args[1].c_str()); return 1; }
+        std::vector<u8> data((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        auto dump = parse_bootmii_keys(data, err);
+        crypto::secure_zero(data.data(), data.size());
+        if (!dump) { std::fprintf(stderr, "not a usable BootMii keys.bin: %s\n", err.c_str()); return 1; }
+        std::printf("%s\n", describe_bootmii_keys(*dump).c_str());
+        return 0;
+    }
     if (args[0] == "import-keys") {
         std::string dir;
         if (args.size() > 3U) dir = args[3];

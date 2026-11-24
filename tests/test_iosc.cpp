@@ -7,6 +7,7 @@
 #include "orca/ios/iosc.hpp"
 #include "orca/ios/key_bundle.hpp"
 #include "test_framework.hpp"
+#include "bootmii_dump.hpp"
 
 #include <cstdio>
 #include <cstdlib>
@@ -314,11 +315,11 @@ TEST_CASE(iosc_automatic_key_provision) {
         CHECK(k.common[1].has_value() && *k.common[1] == kVwii); // kept
         ::unsetenv("ORCA_WII_KEYS");
     }
-    { // a BootMii keys.bin is only one of the sources, and only its common key is read
+    { // a BootMii keys.bin is one of the sources: its common key, and its console keys apart
         TempDir c("c");
-        std::vector<u8> dump(0x400, 0x33);
-        std::memcpy(dump.data(), "BackupMii v1, ConsoleID: 0badc0de\n", 34);
-        std::memcpy(&dump[0x114], kCommon.data(), 16);
+        test_bootmii::DumpSpec ds;
+        ds.common = kCommon;
+        const std::vector<u8> dump = test_bootmii::make_dump(ds);
         write(c.p / "keys.bin", dump.data(), dump.size());
         disc::WiiKeys k;
         CHECK(load_default_key_provision({c.p.string()}, k, report, err));

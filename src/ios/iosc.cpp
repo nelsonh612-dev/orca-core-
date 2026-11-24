@@ -31,6 +31,7 @@ std::size_t Iosc::size_for_type(ObjectType type, ObjectSubType st) noexcept {
 Iosc::Iosc(ConsoleType type, const disc::WiiKeys& provision) : Iosc(type, provision, build_time_key_bundle()) {}
 
 Iosc::Iosc(ConsoleType type, const disc::WiiKeys& provision, std::span<const u8> bundle) : type_(type) {
+    if (type == ConsoleType::RVT) { ms_id_ = 3; ca_id_ = 2; } // as IOS's defaults
     load_default_entries(bundle);
     load_entries(provision);
 }
@@ -49,6 +50,7 @@ void Iosc::load_default_entries(std::span<const u8> bundle) {
         bundle_error_ = "the build-time key bundle is invalid: " + bundle_error_;
         d = disc::WiiKeys{};
     }
+    d.console.reset(); // a console's own keys are never built-in defaults (they belong to one console)
     const auto set = [this](Handle h, ObjectType t, ObjectSubType st, std::vector<u8> data, u32 misc, u32 owner, bool provided,
                             const char* name, const char* source) {
         entries_[h] = KeyEntry{true, t, st, std::move(data), misc, owner, provided, name, provided ? source : ""};
@@ -92,6 +94,26 @@ void Iosc::load_entries(const disc::WiiKeys& p) {
         put(vwii_, p.common[2]);
     } else {
         put(entries_[HANDLE_COMMON_KEY], p.dev_common);
+    }
+    if (p.console) { // the console's own keys (keys.bin), as Dolphin's LoadEntries; never common keys
+        const disc::ConsoleKeys& c = *p.console;
+        const auto own = [](KeyEntry& e, std::span<const u8> v) {
+            crypto::secure_zero(e.data.data(), e.data.size());
+            e.data.assign(v.begin(), v.end());
+            e.provided = true;
+            e.source = "session (user): keys.bin";
+        };
+        own(entries_[HANDLE_CONSOLE_KEY], c.ng_priv);
+        own(entries_[HANDLE_FS_KEY], c.nand_key);
+        own(entries_[HANDLE_FS_MAC], c.nand_hmac);
+        own(entries_[HANDLE_PRNG_KEY], c.backup_key);
+        entries_[HANDLE_CONSOLE_ID].misc_data = c.ng_id;
+        entries_[HANDLE_CONSOLE_ID].provided = true;
+        entries_[HANDLE_CONSOLE_ID].source = "session (user): keys.bin";
+        entries_[HANDLE_BOOT2_VERSION].misc_data = c.boot2_version;
+        ms_id_ = c.ms_id;
+        ca_id_ = c.ca_id;
+        console_key_id_ = c.ng_key_id;
     }
     if (p.root) {
         root_.data = p.root->modulus;
@@ -276,16 +298,35 @@ std::string key_provision_places(const std::vector<std::string>& dirs) {
 
 bool load_default_key_provision(const std::vector<std::string>& dirs, disc::WiiKeys& keys, std::string& report, std::string& error) {
     namespace fs = std::filesystem;
-    // load into a scratch store, then fill only the empty slots of `keys`
+    // Priority: the earlier source wins ($ORCA_WII_KEYS, then each directory in
+    // order, and in a directory wii_keys.txt, the 16-byte files, then keys.bin).
+    // A later source with a different value for a filled slot is not applied and
+    // is reported (no silent overwrite); values are never printed.
+    std::array<std::string, 6> origin; // common 0-2, dev, root, console
+    for (std::size_t i = 0; i < 3; ++i) if (keys.common[i]) origin[i] = "given before";
+    if (keys.dev_common) origin[3] = "given before";
+    if (keys.root) origin[4] = "given before";
+    if (keys.console) origin[5] = "given before";
     const auto merge = [&](const std::string& path, unsigned index) -> bool {
         disc::WiiKeys found;
         std::string e;
         if (!disc::load_wii_key_file(path, found, index, e)) { error = e; return false; }
         std::string got;
+        const auto slot = [&](std::size_t o, const char* name, bool have, bool filled, bool differs, auto take) {
+            if (!have) return;
+            if (!filled) { take(); origin[o] = path; got += std::string(" ") + name; return; }
+            if (differs) report += path + ": " + name + " ignored: differs from the one from " + origin[o] + "\n";
+        };
+        static const char* names[] = {"common", "korean", "vwii"};
         for (unsigned i = 0; i < 3; ++i)
-            if (found.common[i] && !keys.common[i]) { keys.common[i] = found.common[i]; got += i == 0 ? " common" : i == 1 ? " korean" : " vwii"; }
-        if (found.dev_common && !keys.dev_common) { keys.dev_common = found.dev_common; got += " dev"; }
-        if (found.root && !keys.root) { keys.root = found.root; got += " root"; }
+            slot(i, names[i], found.common[i].has_value(), keys.common[i].has_value(),
+                 keys.common[i] && found.common[i] && *keys.common[i] != *found.common[i], [&] { keys.common[i] = found.common[i]; });
+        slot(3, "dev", found.dev_common.has_value(), keys.dev_common.has_value(),
+             keys.dev_common && found.dev_common && *keys.dev_common != *found.dev_common, [&] { keys.dev_common = found.dev_common; });
+        slot(4, "root", found.root.has_value(), keys.root.has_value(),
+             keys.root && found.root && keys.root->modulus != found.root->modulus, [&] { keys.root = found.root; });
+        slot(5, "console-keys", found.console.has_value(), keys.console.has_value(),
+             keys.console && found.console && keys.console->ng_id != found.console->ng_id, [&] { keys.console = found.console; });
         if (!got.empty()) report += path + ":" + got + "\n";
         return true;
     };
@@ -312,11 +353,13 @@ std::string describe_keys(const disc::WiiKeys& k) {
     add(k.common[2].has_value(), "vWii");
     add(k.dev_common.has_value(), "development");
     add(k.root.has_value(), "root");
+    add(k.console.has_value(), "console keys (keys.bin)");
     return s.empty() ? "none" : s;
 }
 
 bool import_key_provision(const std::string& dir, std::span<const u8> data, unsigned index, std::string& summary, std::string& error) {
     namespace fs = std::filesystem;
+    std::string summary_note;
     std::error_code ec;
     fs::create_directories(dir, ec);
     if (!fs::is_directory(dir, ec)) { error = "cannot create the key directory " + dir; return false; }
@@ -325,6 +368,30 @@ bool import_key_provision(const std::string& dir, std::span<const u8> data, unsi
     const std::string file = dir + "/wii_keys.txt";
     disc::WiiKeys keys;
     if (fs::is_regular_file(file, ec) && !disc::load_wii_key_file(file, keys, 0, error)) return false;
+    if (incoming.console) {
+        // A BootMii keys.bin is kept as it is (dir/keys.bin, owner-only), so that the
+        // console's own keys stay with it; its common/Korean keys are not copied into
+        // the text file, and text entries that differ from them are removed (the new
+        // dump replaces them, as reported in the summary).
+        const std::string dump = dir + "/keys.bin";
+        {
+            std::ofstream o(dump + ".new", std::ios::binary | std::ios::trunc);
+            o.write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size()));
+            if (!o) { error = "cannot write " + dump; return false; }
+        }
+        fs::permissions(dump + ".new", fs::perms::owner_read | fs::perms::owner_write, fs::perm_options::replace, ec);
+        fs::rename(dump + ".new", dump, ec);
+        if (ec) { error = "cannot replace " + dump + ": " + ec.message(); return false; }
+        std::string replaced;
+        for (unsigned i = 0; i < 2; ++i)
+            if (keys.common[i] && incoming.common[i] && *keys.common[i] != *incoming.common[i]) { keys.common[i].reset(); replaced += i == 0 ? " common" : " korean"; }
+        if (keys.common[0] && incoming.common[0] && *keys.common[0] == *incoming.common[0]) keys.common[0].reset(); // same value: keep one copy
+        if (keys.common[1] && incoming.common[1] && *keys.common[1] == *incoming.common[1]) keys.common[1].reset();
+        incoming.common[0].reset();
+        incoming.common[1].reset();
+        incoming.console.reset();
+        if (!replaced.empty()) summary_note = "keys.bin replaces the text entries:" + replaced + "; ";
+    }
     for (unsigned i = 0; i < 3; ++i)
         if (incoming.common[i]) keys.common[i] = incoming.common[i];
     if (incoming.dev_common) keys.dev_common = incoming.dev_common;
@@ -363,7 +430,11 @@ bool import_key_provision(const std::string& dir, std::span<const u8> data, unsi
     fs::rename(tmp, file, ec);
     crypto::secure_zero(text.data(), text.size());
     if (ec) { error = "cannot replace " + file + ": " + ec.message(); return false; }
-    summary = describe_keys(keys);
+    // what the store holds now, all files together
+    disc::WiiKeys all;
+    std::string report, e2;
+    (void)load_default_key_provision({dir}, all, report, e2);
+    summary = summary_note + describe_keys(all);
     return true;
 }
 

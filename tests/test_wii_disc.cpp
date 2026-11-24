@@ -7,6 +7,7 @@
 #include "orca/crypto/sha1.hpp"
 #include "orca/disc/wii_disc.hpp"
 #include "orca/disc/wii_meta.hpp"
+#include "bootmii_dump.hpp"
 #include "wii_disc_builder.hpp"
 #include "wii_test_keys.hpp"
 #include "test_framework.hpp"
@@ -627,12 +628,11 @@ TEST_CASE(wii_key_files) {
     const std::string text = "/tmp/orca_test_keys.txt", root = "/tmp/orca_test_root.bin";
     { std::ofstream f(raw, std::ios::binary); f.write(reinterpret_cast<const char*>(kTestCommon.data()), 16); }
     {
-        std::vector<char> kb(0x400, 0);
-        const char header[] = "BackupMii v1, ConsoleID: 0badc0de\n";
-        std::memcpy(kb.data(), header, sizeof header - 1U);
-        std::memcpy(&kb[0x114], kTestCommon.data(), 16);
+        test_bootmii::DumpSpec ds;
+        ds.common = kTestCommon;
+        const auto kb = test_bootmii::make_dump(ds);
         std::ofstream f(bootmii, std::ios::binary);
-        f.write(kb.data(), static_cast<std::streamsize>(kb.size()));
+        f.write(reinterpret_cast<const char*>(kb.data()), static_cast<std::streamsize>(kb.size()));
     }
     { std::ofstream f(bad, std::ios::binary); f << "short"; }
     { std::ofstream f(root, std::ios::binary); f.write(reinterpret_cast<const char*>(rsa_test_keys::kRootN.data()), 512); }
@@ -671,8 +671,8 @@ TEST_CASE(wii_key_files) {
     CHECK(!parse("# nothing here\n"));
     CHECK(contains(err, "no keys"));
     CHECK(!parse("common_key 1032547698BADCFE0123456789ABCDEF"));
-    std::vector<u8> empty_bootmii(0x400, 0);
-    std::memcpy(empty_bootmii.data(), "BackupMii v1", 12);
+    test_bootmii::DumpSpec empty_spec; // common key field all zero
+    const std::vector<u8> empty_bootmii = test_bootmii::make_dump(empty_spec);
     WiiKeys x;
     CHECK(!parse_wii_keys(empty_bootmii, x, 0, err));
     CHECK(contains(err, "empty"));

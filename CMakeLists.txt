@@ -42,6 +42,7 @@ add_library(orca_core
     src/crypto/sha1.cpp
     src/crypto/rsa.cpp
     src/disc/blob.cpp
+    src/disc/bootmii_keys.cpp
     src/disc/disc_image.cpp
     src/disc/fst.cpp
     src/disc/wii_disc.cpp
@@ -173,7 +174,7 @@ endif()
 
 if(ORCA_BUILD_TESTS)
     enable_testing()
-    foreach(suite memory cpu_integer cpu_system mmu reference fpu_engine cpu_fpu system crypto wii_disc filesystem iosc audio dsp_hle ios wiimote frontend)
+    foreach(suite memory cpu_integer cpu_system mmu reference fpu_engine cpu_fpu system crypto wii_disc filesystem iosc bootmii_keys audio dsp_hle ios wiimote frontend)
         add_executable(orca_test_${suite} tests/test_${suite}.cpp)
         target_link_libraries(orca_test_${suite} PRIVATE orca_core)
         target_include_directories(orca_test_${suite} PRIVATE tests)

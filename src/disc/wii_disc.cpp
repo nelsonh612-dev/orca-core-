@@ -65,16 +65,17 @@ bool parse_wii_keys(std::span<const u8> data, WiiKeys& keys, unsigned index, std
         crypto::secure_zero(k.data(), k.size());
         return true;
     }
-    if (data.size() == 0x400U) { // BootMii keys.bin: header (0x100) + OTP (common key at OTP 0x14)
-        if (std::memcmp(data.data(), "BackupMii", 9) != 0) {
-            error = "a 1024-byte key file must be a BootMii keys.bin (it starts with \"BackupMii\")";
-            return false;
-        }
-        std::copy_n(data.begin() + 0x114, 16, k.begin());
-        if (std::all_of(k.begin(), k.end(), [](u8 b) { return b == 0U; })) { error = "keys.bin: the common key field is empty"; return false; }
-        keys.common[0] = k;
-        crypto::secure_zero(k.data(), k.size());
+    if (data.size() >= 9U && std::memcmp(data.data(), "BackupMii", 9) == 0) { // any size: a cut dump is reported as such
+        auto dump = parse_bootmii_keys(data, error);
+        if (!dump) return false;
+        keys.common[0] = dump->common_key;
+        if (dump->korean_key) keys.common[1] = *dump->korean_key;
+        keys.console = dump->console;
         return true;
+    }
+    if (data.size() == kBootMiiDumpSize) {
+        error = "a 1024-byte key file must be a BootMii keys.bin (it starts with \"BackupMii\")";
+        return false;
     }
     // text form
     const std::string text(data.begin(), data.end());
