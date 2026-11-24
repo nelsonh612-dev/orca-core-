@@ -210,7 +210,7 @@ TEST_CASE(busy_wait_skip_changes_nothing) {
     // integer_suite and float_suite, which skip nothing and already run with the skip
     // on (the default) against their host references in the tests above.
     // (dvd_suite takes 175 s without the skip and 0.17 s with it on the x86 host.)
-    u64 total = 0;
+    u64 total = 0, jit_total = 0;
     const char* hw = ORCA_PROGRAMS_DIR "/hardware_suite.elf";
     const char* av = ORCA_PROGRAMS_DIR "/av_suite.elf";
     for (const bool jit : {false, true}) {
@@ -229,8 +229,12 @@ TEST_CASE(busy_wait_skip_changes_nothing) {
             CHECK(a.log == b.log);
             CHECK(a.state == b.state);
             CHECK_EQ(a.ram_hash, b.ram_hash);
-            CHECK(skipped > 0U);
-            total += skipped;
+            // The interpreter skips in every case. With the JIT a waiting loop usually runs
+            // inside one translated block and only reaches the skip check at block exits
+            // (ARM64 CI: 0 in hardware_suite, 37080 of 2.27 M in av_suite), so only the
+            // equality above is required there, plus some skipping overall.
+            if (!jit) CHECK(skipped > 0U);
+            (jit ? jit_total : total) += skipped;
             std::printf("[programs] %-20s %s budget %llu: busy-wait skip: %llu of %llu instructions not executed, %.1f ms -> %.1f ms\n",
                         c.file + std::string(c.file).rfind('/') + 1, jit ? "JIT" : "interpreter",
                         static_cast<unsigned long long>(c.budget), static_cast<unsigned long long>(skipped),
@@ -239,6 +243,7 @@ TEST_CASE(busy_wait_skip_changes_nothing) {
         }
     }
     CHECK(total > 0U);
+    if (jit::host_can_execute()) CHECK(jit_total > 0U);
 }
 
 TEST_MAIN("programs")

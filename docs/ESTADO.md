@@ -183,7 +183,7 @@
 - App `android/` (`org.orca.emu`, minSdk 26, arm64-v8a): selector de juego, clave, IROM y COEF; región; JIT y GLES opcionales. Hilo de emulación con contexto EGL pbuffer GLES 3.2 (vuelta al software si falla), copia del cuadro al `ANativeWindow`, AAudio 48 kHz estéreo, ritmo por el reloj real, superposición táctil GameCube/Wii con puntero y Nunchuk, mandos físicos. Los motivos de parada se muestran en pantalla.
 
 **Optimización para gama baja**:
-- Salto de bucles de espera (`idle_skip`, activo por defecto): solo para bucles hacia atrás de ≤ 64 bytes formados por instrucciones de una lista blanca; ejecuta una iteración de prueba y comprueba que no cambió estado, época del bus ni MMIO; luego salta (iteraciones − 1) × longitud, sin pasar del siguiente evento. Resultados, ciclos e instrucciones retiradas idénticos con y sin el salto.
+- Salto de bucles de espera (`idle_skip`, activo por defecto): solo para bucles hacia atrás de ≤ 64 bytes formados por instrucciones de una lista blanca; ejecuta una iteración de prueba y comprueba que no cambió estado, época del bus ni MMIO; luego salta (iteraciones − 1) × longitud, sin pasar del siguiente evento. Resultados, ciclos e instrucciones retiradas idénticos con y sin el salto. **Con el JIT apenas actúa** (los bucles corren dentro de un bloque traducido y la comprobación solo se hace al salir del bloque); detectar las esperas al traducir el bloque queda pendiente.
 - GLES: las copias del EFB descargan/suben solo el rectángulo copiado ± 2 píxeles, con lectura RED_INTEGER cuando la implementación la ofrece.
 
 **GPU, parte 1 (M013)** — fuentes: archivos de Dolphin como información (ver README) y YAGCD; el código es propio:
