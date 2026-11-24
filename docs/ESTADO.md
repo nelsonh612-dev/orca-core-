@@ -167,6 +167,15 @@
 - `System::boot_wii_disc`: partición de juego, valores de memoria baja de la versión de IOS que pide el TMD (tabla de valores medidos), ID del disco, modelo de placa, relojes, modo de video, tipo y desplazamiento de partición, setting.txt de la NAND en 0x3800, BAT de MEM2 con HID4[SBE] y el apploader desde la partición. Las claves comunes las aporta el usuario (`SystemConfig::wii_keys`).
 - Falta del sistema Wii: Bluetooth (`/dev/usb/oh1/57e/305`), Wii Remote y Nunchuk, red, SD, USB, WC24, el almacén de títulos de ES y la creación de SYSCONF/setting.txt para una NAND nueva.
 
+**Lectura de discos completa (GameCube y Wii)** — referencia de comportamiento: Dolphin `DiscIO` (`VolumeWii`, `FileSystemGCWii`, `*Blob`), `Core/IOS/ES/Formats`, `Core/IOS/IOSC`, `Core/HW/WII_IPC`, leídos como información; detalle en `docs/DISCOS.md`:
+- Capa física `disc/blob`: ISO/GCM, NKit, CISO, WBFS, GCZ (zlib, Adler-32 por bloque); WIA/RVZ/TGC/NFS se rechazan con el motivo.
+- Wii: marcas 0x60/0x61 (sin hashes / sin cifrado), validación de ticket, TMD y cadena de certificados con tamaños exactos y offsets sin desbordamiento; RSA PKCS#1 v1.5 SHA-1 propio (contrastado con firmas de OpenSSL) para ticket, TMD, XS, CP y CA (raíz opcional, la aporta el usuario); clave equivocada detectada al abrir; caché LRU de 8 clústeres; borrado de material criptográfico.
+- Claves: archivo de 16 bytes, `keys.bin` de BootMii o texto (normal, coreana, vWii, desarrollo, raíz); solo las particiones cifradas las necesitan. Orca no incluye claves (Dolphin las lleva en su código).
+- Sistema de archivos: FST de GameCube y Wii (offsets ×4), `FileSystem` con lecturas acotadas, DOL principal y apploader.
+- Arranque: `boot_disc` arranca GameCube y deriva los discos Wii a `boot_wii_disc`; comprueba el encabezado interno de la partición. Datos que la imagen no puede entregar detienen la emulación con el motivo; leer fuera del disco o de la partición es un error de unidad para el juego.
+- **Error corregido en Hollywood:** escribir X2 en PPCCTRL detenía la emulación; libogc y el SDK lo escriben tras cada respuesta de IOS, así que todo juego Wii se habría parado en su primera llamada. Ahora se guarda sin efecto, como en Dolphin; lo cubre `wii_dvd_suite`.
+- Herramientas: `orca_disc` (info/verify/ls/extract); `orca_run` y la app detectan el formato y la consola por el contenido.
+
 **Bluetooth, Wii Remote y Nunchuk (M021)** — fuentes: WiiBrew ("Wiimote", "Wiimote/Extension Controllers", "Bluetooth", "/dev/usb/oh1"), especificación Bluetooth 2.0 (HCI, L2CAP) y Dolphin (`BTEmu.cpp`, `WiimoteDevice.cpp`, `WiimoteEmu*.cpp`, `Encryption.cpp`) como información; el código es propio:
 - `/dev/usb/oh1/57e/305` (`BluetoothDevice`): ioctlv 0 (comando HCI por transferencia de control), 1 (ACL por bulk 0x02/0x82) y 2 (eventos por interrupción 0x81). Comandos HCI de inicialización, búsqueda, conexión (handle 0x100 + índice), desconexión, nombres y enlace; las peticiones se quedan pendientes y se responden en orden sin adelantarse al kernel.
 - L2CAP: el mando abre PSM 0x11 (control) y luego 0x13 (datos) con MTU 185, configuración en los dos sentidos; HID SET_REPORT y DATA; informes a 200 Hz desde el planificador. SDP: **parada explícita**.
@@ -238,7 +247,8 @@
 5. **(Hecho en M019: JIT ARM64 completo; ver arriba.)** Mejoras posibles medidas en el teléfono: asignación de FPR en registros, comprobación de MSR/FPSCR una vez por bloque, código del camino lento compartido para reducir el tamaño.
 6. **M020 — hardware, DSP/audio:** hecho: HLE del DSP (ROM, init, AX, AXWii). Falta: ucode Zelda en HLE (juegos de Nintendo) y la salida de audio de Android (fase de la app).
 7. **Sistema Wii:** hecho: IPC de Hollywood, kernel IOS, STM, ES (título activo), NAND y /dev/fs, /dev/di, arranque de discos Wii, Bluetooth HCI/L2CAP/HID, Wii Remote, Nunchuk, NAND nueva. Falta (todo se detiene con el motivo): SDP y emparejamiento, MotionPlus y otras extensiones, cifrado de extensión con clave distinta de cero, red/SD/USB/WC24, tienda de títulos de ES (instalar o lanzar canales), IOS reales (LLE de Starlet).
-8. **Pruebas en hardware real:** ninguna prueba en un teléfono ni con juegos comerciales todavía. Es lo siguiente que hay que hacer con la APK del CI.
+8. **Pruebas en hardware real:** ninguna prueba en un teléfono ni con juegos comerciales todavía (en el entorno no hay imágenes reales). La ruta está preparada: `ctest -R real_images` con `ORCA_GC_IMAGE`, `ORCA_WII_IMAGE` y `ORCA_WII_KEYS` (ver `docs/DISCOS.md`).
+9. **Formatos de imagen no leídos:** WIA/RVZ (necesitan Zstandard/LZMA/bzip2), TGC, NFS, WBFS partido. Disco de GameCube en modo Wii (MIOS): no emulado.
 
 ## Pendiente de verificación en hardware real
 

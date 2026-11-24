@@ -49,13 +49,14 @@ Orca Core es un emulador independiente de GameCube/Wii escrito en C++20, con And
 | **CPU, cierre de pendientes (M017)** | BAT 4-7 de Broadway con HID4[SBE], DSISR de alineación, DAR por segmento/área BAT, eciwx/ecowx, mfspr 268/269, excepción FP precisa (SRR1[11]), resultados ajustados con OE/UE comparados con el modelo exacto |
 | **Backend OpenGL ES 3.2 (M016)** | `orca_gles`: rasterización en la GPU con pendientes de atributos exactas por triángulo, ubershader del TEV/EFB, EFB R32UI con framebuffer fetch, texturas decodificadas con caché, copias/borrados por la CPU; comparado píxel a píxel con el software |
 | **Wii: disco y descifrado (M020)** | AES-128-CBC y SHA-1 propios; tabla de particiones, clave de título con la clave común del usuario, bloques de 0x8000 con verificación H0-H3; unidad de disco con streaming DTK |
+| **Lectura de discos completa** | Formatos ISO/GCM, NKit, CISO, WBFS, GCZ (WIA/RVZ/TGC/NFS rechazados con el motivo); ticket/TMD/certificados validados y firmas RSA verificadas (PKCS#1 v1.5, propio); discos Wii sin cifrado o sin hashes; caché LRU de clústeres; FST de GameCube y Wii; `boot_disc` arranca ambos; datos corruptos o ausentes detienen con el motivo; `orca_disc` (info/verify/ls/extract). Ver `docs/DISCOS.md` |
 | **DSP HLE (M020)** | ROM, ucode init, AX y AXWii (tres disposiciones) identificados por hash; con volcados IROM/COEF del usuario corre el DSP de bajo nivel (cualquier ucode) |
 | **Sistema Wii (M021)** | IPC de Hollywood con sus tiempos, kernel IOS (24 fd, respuestas diferidas), STM, ES, NAND en un directorio del anfitrión con permisos, `/dev/fs`, `/dev/di`, valores de memoria de 41 IOS, `boot_wii_disc` |
 | **Bluetooth y Wii Remote (M021)** | `/dev/usb/oh1/57e/305`: HCI, L2CAP (PSM 0x11/0x13), HID; Wii Remote con botones, acelerómetro, IR (3 formatos), altavoz ADPCM, EEPROM, registros; Nunchuk con calibración y cifrado de clave cero |
 | **NAND nueva (M021)** | SYSCONF (con BT.DINF de los mandos emulados), setting.txt cifrado, uid.sys; `orca_run --create-nand=usa\|eur\|jpn\|kor` |
 | **Frontend y app Android** | `orca::frontend::Emulator` (cuadros, mandos, audio); app `android/` con SurfaceView, AAudio 48 kHz, contexto EGL/GLES 3.2 con vuelta al software, superposición táctil GameCube/Wii, mandos físicos |
 | **Optimización gama baja** | Salto exacto de bucles de espera (mismos resultados, ciclos e instrucciones): av_suite 2034 → 397 ms, dvd_suite 175 s → 0,17 s; copias EFB del GLES limitadas al rectángulo copiado |
-| Pruebas | 28 suites; 268.917 casos diferenciales (enteros y FP contra referencias independientes, la de FP con aritmética racional exacta); 189 codificaciones verificadas con `llvm-mc`; 402 mutaciones detectadas en el intérprete/GPU y 20 de 22 en el JIT (las 2 restantes, equivalentes); programas C y apploaders (GameCube y Wii) compilados con clang, arrancados también desde discos sintéticos |
+| Pruebas | 29 suites (más `real_images`, que solo corre con imágenes reales del usuario); 268.917 casos diferenciales (enteros y FP contra referencias independientes, la de FP con aritmética racional exacta); 189 codificaciones verificadas con `llvm-mc`; 402 mutaciones detectadas en el intérprete/GPU y 20 de 22 en el JIT (las 2 restantes, equivalentes); programas C y apploaders (GameCube y Wii) compilados con clang, arrancados también desde discos sintéticos |
 
 ## Compilar y probar
 
@@ -80,7 +81,8 @@ Ejecutar un DOL o ELF sin interfaz gráfica (imprime por qué se detuvo y los re
 ```sh
 ./build/orca_run programa.dol [ciclos] [gc|wii]
 ./build/orca_run juego.iso [ciclos]        # arranca un disco GameCube vía su apploader
-./build/orca_run --create-nand=usa --nand=nand/ --wii-keys=clave_comun.bin juego_wii.iso 7290000000 wii   # disco Wii (10 s emulados)
+./build/orca_run --create-nand=usa --nand=nand/ --wii-keys=keys.bin juego_wii.wbfs 7290000000   # disco Wii (10 s emulados); la consola la decide el disco
+./build/orca_disc --wii-keys=keys.bin verify juego_wii.wbfs   # verifica toda la imagen (H0-H3, FST, DOL, apploader)
 ./build/orca_elf2dol programa.elf programa.dol
 ./build/orca_run --dump-xfb=cuadro.ppm programa.dol   # guarda el XFB del campo superior al terminar
 ```
@@ -110,7 +112,7 @@ App (`android/`, Gradle 8.9, AGP 8.5.2, Java 17, NDK; solo arm64-v8a, Android 8.
 cd android && gradle assembleDebug     # app/build/outputs/apk/debug/app-debug.apk
 ```
 
-La app pide el juego (imagen de disco ISO/GCM cruda de GameCube o Wii), y para Wii la clave común (`keys.bin` o 16 bytes) y la región de la NAND nueva. Los volcados IROM/COEF del DSP son opcionales (sin ellos se usa el HLE). **No incluye BIOS, claves ni juegos**: los aporta el usuario.
+La app pide el juego (imagen ISO/GCM, CISO, WBFS o GCZ de GameCube o Wii), y para los discos Wii cifrados la clave común de la consola del usuario (`keys.bin`, 16 bytes o archivo de texto) y la región de la NAND nueva. Los volcados IROM/COEF del DSP son opcionales (sin ellos se usa el HLE). **No incluye BIOS, claves ni juegos**: los aporta el usuario.
 
 ## Estructura
 

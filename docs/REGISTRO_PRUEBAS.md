@@ -65,6 +65,52 @@ Todos los resultados son de ejecuciones reales del 2026-11-22 en este entorno, s
 - **Tercera y cuarta ejecución de mutaciones:** en 2725008 añadí una comprobación (camino lento < mitad de las instrucciones) que era incorrecta: con dividendos menores que 2^-767 el camino lento es el esperado, así que esa ejecución "detectó" las 22 mutaciones por una prueba rota (la validación de ese commit se canceló y no lo mostró). La causa real de la supervivencia de la división: `fdivs` se ejecutaba después de `fdiv` y su segundo redondeo pone FI por sí solo, ocultando el FI/FR de `fdiv`. Corregido en 7b0de24 (`fdiv` al final, comprobación eliminada). Ejecución de 7b0de24: **20 de 22 detectadas**; sobreviven solo las dos equivalentes.
 - **Error en mis expectativas:** en la prueba de DTK esperé que, tras pedir "parar al final de la pista", sonara la pista encolada; la orden para al terminar la pista actual.
 
+### Lectura completa de discos GameCube y Wii
+
+Ejecutado el 2026-11-24 en x86-64: GCC Release, Clang Release y GCC Debug + ASan + UBSan (`-DORCA_WERROR=ON`), **29 suites pasan en las tres, 0 advertencias; `real_images` aparece como *Skipped*** (no hay imágenes reales en el entorno; no cuenta como superada).
+
+- `wii_disc` (11 pruebas, 321 comprobaciones):
+  - RSA contrastado con firmas hechas por OpenSSL (`openssl dgst -sha1 -sign`, claves de prueba propias de 2048 y 4096 bits), incluida la firma reproducida byte a byte;
+  - tablas de particiones con 3 grupos y tipos juego/actualización/canal, con la partición de juego no primera; lecturas que no pasan a la partición siguiente;
+  - tickets válidos, truncados, con otro tipo de firma, otra versión, índice 3 o emisor inválido;
+  - TMD válidos, truncados, con número de contenidos incoherente o demasiado grandes;
+  - cadenas de certificados truncadas o con basura;
+  - firmas: cadena completa válida con la raíz de prueba, sin raíz (CA «not checked»), raíz equivocada, TMD modificado (solo su firma falla), imágenes *fakesigned*;
+  - clave de título: IV = ID de título; claves que faltan nombradas; índice coreano; clave de desarrollo; clave común equivocada detectada al abrir;
+  - descifrado y verificación de 70 clústeres (dos grupos), lecturas no alineadas de 1, 0x401 y 0x9000 bytes en límites de clúster y de grupo;
+  - caché LRU (lecturas repetidas sin descifrar, desalojo);
+  - corrupción en datos, H0, H1, H2, H3 y el TMD;
+  - offsets de cada campo del encabezado fuera de la imagen; imagen truncada;
+  - discos sin cifrado y sin hashes; archivos de claves en los tres formatos.
+- `filesystem` (nueva, 3 pruebas, 63 comprobaciones): el mismo volumen como disco GameCube y dentro de una partición Wii cifrada (offsets ×4); directorios, lecturas parciales que cruzan clústeres, DOL principal, apploader y tablas malformadas.
+- `disc` (18 pruebas, 484 comprobaciones; +4):
+  - CISO (bloques de 32 KiB y 2 KiB) y GCZ leídos igual que la imagen cruda, también desde archivo y desde descriptor;
+  - CISO y GCZ corruptos o truncados; WIA/RVZ/TGC/NFS y archivos ajenos rechazados con el motivo;
+  - la DI se detiene con el motivo si la imagen no puede entregar datos, y da DEINT fuera del disco;
+  - integer_suite arranca desde CISO; dvd_suite (lee el disco por la DI durante la ejecución) desde GCZ da los mismos 12 valores que desde la imagen cruda.
+- `ios` (23 pruebas, 2731 comprobaciones; +1): `wii_dvd_suite`, un programa PowerPC arrancado por `boot_disc` desde la partición cifrada (imagen cruda y WBFS). Abre `/dev/di` con la secuencia de registros de libogc y, durante la ejecución, lee:
+  - el ID del disco;
+  - la partición, dentro de un clúster y a través del límite 0x45C00;
+  - fuera de la partición (error 2 de la unidad);
+  - el estado de la tapa.
+
+  16 valores, los esperados.
+- `frontend` (3 pruebas): un disco Wii cifrado sin clave da el error que nombra la clave que falta.
+- Herramientas, comprobadas a mano con una imagen WBFS sintética escrita a archivo:
+  - `orca_disc info` y `verify`: 12 clústeres verificados, FST, DOL y apploader; sin clave, el fallo nombra la clave;
+  - `orca_run` con una imagen RVZ: rechazo con el motivo;
+  - `orca_test_real_images` con esa imagen: abre, verifica, arranca por el frontend y se detiene al escribir el programa sintético en el puerto de pruebas, que fuera de la suite no existe. La ruta de prueba funciona; no es un resultado de juego real.
+- **Errores encontrados y corregidos:**
+  1. **Hollywood detenía la emulación al escribir X2 en PPCCTRL.** libogc (`ipc.c`) y el SDK escriben X2 tras cada respuesta de IOS, y 0x38 al iniciar, así que todo juego Wii se habría parado en su primera llamada. Dolphin solo guarda el bit, y ahora Orca también. Comprobado reintroduciendo el error: `wii_dvd_suite` falla.
+  2. `parse_header` rechazaba los discos Wii con «not supported yet». Ahora los reconoce, `boot_disc` los deriva al arranque Wii, y la prueba `disc_rejections` se actualizó a ese comportamiento.
+  3. `/dev/di` detenía la emulación en una lectura fuera de la partición. Ahora responde el error de la unidad, como el hardware.
+  4. En imágenes recortadas, la partición se rechazaba entera. Ahora se abre, como en Dolphin, y el clúster que falta se nombra al leerlo.
+  5. Falso positivo de GCC 13 (`-Wstringop-overflow`) al copiar un `std::vector` en una prueba: se construye de nuevo en lugar de copiarlo.
+  6. `snprintf` con un búfer justo (`-Wformat-truncation`).
+  7. Colisión de nombres entre el espacio de las claves RSA de prueba y `test_keys()`.
+  8. Mi script de verificación mostraba una línea vacía cuando ctest informa de pruebas omitidas: corregido para mostrar el resumen y las omitidas.
+- **No ejecutado:** QEMU para ARM64 (no está instalado y la red del entorno no permite instalar paquetes). Las pruebas ARM64 corren en runners ARM64 nativos de GitHub Actions; resultados abajo.
+
 ### Integración final: Bluetooth, Wii Remote, NAND nueva, frontend, app Android y optimización
 
 Ejecutado el 2026-11-23 en x86-64: GCC Release, Clang Release y GCC Debug + ASan + UBSan, **28/28 suites en las tres, 0 advertencias** (commit 847dbaa).
