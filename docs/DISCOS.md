@@ -52,6 +52,34 @@ Orca sigue el mismo procedimiento (mismos offsets, mismo IV, misma estructura de
   - Texto, una clave por línea: `common_key = <32 hex>`, `korean_common_key = …`, `vwii_common_key = …`, `dev_common_key = …`, y opcionalmente `root_key_file = <ruta>` (módulo de 512 bytes, o módulo + exponente, o un certificado).
 - **Discos sin cifrado** (encabezado 0x61 ≠ 0): no necesitan ninguna clave.
 
+### OrcaIOSC (`ios/iosc`): el equivalente del IOSC de Dolphin
+
+| Dolphin (`Core/IOS/IOSC`) | Orca (`ios::Iosc`) |
+|---|---|
+| `DefaultHandle` 0-11 y `HANDLE_ROOT_KEY` | Los mismos números (`HANDLE_COMMON_KEY` = 4, `HANDLE_NEW_COMMON_KEY` = 11, …), más `kOrcaVwiiCommonKey` (0x100) para el índice 2 |
+| `KeyEntry` (tipo, subtipo, datos, `misc_data`, máscara de propietarios) | Igual, más `provided` |
+| `LoadDefaultEntries()` (las claves comunes, la clave SD y la clave raíz con los valores de Nintendo escritos en el código) | Registra las mismas entradas, en el mismo orden, con los mismos tipos y propietarios. Las que llevan valores de Nintendo quedan sin valor («not provided») hasta que se provisionan |
+| `LoadEntries()` (`keys.bin`: solo las claves propias de la consola, nunca la común) | No se carga: el lector de discos no usa esas claves |
+| `ConsoleType` Retail / RVT (`TicketReader::GetConsoleType`) | Igual: el emisor `Root-CA00000002-XS00000006` elige el perfil RVT, que usa la clave de desarrollo |
+| `COMMON_KEY_HANDLES[índice]` y `Decrypt(…, PID_ES)` | `common_key_handle(índice)` y `decrypt()` con comprobación de propietario, tipo y tamaño. Códigos de error: `IOSC_EACCES`, `IOSC_EINVAL`, `IOSC_INVALID_OBJTYPE`, `IOSC_FAIL_INTERNAL` |
+
+`disc::decrypt_title_key` crea un `Iosc` del perfil del ticket con la provisión de la sesión y le pide la clave de título, como hace `TicketReader::GetTitleKey`. El lector, el descifrado AES y H0-H3 no cambian.
+
+**Provisión automática.** Al crearse un sistema Wii, `load_default_key_provision` rellena las claves sin preguntar, buscando en este orden:
+
+1. `$ORCA_WII_KEYS`;
+2. los directorios que indique el frontend (en Android, el directorio de la app);
+3. `$ORCA_KEYS_DIR`, `$XDG_CONFIG_HOME/orca` y `~/.config/orca`, donde mira `wii_keys.txt`, `common-key.bin`, `korean-common-key.bin`, `vwii-common-key.bin`, `dev-common-key.bin` y `keys.bin`.
+
+La clave se importa **una sola vez** y sirve para todos los juegos:
+
+- en la app, con el botón «Import Wii keys»;
+- en las herramientas, con `orca_disc import-keys ARCHIVO [ÍNDICE] [DIR]`.
+
+Ambos escriben `wii_keys.txt` con permisos solo para el propietario. Desde entonces ningún juego pide archivo de claves. Si falta una clave, el error dice cuál (por su handle) y cómo importarla.
+
+**Estado de las claves predeterminadas:** Orca no las trae. Mientras el usuario no importe las de su consola, los discos Wii cifrados no se pueden leer. Esta es la única diferencia de experiencia con Dolphin.
+
 ### Comparación con el procedimiento de Dolphin
 
 `tests/dolphin_wii_reference.py` vuelve a implementar, de forma independiente, las funciones de Dolphin citadas arriba y `CheckBlockIntegrity` / `CheckH3TableIntegrity`. Usa OpenSSL para AES y `hashlib` para SHA-1. La prueba `wii_dolphin_reference`:

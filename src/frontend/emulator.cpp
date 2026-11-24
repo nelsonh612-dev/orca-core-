@@ -49,6 +49,7 @@ bool Emulator::make_system(bool wii, std::string& error) {
         if (nand.metadata(0, 0, "/shared2/sys/SYSCONF", m) != 0 && !ios::create_nand(nand, settings_.new_nand, error))
             return false;
         cfg.nand_root = settings_.nand_dir;
+        cfg.key_dirs = settings_.key_dirs;
         // keys are needed only by encrypted partitions; WiiPartition names the missing one
         if (!settings_.wii_key_file.empty() && !disc::load_wii_key_file(settings_.wii_key_file, cfg.wii_keys, 0, error)) return false;
     }

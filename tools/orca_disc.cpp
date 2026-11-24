@@ -3,6 +3,13 @@
 //
 // Usage: orca_disc [--wii-keys=FILE] info|verify|ls IMAGE
 //        orca_disc [--wii-keys=FILE] extract IMAGE /path/in/disc OUTPUT
+//        orca_disc import-keys FILE [INDEX] [DIR]
+//   Keys: OrcaIOSC loads the keys the user imported once (import-keys) by itself
+//   ($ORCA_WII_KEYS, $ORCA_KEYS_DIR, $XDG_CONFIG_HOME/orca, ~/.config/orca);
+//   --wii-keys adds a file for this run only.
+//   import-keys stores a key from the user's own console (16-byte key at INDEX
+//   0-3, BootMii keys.bin, or text key file) in DIR/wii_keys.txt (default:
+//   $ORCA_KEYS_DIR, else $XDG_CONFIG_HOME/orca, else ~/.config/orca).
 //   info    format, header, Wii partitions (type, offset, sizes, title, IOS,
 //           common key index, header flags) and signature status
 //   verify  reads the whole image: GCZ blocks (Adler-32), every Wii cluster of
@@ -14,10 +21,13 @@
 #include "orca/disc/blob.hpp"
 #include "orca/disc/fst.hpp"
 #include "orca/disc/wii_disc.hpp"
+#include "orca/ios/iosc.hpp"
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <iterator>
 #include <memory>
 #include <string>
 #include <vector>
@@ -173,6 +183,28 @@ int main(int argc, char** argv) {
     }
     if (args.size() < 2U) return usage();
     std::string err;
+    if (args[0] == "import-keys") {
+        std::string dir;
+        if (args.size() > 3U) dir = args[3];
+        else if (const char* d = std::getenv("ORCA_KEYS_DIR"); d != nullptr && *d != '\0') dir = d;
+        else if (const char* x = std::getenv("XDG_CONFIG_HOME"); x != nullptr && *x != '\0') dir = std::string(x) + "/orca";
+        else if (const char* h = std::getenv("HOME"); h != nullptr && *h != '\0') dir = std::string(h) + "/.config/orca";
+        else { std::fprintf(stderr, "no key directory: give DIR or set ORCA_KEYS_DIR\n"); return 2; }
+        std::ifstream in(args[1], std::ios::binary);
+        if (!in) { std::fprintf(stderr, "cannot open %s\n", args[1].c_str()); return 1; }
+        std::vector<u8> data((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        const unsigned index = args.size() > 2U ? static_cast<unsigned>(std::strtoul(args[2].c_str(), nullptr, 0)) : 0U;
+        std::string summary;
+        const bool ok = ios::import_key_provision(dir, data, index, summary, err);
+        crypto::secure_zero(data.data(), data.size());
+        if (!ok) { std::fprintf(stderr, "%s\n", err.c_str()); return 1; }
+        std::printf("key store %s/wii_keys.txt now holds: %s\n", dir.c_str(), summary.c_str());
+        return 0;
+    }
+    { // OrcaIOSC's automatic provision: the keys imported once
+        std::string report;
+        if (!ios::load_default_key_provision({}, keys, report, err)) { std::fprintf(stderr, "key provision: %s\n", err.c_str()); return 1; }
+    }
     ImageFormat format{};
     auto disc = open_image_file(args[1], &format, err);
     if (!disc) { std::fprintf(stderr, "%s\n", err.c_str()); return 1; }

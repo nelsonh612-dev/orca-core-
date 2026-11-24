@@ -27,4 +27,8 @@ final class NativeLib {
     static native void pressButton(long handle, boolean power);
     static native String status(long handle);
     static native String stopReason(long handle);
+    /** Imports a key file (the user's own console) into dir/wii_keys.txt; "OK: ..." or "ERROR: ...". Closes fd. */
+    static native String importKeys(String dir, int fd);
+    /** The keys found automatically in dir ("common, Korean", "none" or "ERROR: ..."). */
+    static native String keyStatus(String dir);
 }

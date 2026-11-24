@@ -10,6 +10,7 @@
 #include "orca/ios/memory_values.hpp"
 #include "orca/ios/bluetooth.hpp"
 #include "orca/ios/nand_setup.hpp"
+#include "orca/ios/iosc.hpp"
 #include "orca/disc/disc_image.hpp"
 #include "test_port.hpp"
 #include "wii_disc_builder.hpp"
@@ -20,6 +21,7 @@
 #include "test_framework.hpp"
 
 #include <algorithm>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <set>
@@ -1080,6 +1082,55 @@ TEST_CASE(wii_program_reads_the_disc_through_ios_at_run_time) {
         std::printf("[ios] wii_dvd_suite (%s image): %zu values from /dev/di at run time %s\n", wbfs ? "WBFS" : "raw", port.log.size(),
                     port.log == expected ? "as expected" : "MISMATCH");
     }
+}
+
+TEST_CASE(wii_disc_boots_with_keys_imported_once) {
+    // OrcaIOSC's automatic provision: the key is imported once into a key store; the
+    // system then finds it by itself (no key file given to the system or per game)
+    ::unsetenv("ORCA_WII_KEYS");
+    TempDir home("keyshome");
+    ::setenv("HOME", (home.p / "none").c_str(), 1);
+    ::setenv("XDG_CONFIG_HOME", (home.p / "none").c_str(), 1);
+    ::setenv("ORCA_KEYS_DIR", (home.p / "none").c_str(), 1);
+    const auto raw = test_wii::build_disc(wii_program_partition("wii_dvd_suite.dol"));
+    TempDir nand("keysnand"), store("keystore");
+    make_menu_nand(nand.p);
+    const auto boot = [&](bool with_store, std::string& error, std::vector<u32>& log) {
+        system::SystemConfig cfg;
+        cfg.console = system::Console::Wii;
+        cfg.nand_root = nand.p.string();
+        if (with_store) cfg.key_dirs = {store.p.string()}; // cfg.wii_keys stays empty
+        system::System sys(cfg);
+        test::TestPort port;
+        port.cpu = &sys.cpu();
+        sys.bus().map_mmio("test-port", test::TestPort::kPhysical, 0x1000, port);
+        sys.insert_disc(std::make_unique<disc::MemoryDisc>(raw));
+        if (!sys.boot_disc(error)) return false;
+        const auto res = sys.run(4000000000ULL);
+        log = port.log;
+        return res.stop == ppc::StepResult::Halted && port.exited && port.exit_code == 0U;
+    };
+    std::string error;
+    std::vector<u32> log;
+    CHECK(!boot(true, error, log)); // empty store: the error says what to do
+    CHECK(error.find("common key (index 0) (IOSC handle 4)") != std::string::npos);
+    CHECK(error.find("Import Wii keys") != std::string::npos);
+    std::string summary;
+    CHECK(ios::import_key_provision(store.p.string(), test_wii::kTestCommon, 0, summary, error));
+    CHECK(summary == "common");
+    CHECK(std::filesystem::exists(store.p / "wii_keys.txt"));
+    const auto perms = std::filesystem::status(store.p / "wii_keys.txt").permissions();
+    CHECK((perms & (std::filesystem::perms::group_all | std::filesystem::perms::others_all)) == std::filesystem::perms::none);
+    error.clear();
+    const bool ok = boot(true, error, log);
+    if (!ok) std::fprintf(stderr, "    %s\n", error.c_str());
+    CHECK(ok);
+    CHECK(log.size() == 16U && log[0] == 0U && log[5] == 0xA5000000U); // /dev/di read the decrypted partition at run time
+    CHECK(!boot(false, error, log)); // the store is used only when the system is pointed at it (or found in the fixed places)
+    ::setenv("ORCA_KEYS_DIR", store.p.c_str(), 1); // ... e.g. $ORCA_KEYS_DIR
+    CHECK(boot(false, error, log));
+    ::unsetenv("ORCA_KEYS_DIR");
+    ::unsetenv("XDG_CONFIG_HOME");
 }
 
 TEST_CASE(wii_disc_boot_failures_are_explicit) {

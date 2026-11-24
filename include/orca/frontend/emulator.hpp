@@ -40,6 +40,9 @@ struct Settings {
     std::string dsp_irom_file, dsp_coef_file;
     std::string nand_dir;      // Wii
     std::string wii_key_file;  // Wii: a key file load_wii_key_file accepts (optional for unencrypted discs)
+    // Wii: extra directories OrcaIOSC searches automatically for the user's key
+    // files (besides $ORCA_WII_KEYS, $ORCA_KEYS_DIR and ~/.config/orca).
+    std::vector<std::string> key_dirs;
     ios::NandSetup new_nand;   // used when the NAND has no SYSCONF yet
 };
 

@@ -34,8 +34,8 @@ public final class EmulationActivity extends Activity implements SurfaceHolder.C
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         SharedPreferences prefs = getSharedPreferences(MainActivity.PREFS, MODE_PRIVATE);
         File nand = new File(getFilesDir(), "nand");
-        File key = MainActivity.keyFile(this);
-        handle = NativeLib.create(nand.getAbsolutePath(), key.exists() ? key.getAbsolutePath() : "",
+        // no key file per game: OrcaIOSC loads the stored keys (the NAND's parent directory) by itself
+        handle = NativeLib.create(nand.getAbsolutePath(), "",
                 prefs.getBoolean("jit", true), prefs.getInt("region", 0), prefs.getBoolean("gles", true),
                 MainActivity.dspRom(this).exists() ? MainActivity.dspRom(this).getAbsolutePath() : "",
                 MainActivity.dspCoef(this).exists() ? MainActivity.dspCoef(this).getAbsolutePath() : "");

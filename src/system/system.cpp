@@ -1,4 +1,5 @@
 #include "orca/system/system.hpp"
+#include "orca/ios/iosc.hpp"
 #include "orca/ppc/mmu.hpp"
 
 #include "orca/memory/console_maps.hpp"
@@ -102,6 +103,8 @@ System::System(SystemConfig config) : config_(config), clocks_(clocks_for(config
             ios_->add_device(std::move(bt));
         }
         di_->set_wii_mode(); // the drive belongs to Starlet
+        // OrcaIOSC's key provision: fill the empty slots automatically
+        if (config_.auto_keys) (void)ios::load_default_key_provision(config_.key_dirs, config_.wii_keys, key_report_, key_error_);
         auto di_dev = std::make_unique<ios::DiDevice>(*di_, *es_, nand_.get(), config_.wii_keys);
         di_dev_ = di_dev.get();
         ios_->add_device(std::move(di_dev));
@@ -263,7 +266,11 @@ bool System::boot_wii_disc(std::string& error) {
         if (p.type == 0U) { game = &p; break; }
     if (game == nullptr) { error = "boot_wii_disc: the disc has no game partition"; return false; }
     // The system menu opens the game partition: ES title, owner IDs
-    if (!di_dev_->open_partition(*ios_, game->offset, error)) { error = "boot_wii_disc: " + error; return false; }
+    if (!di_dev_->open_partition(*ios_, game->offset, error)) {
+        error = "boot_wii_disc: " + error;
+        if (!key_error_.empty()) error += " (a key file in the automatic places was refused: " + key_error_ + ")";
+        return false;
+    }
     disc::WiiPartition& part = *di_dev_->partition();
     // the game's own header inside the partition (decrypted): Wii magic, DOL, FST
     if (const auto inner = disc::parse_volume_header(part, true, error); !inner) {

@@ -6,6 +6,7 @@
 // is ahead); when the phone is too slow the game runs slower instead of
 // skipping work.
 #include "orca/frontend/emulator.hpp"
+#include "orca/ios/iosc.hpp"
 #include "orca/wiimote/wiimote.hpp"
 
 #ifdef ORCA_HAVE_GLES
@@ -17,6 +18,7 @@
 #include <android/log.h>
 #include <android/native_window_jni.h>
 #include <jni.h>
+#include <unistd.h>
 
 #include <atomic>
 #include <chrono>
@@ -237,6 +239,8 @@ JNIEXPORT jlong JNICALL Java_org_orca_emu_NativeLib_create(JNIEnv* env, jclass, 
     s.dsp_hle = true;
     s.nand_dir = str(env, nand_dir);
     s.wii_key_file = str(env, key_file);
+    // the app's files directory (the NAND's parent) is one of OrcaIOSC's automatic key places
+    if (const auto slash = s.nand_dir.find_last_of('/'); slash != std::string::npos) s.key_dirs.push_back(s.nand_dir.substr(0, slash));
     s.dsp_irom_file = str(env, dsp_rom);
     s.dsp_coef_file = str(env, dsp_coef);
     switch (region) {
@@ -248,6 +252,37 @@ JNIEXPORT jlong JNICALL Java_org_orca_emu_NativeLib_create(JNIEnv* env, jclass, 
     auto* session = new Session(std::move(s));
     session->want_gles = gles != JNI_FALSE;
     return reinterpret_cast<jlong>(session);
+}
+
+// OrcaIOSC key provision: imports the key file behind `fd` (the user's own
+// console: 16-byte key, BootMii keys.bin or text key file) into `dir`/wii_keys.txt,
+// where the emulator finds it by itself from then on. Returns "OK: <keys held>" or
+// "ERROR: <reason>". The descriptor is closed.
+JNIEXPORT jstring JNICALL Java_org_orca_emu_NativeLib_importKeys(JNIEnv* env, jclass, jstring dir, jint fd) {
+    std::vector<orca::u8> data;
+    if (fd >= 0) {
+        orca::u8 buf[4096];
+        for (;;) {
+            const ssize_t n = ::read(fd, buf, sizeof buf);
+            if (n <= 0) break;
+            data.insert(data.end(), buf, buf + n);
+            if (data.size() > (1U << 20)) break; // no key file is that large
+        }
+        ::close(fd);
+    }
+    std::string summary, error;
+    const bool ok = data.size() <= (1U << 20) && orca::ios::import_key_provision(str(env, dir), data, 0, summary, error);
+    orca::crypto::secure_zero(data.data(), data.size());
+    if (!ok && error.empty()) error = "the file is too large to be a key file";
+    return env->NewStringUTF((ok ? "OK: " + summary : "ERROR: " + error).c_str());
+}
+
+// The keys OrcaIOSC finds in `dir` ("common, Korean" or "none"; "ERROR: ..." if a file there is invalid).
+JNIEXPORT jstring JNICALL Java_org_orca_emu_NativeLib_keyStatus(JNIEnv* env, jclass, jstring dir) {
+    orca::disc::WiiKeys keys;
+    std::string report, error;
+    if (!orca::ios::load_default_key_provision({str(env, dir)}, keys, report, error)) return env->NewStringUTF(("ERROR: " + error).c_str());
+    return env->NewStringUTF(orca::ios::describe_keys(keys).c_str());
 }
 
 // Loads the disc behind `fd` (ownership passes to the core). Returns null or an error message.

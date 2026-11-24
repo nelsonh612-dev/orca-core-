@@ -65,6 +65,22 @@ Todos los resultados son de ejecuciones reales del 2026-11-22 en este entorno, s
 - **Tercera y cuarta ejecución de mutaciones:** en 2725008 añadí una comprobación (camino lento < mitad de las instrucciones) que era incorrecta: con dividendos menores que 2^-767 el camino lento es el esperado, así que esa ejecución "detectó" las 22 mutaciones por una prueba rota (la validación de ese commit se canceló y no lo mostró). La causa real de la supervivencia de la división: `fdivs` se ejecutaba después de `fdiv` y su segundo redondeo pone FI por sí solo, ocultando el FI/FR de `fdiv`. Corregido en 7b0de24 (`fdiv` al final, comprobación eliminada). Ejecución de 7b0de24: **20 de 22 detectadas**; sobreviven solo las dos equivalentes.
 - **Error en mis expectativas:** en la prueba de DTK esperé que, tras pedir "parar al final de la pista", sonara la pista encolada; la orden para al terminar la pista actual.
 
+### OrcaIOSC y provisión automática de claves
+
+Ejecutado el 2026-11-24 en x86-64: GCC, Clang y GCC + ASan + UBSan, **31 pruebas pasan en las tres, 0 advertencias; `real_images` *Skipped***.
+
+- `iosc` (nueva, 5 pruebas, 125 comprobaciones):
+  - entradas predeterminadas con los handles, tipos, subtipos y propietarios de Dolphin, y recuperación por handle;
+  - `decrypt` rechaza otro propietario, otro tipo y una clave no provisionada;
+  - selección por índice: 0 común, 1 coreana, 2 vWii; 3 y otros, error;
+  - perfiles Retail/RVT; clave de título con valores sintéticos (solo de prueba);
+  - provisión automática: orden de los lugares, ranuras ya ocupadas, `keys.bin` (solo su clave común) y archivos inválidos.
+- `ios` (+1): un disco Wii cifrado arranca y lee su partición durante la ejecución con la clave importada una vez en el almacén, sin pasar archivo de claves al sistema. Con el almacén vacío, el error nombra el handle y cómo importar. El archivo queda con permisos 0600.
+- `orca_disc import-keys`, comprobado a mano: tras importar, `verify` descifra sin `--wii-keys`.
+- **Errores encontrados:**
+  - en la prueba de provisión, un archivo de texto «inválido» medía justo 16 bytes y se leía como clave cruda; se alargó;
+  - dos pruebas comprobaban el texto antiguo del mensaje; se actualizaron al nuevo.
+
 ### Claves y descifrado Wii comparados con el procedimiento de Dolphin
 
 Ejecutado el 2026-11-24 en x86-64: GCC, Clang y GCC + ASan + UBSan, **30 pruebas pasan en las tres, 0 advertencias; `real_images` *Skipped***.

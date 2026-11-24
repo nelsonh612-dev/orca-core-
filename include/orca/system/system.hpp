@@ -77,6 +77,11 @@ struct SystemConfig {
     std::string nand_root;
     // Wii: the common keys (supplied by the user) for decrypting disc partitions.
     disc::WiiKeys wii_keys;
+    // Wii: when creating the system, OrcaIOSC fills the empty key slots from the
+    // fixed places of ios::load_default_key_provision (plus key_dirs), so that no
+    // key file has to be chosen per game.
+    bool auto_keys{true};
+    std::vector<std::string> key_dirs;
     // Skip exact repeats of busy-wait loops (see System::run). Results and timing
     // are those of executing every iteration.
     bool idle_skip{true};
@@ -121,6 +126,9 @@ public:
     ios::NandFs* nand() noexcept { return nand_.get(); }
     // Error from opening the NAND (SystemConfig::nand_root), empty if none.
     const std::string& nand_error() const noexcept { return nand_error_; }
+    // Wii: what the automatic key provision loaded (or why a key file was refused).
+    const std::string& key_report() const noexcept { return key_report_; }
+    const std::string& key_error() const noexcept { return key_error_; }
     // Wii reset (or power) button: answers the game's STM event hook. False on
     // GameCube or when the game has no hook installed (the press has no effect).
     bool press_console_button(bool power);
@@ -256,6 +264,7 @@ private:
     ios::Es* es_{nullptr};
     std::unique_ptr<ios::NandFs> nand_;
     std::string nand_error_;
+    std::string key_report_, key_error_;
     ios::DiDevice* di_dev_{nullptr};
     ios::BluetoothDevice* bluetooth_{nullptr};
     std::string bt_error_;

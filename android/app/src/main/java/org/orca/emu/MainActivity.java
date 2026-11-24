@@ -5,6 +5,7 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.ParcelFileDescriptor;
 import android.view.ViewGroup;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
@@ -48,11 +49,19 @@ public final class MainActivity extends Activity {
         root.addView(game);
 
         Button key = new Button(this);
-        key.setText("Wii key file from your console (keys.bin, 16-byte key or text keys; encrypted Wii discs)");
+        key.setText("Import Wii keys from your console (once; used for every Wii game)");
         key.setOnClickListener(v -> pick(PICK_KEY));
         root.addView(key);
         keyState = new TextView(this);
         root.addView(keyState);
+        File legacy = legacyKeyFile(this);
+        if (legacy.exists()) { // move a key picked with an earlier version into the key store
+            try (ParcelFileDescriptor pfd = ParcelFileDescriptor.open(legacy, ParcelFileDescriptor.MODE_READ_ONLY)) {
+                if (importKeys(pfd).startsWith("OK: ")) legacy.delete();
+            } catch (Exception ignored) {
+                // keep the file; the error shows when a game needs the key
+            }
+        }
         updateKeyState();
 
         Button rom = new Button(this);
@@ -105,8 +114,18 @@ public final class MainActivity extends Activity {
         startActivityForResult(i, what);
     }
 
-    static File keyFile(Activity a) {
+    /** The file earlier versions kept the picked key in; imported into the key store and removed. */
+    static File legacyKeyFile(Activity a) {
         return new File(a.getFilesDir(), "wii_common_key.bin");
+    }
+
+    /** OrcaIOSC's key store: the app's files directory (wii_keys.txt), loaded automatically by the core. */
+    static String keyDir(Activity a) {
+        return a.getFilesDir().getAbsolutePath();
+    }
+
+    private String importKeys(ParcelFileDescriptor pfd) {
+        return NativeLib.importKeys(keyDir(this), pfd.detachFd());
     }
 
     static File dspRom(Activity a) {
@@ -118,7 +137,7 @@ public final class MainActivity extends Activity {
     }
 
     private void updateKeyState() {
-        keyState.setText((keyFile(this).exists() ? "Wii key: present" : "Wii key: not set") + " — DSP: "
+        keyState.setText("Wii keys: " + NativeLib.keyStatus(keyDir(this)) + " — DSP: "
                 + (dspRom(this).exists() && dspCoef(this).exists() ? "ROM dumps (low-level DSP)" : "high-level DSP"));
     }
 
@@ -139,7 +158,17 @@ public final class MainActivity extends Activity {
         super.onActivityResult(request, result, data);
         if (result != RESULT_OK || data == null || data.getData() == null) return;
         Uri uri = data.getData();
-        if (request == PICK_KEY) { copy(uri, keyFile(this)); return; }
+        if (request == PICK_KEY) {
+            String r;
+            try (ParcelFileDescriptor pfd = getContentResolver().openFileDescriptor(uri, "r")) {
+                r = pfd == null ? "ERROR: cannot open the file" : importKeys(pfd);
+            } catch (Exception e) {
+                r = "ERROR: " + e.getMessage();
+            }
+            Toast.makeText(this, r.startsWith("OK: ") ? "Wii keys stored: " + r.substring(4) : r, Toast.LENGTH_LONG).show();
+            updateKeyState();
+            return;
+        }
         if (request == PICK_DSP_ROM) { copy(uri, dspRom(this)); return; }
         if (request == PICK_DSP_COEF) { copy(uri, dspCoef(this)); return; }
         try {

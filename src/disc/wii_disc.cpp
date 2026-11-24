@@ -3,6 +3,7 @@
 
 #include "orca/crypto/aes.hpp"
 #include "orca/crypto/sha1.hpp"
+#include "orca/ios/iosc.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -53,7 +54,6 @@ std::optional<std::vector<u8>> read_file(const std::string& path, std::string& e
     return std::vector<u8>((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
 }
 
-constexpr const char* kDevTicketIssuer = "Root-CA00000002-XS00000006";
 } // namespace
 
 bool parse_wii_keys(std::span<const u8> data, WiiKeys& keys, unsigned index, std::string& error) {
@@ -187,32 +187,21 @@ WiiTicket parse_ticket(std::span<const u8> t) {
 }
 
 std::optional<AesKey> decrypt_title_key(const WiiTicket& ticket, const WiiKeys& keys, std::string& error) {
-    const std::optional<AesKey>* key = nullptr;
-    std::string which;
-    if (ticket.issuer == kDevTicketIssuer) {
-        if (ticket.common_key_index != 0U) { error = "development tickets with common key index " + std::to_string(ticket.common_key_index) + " are not supported"; return std::nullopt; }
-        key = &keys.dev_common;
-        which = "the development common key";
-    } else {
-        if (ticket.common_key_index >= keys.common.size()) {
-            error = "unsupported common key index " + std::to_string(ticket.common_key_index);
-            return std::nullopt;
-        }
-        key = &keys.common[ticket.common_key_index];
-        static const char* names[] = {"the common key (index 0)", "the Korean common key (index 1)", "the vWii common key (index 2)"};
-        which = names[ticket.common_key_index];
+    // ES asks IOSC (OrcaIOSC) to decrypt the ticket's key with the common key its
+    // index selects, in the key set of the console type that issued the ticket.
+    const ios::Iosc iosc(ios::Iosc::console_type_of(ticket.issuer), keys);
+    auto key = iosc.title_key(ticket.title_id, ticket.encrypted_title_key, ticket.common_key_index, error);
+    if (key) return key;
+    const auto handle = iosc.common_key_handle(ticket.common_key_index, error);
+    if (!handle) return std::nullopt; // unsupported index: the error says so
+    const ios::Iosc::KeyEntry* e = iosc.entry(*handle);
+    if (e != nullptr && !e->provided) {
+        error = std::string("this encrypted partition needs the ") + e->name + " (IOSC handle " + std::to_string(*handle) +
+                "), which is not provided: Orca does not include Nintendo's keys. Import the one from your own console once "
+                "(app: \"Import Wii keys\"; tools: orca_disc import-keys FILE) and it is loaded automatically from then on "
+                "(see docs/DISCOS.md)";
     }
-    if (!key->has_value()) {
-        error = "this encrypted partition needs " + which + ", which is not loaded: it has to come from your own console "
-                "(e.g. a BootMii keys.bin, or a key file; see docs/DISCOS.md)";
-        return std::nullopt;
-    }
-    crypto::Aes128 aes(**key);
-    crypto::Aes128::Block iv{};
-    for (unsigned k = 0; k < 8; ++k) iv[k] = static_cast<u8>(ticket.title_id >> (56U - 8U * k));
-    AesKey out = ticket.encrypted_title_key;
-    (void)aes.cbc_decrypt(out, iv);
-    return out;
+    return std::nullopt;
 }
 
 WiiPartition::~WiiPartition() {

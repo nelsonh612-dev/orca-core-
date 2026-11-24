@@ -317,7 +317,7 @@ TEST_CASE(wii_title_key_iv_and_keys) {
     WiiKeys none;
     CHECK(!decrypt_title_key(t, none, err).has_value());
     CHECK(contains(err, "the common key (index 0)"));
-    CHECK(contains(err, "not loaded"));
+    CHECK(contains(err, "not provided"));
     WiiTicket korean = t;
     korean.common_key_index = 1;
     CHECK(!decrypt_title_key(korean, test_keys(), err).has_value());
