@@ -8,9 +8,9 @@ Todos los resultados son de ejecuciones reales del 2026-11-22 en este entorno, s
 
 | Configuración | Compilación | Advertencias (`-Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion -Wshadow -Werror`) | CTest |
 |---|---|---|---|
-| GCC Release (`-DORCA_WERROR=ON`), x86-64 | OK | 0 | 28/28 pasan (2026-11-23, 847dbaa) |
-| Clang Release (`-DORCA_WERROR=ON`), x86-64 | OK | 0 | 28/28 pasan |
-| GCC Debug + ASan + UBSan (`-fno-sanitize-recover=all`, `-DORCA_WERROR=ON`), x86-64 | OK | 0 | 28/28 pasan |
+| GCC Release (`-DORCA_WERROR=ON`), x86-64 | OK | 0 | 34/34 pasan, `real_images` *Skipped* (2026-11-24, keys.bin) |
+| Clang Release (`-DORCA_WERROR=ON`), x86-64 | OK | 0 | 34/34 pasan |
+| GCC Debug + ASan + UBSan (`-fno-sanitize-recover=all`, `-DORCA_WERROR=ON`), x86-64 | OK | 0 | 34/34 pasan |
 | ARM64 real (GitHub `ubuntu-24.04-arm`): GCC, Clang, ASan+UBSan | Ver "Integración final" (resultado por commit en GitHub Actions) | 0 | — |
 | Android NDK arm64-v8a (núcleo y app) | GitHub Actions | 0 | — |
 | Clang + ASan/UBSan en x86-64 | **NO EJECUTADO**: falta `compiler-rt` en el entorno | — | — |
@@ -64,6 +64,21 @@ Todos los resultados son de ejecuciones reales del 2026-11-22 en este entorno, s
 - **Mutaciones del JIT en ARM64** (`tools/jit_mutations.py`, rama `orca-core-0.1-mutations`): 22 mutaciones. Primera ejecución: 15 detectadas (dos colgaban la prueba: se añadió un tiempo límite). Las 7 restantes llevaron a cinco pruebas dirigidas (segundo slot de paired singles, división de números diminutos, almacenamiento en un bloque enlazado, página de datos que pasa a ser código, enlaces desde una página igual en dos contextos); dos son equivalentes (documentado en el script). Segunda ejecución: 19 de 22, quedando las dos equivalentes y la división, cuya prueba se reforzó con operandos desnormales (el modelo del algoritmo sin esa comprobación da 777 diferencias en esa distribución).
 - **Tercera y cuarta ejecución de mutaciones:** en 2725008 añadí una comprobación (camino lento < mitad de las instrucciones) que era incorrecta: con dividendos menores que 2^-767 el camino lento es el esperado, así que esa ejecución "detectó" las 22 mutaciones por una prueba rota (la validación de ese commit se canceló y no lo mostró). La causa real de la supervivencia de la división: `fdivs` se ejecutaba después de `fdiv` y su segundo redondeo pone FI por sí solo, ocultando el FI/FR de `fdiv`. Corregido en 7b0de24 (`fdiv` al final, comprobación eliminada). Ejecución de 7b0de24: **20 de 22 detectadas**; sobreviven solo las dos equivalentes.
 - **Error en mis expectativas:** en la prueba de DTK esperé que, tras pedir "parar al final de la pista", sonara la pista encolada; la orden para al terminar la pista actual.
+
+### keys.bin de BootMii: analizador propio, claves de consola y prioridades
+
+Ejecutado el 2026-11-24 en x86-64: GCC, Clang y GCC + ASan + UBSan, **34 pruebas pasan en las tres, 0 advertencias; `real_images` *Skipped***. Todos los volcados son sintéticos (`tests/bootmii_dump.hpp`): ninguna clave real.
+
+- `bootmii_keys` (nueva, 6 pruebas, 126 comprobaciones):
+  - volcado válido de 1024 bytes: cada campo en su offset (0x114, 0x124, 0x128, 0x144, 0x158, 0x168, 0x200, 0x204, 0x208, 0x248, 0x274); el informe nombra campos y comprobaciones y no contiene ningún valor (ni las claves ni el ID de consola, en hex en mayúsculas o minúsculas);
+  - rechazos con mensaje claro y sin valores: 1000 bytes (truncado), 1025 bytes, encabezado alterado, ID no hexadecimal, sin salto de línea, ID del encabezado ≠ NG ID de la OTP, clave común vacía, clave común = clave NAND, clave coreana = clave común, clave NAND vacía, 1 KiB sin «BackupMii», archivo inexistente; en ningún caso queda nada cargado a medias;
+  - conversión a `WiiKeys`: común → índice 0, coreana → índice 1, claves de consola aparte; en OrcaIOSC van a los handles de consola (`CONSOLE_KEY`, `FS_KEY`, `FS_MAC`, `PRNG_KEY`, `CONSOLE_ID`, `BOOT2_VERSION`) e IDs MS/CA; un paquete del compilado hecho de un volcado conserva las claves comunes pero nunca las de consola;
+  - índice del ticket: 0 y 1 descifran con su clave; clave equivocada u otro ID de título (IV) dan otro resultado; 2 (vWii) no está en un keys.bin y el error lo dice; 3 se rechaza;
+  - flujo completo con el keys.bin como única fuente: disco sintético con una partición de clave común y otra coreana → ticket → clave de título → descifrado → H0-H3 → datos idénticos;
+  - la clave NAND nunca se usa como común: con el valor de la clave común del disco en el campo NAND (0x158) y otro en 0x114, la partición no abre («common key is wrong»);
+  - prioridad: el texto va primero; un valor distinto en keys.bin se informa como «ignored: differs» sin aplicarlo ni imprimirlo; importar un keys.bin lo guarda entero con permisos 0600 y retira del texto la entrada que lo contradice; los formatos anteriores (16 bytes, texto) siguen funcionando.
+- `orca_disc check-keys`, a mano con archivos sintéticos: válido (lista de «ok», código 0, sin valores en la salida), truncado (código 1, «1000 bytes instead of 1024»), inexistente (código 1).
+- **Error encontrado:** las pruebas antiguas usaban keys.bin mínimos que el analizador estricto rechaza; ahora usan volcados sintéticos completos.
 
 ### OrcaIOSC completo, valores por defecto del compilado, AES ARMv8 y lecturas concurrentes
 

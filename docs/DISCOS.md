@@ -48,7 +48,14 @@ Orca sigue el mismo procedimiento (mismos offsets, mismo IV, misma estructura de
   - el índice mayor que 2 se rechaza. Dolphin usa la clave 0 tras una alerta. Orca admite el índice 2 (vWii) si el usuario aporta esa clave; Dolphin no tiene ranura para él.
 - **Archivos de claves** (`--wii-keys=` en las herramientas; el selector de la app):
   - 16 bytes exactos: una clave (índice 0 por defecto).
-  - `keys.bin` de BootMii: 0x400 bytes, encabezado de texto «BackupMii v1» de 0x100 bytes y luego la OTP de la consola. Solo se lee la clave común (OTP 0x14 = archivo 0x114). Las claves privadas de la consola que también contiene no se usan ni se guardan. Un archivo de 1 KiB sin ese encabezado se rechaza: **no es el mismo formato que usa Dolphin internamente**.
+  - `keys.bin` de BootMii (analizador propio, `disc/bootmii_keys`): exactamente 0x400 bytes. Disposición estudiada en `BootMiiKeyDump` de Dolphin (que la toma de mini):
+    - 0x000-0x0FF: texto `BackupMii v1, ConsoleID: XXXXXXXX\n` y relleno;
+    - OTP 0x100-0x17F: hash de boot1 (0x100), **clave común (0x114)**, NG ID (0x124), clave privada NG (0x128, 30 bytes), HMAC NAND (0x144), **clave NAND (0x158)**, clave de copia (0x168);
+    - SEEPROM desde 0x200: MS ID (0x200), CA ID (0x204), NG key ID (0x208), firma NG (0x20C), contadores (0x248, versión de boot2), **clave coreana (0x274)**; relleno hasta 0x3FF.
+    - Validación: tamaño, encabezado, ID del encabezado = NG ID, clave común no vacía y distinta de las de consola, clave NAND no vacía, coreana (0 = ausente) distinta de la común. Si falla, no se carga nada.
+    - Clave común → índice 0, coreana → índice 1. Las claves de consola van **solo** a las entradas de consola de OrcaIOSC y nunca se usan como clave común. El índice 2 (vWii) no está en un keys.bin.
+    - `orca_disc check-keys FILE` lista los campos encontrados y las comprobaciones, sin valores.
+  - Prioridad entre fuentes: `$ORCA_WII_KEYS`, luego en cada carpeta `wii_keys.txt`, los archivos de 16 bytes y `keys.bin`. Gana la primera; un valor distinto posterior no se aplica y se informa sin mostrarlo. Al importar un keys.bin se guarda entero (0600) y se retiran del texto las entradas que lo contradicen.
   - Texto, una clave por línea: `common_key = <32 hex>`, `korean_common_key = …`, `vwii_common_key = …`, `dev_common_key = …`, y opcionalmente `root_key_file = <ruta>` (módulo de 512 bytes, o módulo + exponente, o un certificado).
 - **Discos sin cifrado** (encabezado 0x61 ≠ 0): no necesitan ninguna clave.
 
@@ -75,7 +82,7 @@ Orca sigue el mismo procedimiento (mismos offsets, mismo IV, misma estructura de
 | Clave de título | `GetTitleKey`: `iosc.Decrypt(common, IV = ID de título ‖ 0⁸, clave cifrada)` | `title_key`: crea un objeto de ES, `ImportSecretKey` descifrando con la clave común, entrega el valor al lector y borra el objeto (como hace ES) | Mismo resultado (`wii_dolphin_reference`: 0 diferencias); probado que no deja objetos |
 | Descifrado de bloques | `DecryptBlockHashes` (IV 0) y `DecryptBlockData` (IV = bytes cifrados 0x3D0) | Igual, con AES por instrucciones ARMv8 cuando la CPU las tiene | Probado; la ruta ARMv8 se prueba en ARM64 |
 | Valores de las entradas | En el código fuente de Dolphin | **Fuera del código**: el paquete de valores del compilado (`-DORCA_DEFAULT_KEYS_FILE`) y los valores de sesión del usuario (importados una vez) | Mecanismo probado con valores de prueba |
-| `LoadEntries()` desde `keys.bin` | Claves de consola (NG, NAND, PRNG) | No se cargan: el lector de discos no las usa | Sin implementar (no hace falta para discos) |
+| `LoadEntries()` desde `keys.bin` | Claves de consola (NG, NAND, PRNG, IDs); nunca la común | Mismas entradas de consola e IDs MS/CA desde el keys.bin del usuario; además Orca toma su clave común (Dolphin la tiene en el código) | Probado (`bootmii_keys`) |
 
 **Arquitectura equivalente en Orca (sin pedir nada al usuario).**
 
