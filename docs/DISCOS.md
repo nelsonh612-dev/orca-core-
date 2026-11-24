@@ -22,25 +22,55 @@ Este documento describe cómo Orca Core lee, verifica, descifra y arranca imáge
 - **GCZ**: zlib (Linux y NDK de Android). Se comprueba el Adler-32 de cada bloque; un bloque corrupto es un error, no un aviso como en Dolphin.
 - **WIA, RVZ, TGC, NFS**: se rechazan nombrando el formato. RVZ y WIA necesitan Zstandard, LZMA o bzip2, que no están en este entorno; hay que convertirlos a ISO con Dolphin.
 
-## Claves
+## Claves: qué hace Dolphin y qué hace Orca
 
-Dolphin lleva las claves comunes de Nintendo (y la clave pública raíz) dentro de su código fuente, en `IOSC.cpp`, y descifra la clave de título del ticket con ellas. **Orca no incluye ninguna clave.** El mecanismo equivalente:
+Recorrido de Dolphin, verificado en su código:
 
-- **Discos sin cifrado** (encabezado 0x61 ≠ 0): no necesitan clave.
-- **Particiones cifradas**: necesitan la clave común que indica el ticket, extraída por el usuario de su propia consola:
-  - índice 0: normal;
-  - índice 1: coreana;
-  - índice 2: vWii;
-  - clave de desarrollo: para tickets emitidos por `Root-CA00000002-XS00000006`, como en Dolphin.
-- **Formatos de archivo de claves** (`--wii-keys=` en las herramientas; el selector de la app):
-  - 16 bytes: una clave (índice 0 por defecto);
-  - `keys.bin` de BootMii (0x400 bytes, clave en 0x114);
-  - texto, una clave por línea: `common_key = <32 hex>`, `korean_common_key = …`, `vwii_common_key = …`, `dev_common_key = …`, y opcionalmente `root_key_file = <ruta>` (clave pública raíz: módulo de 512 bytes, o módulo + exponente, o un certificado).
+1. `VolumeWii::VolumeWii` lee las marcas de 0x60/0x61 y los cuatro grupos de particiones de 0x40000 (offsets × 4).
+2. Para cada partición lee el ticket (`TicketReader`, 0x2A4 bytes), el TMD, la cadena de certificados y la tabla H3.
+3. Crea la clave AES de la partición con `TicketReader::GetTitleKey()`:
+   - toma el IV de los 8 bytes del ID de título en 0x1DC más 8 ceros;
+   - toma la clave cifrada de 16 bytes en 0x1BF y el índice de clave común en 0x1F1;
+   - descifra con `IOSC::Decrypt(COMMON_KEY_HANDLES[índice])`.
+4. `VolumeWii::Read` descifra cada bloque de 0x8000 bytes con esa clave: `DecryptBlockData` usa como IV los bytes cifrados 0x3D0-0x3DF y descifra 0x7C00 bytes desde 0x400. Guarda el último bloque descifrado.
+
+**La diferencia que importa:** `COMMON_KEY_HANDLES` apunta a claves cuyos bytes están escritos dentro de `Core/IOS/IOSC.cpp` (la normal y la coreana, más la clave pública raíz). Por eso Dolphin abre discos Wii sin pedir ningún archivo: **Dolphin no usa `keys.bin` para leer discos.**
+
+Orca sigue el mismo procedimiento (mismos offsets, mismo IV, misma estructura de bloque), pero no incluye las claves de Nintendo, que son material secreto. Las aporta el usuario desde su propia consola. Este es el único paso en el que Orca se aparta de Dolphin, y es intencionado.
+
+- **Administrador de claves** (`WiiKeys`): guarda solo las claves comunes de la sesión y las borra al destruirse.
+  - Ranuras: retail 0 (normal), 1 (coreana), 2 (vWii), la de desarrollo, y la clave pública raíz opcional.
+  - Las claves de título no están ahí: cada `WiiPartition` deriva la suya de su propio ticket, la guarda y la borra al cerrarse. Una partición nunca usa la clave de otra.
+  - El lector pide la clave con `decrypt_title_key(ticket, keys)`, que elige la ranura según el índice y el emisor del ticket. Los tickets de `Root-CA00000002-XS00000006` usan la clave de desarrollo, como `TicketReader::GetConsoleType` de Dolphin.
 - **Errores**:
-  - si falta la clave, el error nombra cuál;
-  - si la clave es incorrecta, se detecta al abrir la partición, porque el clúster 0 no pasa H0 tras descifrarlo;
-  - un índice de clave mayor que 2 se rechaza (Dolphin usa la clave 0 con una alerta).
-- **Memoria**: la clave de título, las tablas de rondas AES, la caché de clústeres y los búferes de los archivos de claves se borran con `secure_zero`.
+  - si la clave falta, el error dice cuál;
+  - si es incorrecta, se detecta al abrir la partición, porque el bloque 0 no pasa H0;
+  - el índice mayor que 2 se rechaza. Dolphin usa la clave 0 tras una alerta. Orca admite el índice 2 (vWii) si el usuario aporta esa clave; Dolphin no tiene ranura para él.
+- **Archivos de claves** (`--wii-keys=` en las herramientas; el selector de la app):
+  - 16 bytes exactos: una clave (índice 0 por defecto).
+  - `keys.bin` de BootMii: 0x400 bytes, encabezado de texto «BackupMii v1» de 0x100 bytes y luego la OTP de la consola. Solo se lee la clave común (OTP 0x14 = archivo 0x114). Las claves privadas de la consola que también contiene no se usan ni se guardan. Un archivo de 1 KiB sin ese encabezado se rechaza: **no es el mismo formato que usa Dolphin internamente**.
+  - Texto, una clave por línea: `common_key = <32 hex>`, `korean_common_key = …`, `vwii_common_key = …`, `dev_common_key = …`, y opcionalmente `root_key_file = <ruta>` (módulo de 512 bytes, o módulo + exponente, o un certificado).
+- **Discos sin cifrado** (encabezado 0x61 ≠ 0): no necesitan ninguna clave.
+
+### Comparación con el procedimiento de Dolphin
+
+`tests/dolphin_wii_reference.py` vuelve a implementar, de forma independiente, las funciones de Dolphin citadas arriba y `CheckBlockIntegrity` / `CheckH3TableIntegrity`. Usa OpenSSL para AES y `hashlib` para SHA-1. La prueba `wii_dolphin_reference`:
+
+1. escribe 7 imágenes, cada una con 3 particiones con claves de título e índices distintos (una correcta y seis con corrupción en datos, H0, H1, H2, H3 y el bloque 0);
+2. compara, partición por partición, el ID de título, la clave de título (por su SHA-1), la comprobación H3, el veredicto H0-H3 de cada bloque y los datos descifrados.
+
+Resultado: 21 particiones, 0 diferencias. Comprobado que la prueba detecta diferencias: con un IV fijo en la referencia salen 19.
+
+No se ejecutó el propio Dolphin: compilarlo necesita decenas de bibliotecas que no se pueden instalar en este entorno sin red.
+
+### Diferencias de comportamiento que quedan (intencionadas)
+
+| | Dolphin | Orca |
+|---|---|---|
+| Claves comunes | En su código fuente | Del usuario |
+| Verificación H0-H3 | Solo en «Verificar» (`VolumeVerifier`); el juego recibe los datos sin comprobar | En cada lectura, antes de entregar datos, como el IOS real; un fallo detiene la emulación con el motivo |
+| Índice de clave ≥ 2 | Clave 0 y una alerta | Índice 2 = vWii si se aporta; > 2 es un error |
+| H3 incorrecta o bloque 0 corrupto | Abre la partición | Rechaza abrirla, con el motivo |
 
 ## Verificación de integridad
 

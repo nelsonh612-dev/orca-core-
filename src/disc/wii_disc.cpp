@@ -66,6 +66,10 @@ bool parse_wii_keys(std::span<const u8> data, WiiKeys& keys, unsigned index, std
         return true;
     }
     if (data.size() == 0x400U) { // BootMii keys.bin: header (0x100) + OTP (common key at OTP 0x14)
+        if (std::memcmp(data.data(), "BackupMii", 9) != 0) {
+            error = "a 1024-byte key file must be a BootMii keys.bin (it starts with \"BackupMii\")";
+            return false;
+        }
         std::copy_n(data.begin() + 0x114, 16, k.begin());
         if (std::all_of(k.begin(), k.end(), [](u8 b) { return b == 0U; })) { error = "keys.bin: the common key field is empty"; return false; }
         keys.common[0] = k;
@@ -272,7 +276,12 @@ std::unique_ptr<WiiPartition> WiiPartition::open(DiscReader& disc, u64 po, const
         if (h3_off < 0x2C0U || !inside(h3_off, kWiiH3Size, room)) { error = "H3 table at partition offset " + hex64(h3_off) + " is outside the image"; return nullptr; }
         p->h3_.resize(kWiiH3Size);
         if (!disc.read(po + h3_off, p->h3_)) { error = "cannot read the H3 table"; return nullptr; }
-        // The TMD's first content describes the H3 table.
+        // The TMD of a disc partition has one content, the H3 table (as Dolphin's
+        // CheckH3TableIntegrity requires).
+        if (p->tmd_.contents.size() != 1U) {
+            error = "the partition's TMD lists " + std::to_string(p->tmd_.contents.size()) + " contents instead of one (the H3 table)";
+            return nullptr;
+        }
         const auto h3_hash = crypto::sha1(p->h3_);
         if (!std::equal(h3_hash.begin(), h3_hash.end(), p->tmd_.contents[0].sha1.begin())) {
             error = "H3 table does not match the TMD's content hash";

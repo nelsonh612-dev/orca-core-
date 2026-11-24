@@ -239,6 +239,66 @@ TEST_CASE(wii_signature_chain) {
     }
 }
 
+TEST_CASE(wii_each_partition_uses_its_own_ticket_and_title_key) {
+    // three partitions: different title IDs, title keys and common key indexes
+    DiscSpec spec;
+    PartitionSpec a, b, c;
+    a.plain = plain_data(2, 1);
+    b.plain = plain_data(2, 2);
+    b.type = 1;
+    b.title_id = 0x0000000100000002ULL;
+    b.title_key = AesKey{0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00};
+    c.plain = plain_data(2, 3);
+    c.type = 2;
+    c.title_id = 0x0001000148414A45ULL;
+    c.common_index = 1;
+    c.common = AesKey{0x5A, 0x5A, 0x5A, 0x5A, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12};
+    c.title_key = AesKey{0xF0, 0xE1, 0xD2, 0xC3, 0xB4, 0xA5, 0x96, 0x87, 0x78, 0x69, 0x5A, 0x4B, 0x3C, 0x2D, 0x1E, 0x0F};
+    spec.partitions = {a, b, c};
+    const auto img = build_disc(spec);
+    MemoryDisc disc(img);
+    std::string err;
+    const auto parts = list_wii_partitions(disc, err);
+    CHECK(parts.has_value() && parts->size() == 3U);
+    if (!parts || parts->size() != 3U) return;
+    WiiKeys keys = test_keys();
+    keys.common[1] = c.common;
+    const PartitionSpec* specs[] = {&a, &b, &c};
+    std::vector<std::unique_ptr<WiiPartition>> open;
+    for (std::size_t i = 0; i < 3; ++i) {
+        auto p = WiiPartition::open(disc, (*parts)[i].offset, keys, err);
+        CHECK(p != nullptr);
+        if (!p) { std::printf("    %s\n", err.c_str()); return; }
+        CHECK_EQ(p->ticket_info().title_id, specs[i]->title_id);
+        CHECK_EQ(p->ticket_info().common_key_index, specs[i]->common_index);
+        CHECK(p->title_key() == specs[i]->title_key);
+        open.push_back(std::move(p));
+    }
+    // all three open at once, reads interleaved: each one decrypts with its own key
+    for (int round = 0; round < 3; ++round)
+        for (std::size_t i = 0; i < 3; ++i) {
+            std::vector<u8> piece(0x9000);
+            const u64 at = 0x1234U * static_cast<u64>(round);
+            CHECK(open[i]->read(at, piece));
+            CHECK(std::equal(piece.begin(), piece.end(), specs[i]->plain.begin() + static_cast<std::ptrdiff_t>(at)));
+        }
+    // partition c without the Korean key: only c fails, naming the key
+    WiiKeys normal_only = test_keys();
+    CHECK(WiiPartition::open(disc, (*parts)[0].offset, normal_only, err) != nullptr);
+    CHECK(WiiPartition::open(disc, (*parts)[2].offset, normal_only, err) == nullptr);
+    CHECK(contains(err, "Korean"));
+    // b's title key cannot read a's clusters: a's ticket with b's encrypted key fails the hash check
+    {
+        auto swapped = img;
+        std::memcpy(&swapped[(*parts)[0].offset + 0x1BF], &img[(*parts)[1].offset + 0x1BF], 16);
+        std::memcpy(&swapped[(*parts)[0].offset + 0x1DC], &img[(*parts)[1].offset + 0x1DC], 8); // and its title ID (IV)
+        std::memcpy(&swapped[(*parts)[0].offset + kTmdOff + 0x18C], &img[(*parts)[1].offset + 0x1DC], 8);
+        MemoryDisc d(swapped);
+        CHECK(WiiPartition::open(d, (*parts)[0].offset, keys, err) == nullptr);
+        CHECK(contains(err, "H0"));
+    }
+}
+
 TEST_CASE(wii_title_key_iv_and_keys) {
     auto img = build_disc(plain_data(3));
     std::string err;
@@ -408,6 +468,14 @@ TEST_CASE(wii_partition_rejects_tampering_at_every_level) {
         CHECK(WiiPartition::open(disc, kPart, test_keys(), err) == nullptr);
         CHECK(contains(err, "H3"));
     }
+    { // a disc partition's TMD must list exactly one content (the H3 table), as Dolphin checks
+        auto img = good;
+        put16(img, kPart + kTmdOff + 0x1DE, 2);
+        put32(img, kPart + 0x2A4, kTmdSize + 0x24);
+        MemoryDisc disc(img);
+        CHECK(WiiPartition::open(disc, kPart, test_keys(), err) == nullptr);
+        CHECK(contains(err, "instead of one"));
+    }
     { // TMD and ticket title IDs differ
         auto img = good;
         img[kPart + kTmdOff + 0x193] ^= 1;
@@ -523,6 +591,8 @@ TEST_CASE(wii_key_files) {
     { std::ofstream f(raw, std::ios::binary); f.write(reinterpret_cast<const char*>(kTestCommon.data()), 16); }
     {
         std::vector<char> kb(0x400, 0);
+        const char header[] = "BackupMii v1, ConsoleID: 0badc0de\n";
+        std::memcpy(kb.data(), header, sizeof header - 1U);
         std::memcpy(&kb[0x114], kTestCommon.data(), 16);
         std::ofstream f(bootmii, std::ios::binary);
         f.write(kb.data(), static_cast<std::streamsize>(kb.size()));
@@ -565,8 +635,14 @@ TEST_CASE(wii_key_files) {
     CHECK(contains(err, "no keys"));
     CHECK(!parse("common_key 1032547698BADCFE0123456789ABCDEF"));
     std::vector<u8> empty_bootmii(0x400, 0);
+    std::memcpy(empty_bootmii.data(), "BackupMii v1", 12);
     WiiKeys x;
     CHECK(!parse_wii_keys(empty_bootmii, x, 0, err));
+    CHECK(contains(err, "empty"));
+    std::vector<u8> other_1k(0x400, 0x11); // 1024 bytes that are not a BootMii dump
+    CHECK(!parse_wii_keys(other_1k, x, 0, err));
+    CHECK(contains(err, "BackupMii"));
+    CHECK(!x.common[0].has_value());
 }
 
 TEST_MAIN("wii_disc")

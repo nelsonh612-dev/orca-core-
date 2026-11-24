@@ -149,6 +149,17 @@ if(ORCA_BUILD_TESTS)
     target_compile_options(orca_test_real_images PRIVATE $<$<CXX_COMPILER_ID:GNU,Clang>:${ORCA_WARNINGS}>)
     add_test(NAME real_images COMMAND orca_test_real_images)
     set_tests_properties(real_images PROPERTIES SKIP_RETURN_CODE 77)
+    # Wii reading compared with an independent implementation of Dolphin's procedure
+    # (tests/dolphin_wii_reference.py: OpenSSL + hashlib); skipped without python3/openssl.
+    add_executable(orca_wii_reference_fixture tests/wii_reference_fixture.cpp)
+    target_link_libraries(orca_wii_reference_fixture PRIVATE orca_core)
+    target_include_directories(orca_wii_reference_fixture PRIVATE tests)
+    find_package(Python3 COMPONENTS Interpreter)
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME wii_dolphin_reference
+                 COMMAND sh -c "rm -rf wii_reference && mkdir wii_reference && $<TARGET_FILE:orca_wii_reference_fixture> wii_reference && ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/dolphin_wii_reference.py wii_reference")
+        set_tests_properties(wii_dolphin_reference PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT ${ORCA_TEST_TIMEOUT})
+    endif()
 
     # --- Whole-program tests -------------------------------------------------
     # Host build of the portable programs (same C source, native compiler).

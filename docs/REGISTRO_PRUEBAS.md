@@ -65,6 +65,23 @@ Todos los resultados son de ejecuciones reales del 2026-11-22 en este entorno, s
 - **Tercera y cuarta ejecución de mutaciones:** en 2725008 añadí una comprobación (camino lento < mitad de las instrucciones) que era incorrecta: con dividendos menores que 2^-767 el camino lento es el esperado, así que esa ejecución "detectó" las 22 mutaciones por una prueba rota (la validación de ese commit se canceló y no lo mostró). La causa real de la supervivencia de la división: `fdivs` se ejecutaba después de `fdiv` y su segundo redondeo pone FI por sí solo, ocultando el FI/FR de `fdiv`. Corregido en 7b0de24 (`fdiv` al final, comprobación eliminada). Ejecución de 7b0de24: **20 de 22 detectadas**; sobreviven solo las dos equivalentes.
 - **Error en mis expectativas:** en la prueba de DTK esperé que, tras pedir "parar al final de la pista", sonara la pista encolada; la orden para al terminar la pista actual.
 
+### Claves y descifrado Wii comparados con el procedimiento de Dolphin
+
+Ejecutado el 2026-11-24 en x86-64: GCC, Clang y GCC + ASan + UBSan, **30 pruebas pasan en las tres, 0 advertencias; `real_images` *Skipped***.
+
+- `wii_disc` (12 pruebas, 363 comprobaciones; +1): tres particiones abiertas a la vez, cada una con su ticket, ID de título, clave de título e índice de clave común (0 y 1), y lecturas intercaladas.
+  - Si falta la clave coreana, solo falla la partición que la necesita, y el error lo dice.
+  - Con la clave cifrada y el ID de título de otra partición, la apertura falla en H0.
+  - También se comprueban un TMD con dos contenidos (rechazado, como en Dolphin) y un archivo de 1 KiB sin encabezado «BackupMii» (rechazado).
+- `wii_dolphin_reference` (nueva): 7 imágenes × 3 particiones contra la reimplementación independiente del procedimiento de Dolphin; **21 particiones, 0 diferencias** en ID de título, clave de título, H3, veredicto H0-H3 por bloque (70 bloques en 2 grupos) y datos descifrados.
+  - Mutaciones detectadas: un campo de Orca alterado (1 diferencia); IV fijo en la referencia (19 diferencias).
+  - No es el binario de Dolphin: no se puede compilar aquí sin red.
+- Lo que se comprobó en el código de Dolphin:
+  - las claves comunes están en `IOSC.cpp`, y Dolphin no lee `keys.bin` para abrir discos;
+  - `COMMON_KEY_HANDLES` solo tiene 2 ranuras;
+  - con un índice ≥ 2 usa la clave 0;
+  - los hashes solo se comprueban en `VolumeVerifier`.
+
 ### Lectura completa de discos GameCube y Wii
 
 Ejecutado el 2026-11-24 en x86-64: GCC Release, Clang Release y GCC Debug + ASan + UBSan (`-DORCA_WERROR=ON`), **29 suites pasan en las tres, 0 advertencias; `real_images` aparece como *Skipped*** (no hay imágenes reales en el entorno; no cuenta como superada).

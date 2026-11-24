@@ -96,6 +96,7 @@ struct PartitionSpec {
     bool sign{false};
     std::string ticket_issuer{kXsIssuer};
     AesKey common{kTestCommon};
+    AesKey title_key{kTitleKey}; // each partition can have its own
 };
 
 struct DiscSpec {
@@ -143,7 +144,7 @@ inline std::vector<u8> build_disc(const DiscSpec& spec) {
         std::vector<u8> ticket(kTicketSize, 0);
         put32(ticket, 0, kSigRsa2048);
         put_str(ticket, 0x140, ps.ticket_issuer);
-        std::vector<u8> enc(kTitleKey.begin(), kTitleKey.end());
+        std::vector<u8> enc(ps.title_key.begin(), ps.title_key.end());
         crypto::Aes128 common(ps.common);
         crypto::Aes128::Block iv{};
         for (unsigned k = 0; k < 8; ++k) iv[k] = static_cast<u8>(ps.title_id >> (56U - 8U * k));
@@ -166,7 +167,7 @@ inline std::vector<u8> build_disc(const DiscSpec& spec) {
         if (!spec.hashes) {
             std::memcpy(&disc[part + kDataOff], plain.data(), plain.size());
         } else {
-            crypto::Aes128 tk(kTitleKey);
+            crypto::Aes128 tk(ps.title_key);
             const u64 groups = (clusters + 63U) / 64U;
             for (u64 g = 0; g < groups; ++g) {
                 std::vector<std::vector<u8>> hb(64, std::vector<u8>(0x400, 0));

@@ -40,16 +40,28 @@ namespace orca::disc {
 
 using AesKey = std::array<u8, 16>;
 
+// The common keys the user supplied for this session (never the title keys: each
+// WiiPartition derives and keeps its own). Overwritten when destroyed.
 struct WiiKeys {
     std::array<std::optional<AesKey>, 3> common; // retail keys: index 0 normal, 1 Korean, 2 vWii
     std::optional<AesKey> dev_common;            // development consoles (tickets from Root-CA00000002-XS00000006)
     std::optional<crypto::RsaPublicKey> root;    // optional: lets the CA certificate be checked too
     bool any() const noexcept { return common[0] || common[1] || common[2] || dev_common; }
+    WiiKeys() = default;
+    WiiKeys(const WiiKeys&) = default;
+    WiiKeys& operator=(const WiiKeys&) = default;
+    ~WiiKeys() {
+        for (auto& k : common)
+            if (k) crypto::secure_zero(k->data(), k->size());
+        if (dev_common) crypto::secure_zero(dev_common->data(), dev_common->size());
+    }
 };
 
 // Reads key material the user extracted from their own console:
 //   - exactly 16 bytes: one common key, stored at `index` (0-2; 3 = development);
-//   - 0x400 bytes: a BootMii keys.bin (OTP common key at 0x114, stored at index 0);
+//   - 0x400 bytes: a BootMii keys.bin ("BackupMii v1" text header of 0x100 bytes, then
+//     the console's OTP; only the common key, OTP 0x14 = file 0x114, is read: the
+//     console's private keys in it are neither used nor kept);
 //   - text: lines "name = 32 hex digits" with the names common_key, korean_common_key,
 //     vwii_common_key, dev_common_key, and optionally root_key_file = path (a root
 //     key in a form parse_root_key accepts); '#' starts a comment.
