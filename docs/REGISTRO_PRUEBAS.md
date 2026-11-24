@@ -84,7 +84,13 @@ Ejecutado el 2026-11-24 en x86-64: GCC, Clang y GCC + ASan + UBSan, **32 pruebas
 - `crypto` (+1): la ruta AES con instrucciones ARMv8 contra el código portable, en 200 casos aleatorios (cifrar, descifrar e IV final), y medida de velocidad.
   - En x86-64 no aplica: el código portable da 38,8 MB/s.
   - El archivo ARM64 compilado con `clang --target=aarch64` contiene las instrucciones `aese`, `aesd`, `aesmc` y `aesimc`.
-  - Resultado en ARM64: ver el CI.
+  - **Resultado en ARM64 nativo (GitHub Actions, ebcf5e1):** instrucciones disponibles; los 200 casos dan los mismos bytes que el código portable. Velocidad de descifrado CBC de 64 clústeres:
+    - GCC: 33,0 MB/s portable frente a 6.362,5 MB/s con ARMv8;
+    - Clang: 41,4 MB/s frente a 6.618,1 MB/s.
+
+    Unas 160-190 veces más rápido. Es el procesador del runner de GitHub, no el del teléfono.
+- CI de aa42c95: GCC, Clang y ASan+UBSan en ARM64, el NDK, las fuentes de la app y la APK, **todo correcto**.
+- APK publicada (ebcf5e1): sin valores incorporados («Built-in default key values: none» en el registro del CI).
 - `wii_disc` (+1): lectura secuencial de 140 clústeres (3 grupos) en trozos de 0x5F00 bytes, y 4 hilos con 300 lecturas aleatorias cada uno; todo igual a los datos originales (la partición protege su caché con un mutex).
 - **Diferencia encontrada al compararlo con Dolphin:** para un handle inexistente, Dolphin devuelve `IOSC_EACCES`, porque comprueba el propietario primero. La nueva versión devolvía `IOSC_EINVAL`; la prueba existente lo detectó y se corrigió.
 
