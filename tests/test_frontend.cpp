@@ -116,6 +116,14 @@ TEST_CASE(frontend_reports_a_game_that_halts_itself) {
     CHECK(bus.write32(0x380044U, 0x801F76E0U) == mem::BusStatus::Ok);  // saved LR
     CHECK(bus.write32(0x380070U, 0x80300100U) == mem::BusStatus::Ok);  // saved r5 (format)
     CHECK(bus.write32(0x380100U, 0U) == mem::BusStatus::Ok);
+    // its register save area: r3 file, r4 line, r5 format, then the format's
+    // arguments; the report prints the formatted message
+    const char fmt[] = "VIConfigure(): Tried to change mode from (%d) to (%d), which is forbidden\n";
+    for (u32 i = 0; i < sizeof fmt; ++i) CHECK(bus.write8(0x300300U + i, static_cast<u8>(fmt[i])) == mem::BusStatus::Ok);
+    const char vic[] = "vi.c";
+    for (u32 i = 0; i < sizeof vic; ++i) CHECK(bus.write8(0x300380U + i, static_cast<u8>(vic[i])) == mem::BusStatus::Ok);
+    const u32 save[] = {0x80300380U, 2647U, 0x80300300U, 1U, 0U};
+    for (u32 i = 0; i < 5U; ++i) CHECK(bus.write32(0x380050U + 4U * i, save[i]) == mem::BusStatus::Ok);
     // the caller of OSPanic: OSPanic("OSFile.c", 123, "DVD: no disc") built just before the call
     const char file[] = "OSFile.c";
     for (u32 i = 0; i < sizeof file; ++i) CHECK(bus.write8(0x300200U + i, static_cast<u8>(file[i])) == mem::BusStatus::Ok);
@@ -136,6 +144,7 @@ TEST_CASE(frontend_reports_a_game_that_halts_itself) {
     CHECK(e.find("\"DVD: no disc\"") != std::string::npos);
     CHECK(e.find("Panic call at 801F76DC: r3=\"OSFile.c\" r4=123 r5=\"DVD: no disc\"") != std::string::npos);
     CHECK(e.find("r3=\"Failed assertion in nwc24.c\"") != std::string::npos);
+    CHECK(e.find("Message: \"VIConfigure(): Tried to change mode from (1) to (0), which is forbidden\\n\"") != std::string::npos);
     // with interrupts on the same loop can be left (by an interrupt): not reported
     frontend::Emulator emu2(s);
     CHECK(emu2.load_executable(read_file(ORCA_PROGRAMS_DIR "/gpu_draw.dol"), false, error));
@@ -189,6 +198,7 @@ TEST_CASE(frontend_diagnostics_name_the_word_a_polling_loop_waits_on) {
     if (d.find(want) == std::string::npos) std::printf("    %s\n", d.c_str());
     CHECK(d.find(want) != std::string::npos);
     CHECK(d.find("\nirq") != std::string::npos);
+    CHECK(d.find("\nDSP CSR ") != std::string::npos);
 }
 #endif
 

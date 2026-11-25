@@ -111,6 +111,7 @@ private:
     LoopKind closed_loop(u32 pc, std::string* words = nullptr, u32* length = nullptr);
     bool read_guest32(u32 ea, u32& v);
     std::string polling_loop(u32 hot_pc);
+    std::string panic_message(u32 sp);
     std::string guest_text(u32 ea);
     u32 pc_sample_total_{0};
     bool field_seen_{false};

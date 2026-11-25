@@ -8,6 +8,7 @@
 #include <iterator>
 #include <optional>
 #include <cstdio>
+#include <cstring>
 
 namespace orca::frontend {
 
@@ -149,6 +150,62 @@ std::optional<u32> bat_physical(u32 ea) {
 bool Emulator::read_guest32(u32 ea, u32& v) {
     const auto pa = bat_physical(ea);
     return pa && sys_->bus().read32(*pa, v) == mem::BusStatus::Ok;
+}
+
+// OSPanic(file, line, format, ...) is variadic, so its prologue stores r3-r10 in
+// its frame, one after another: find file, line and format (a text with '%')
+// next to each other above r1 and print the format with the words that follow
+// (r6-r10; integer and string conversions; floating-point ones are in FPRs).
+std::string Emulator::panic_message(u32 sp) {
+    const auto raw = [&](u32 ea, std::string& out) {
+        out.clear();
+        const auto pa = bat_physical(ea);
+        if (!pa) return false;
+        for (u32 i = 0; i < 256U; ++i) {
+            u8 c = 0;
+            if (sys_->bus().read8(*pa + i, c) != mem::BusStatus::Ok) return false;
+            if (c == 0U) return true;
+            if (c != '\n' && c != '\t' && (c < 0x20U || c > 0x7EU)) return false;
+            out += static_cast<char>(c);
+        }
+        return true;
+    };
+    std::string fmt, t;
+    for (u32 a = sp; a < sp + 0x800U; a += 4) {
+        u32 file = 0, line = 0, f = 0;
+        if (!read_guest32(a, file) || !read_guest32(a + 4U, line) || !read_guest32(a + 8U, f)) return {};
+        if (line > 100000U || guest_text(file).empty() || !raw(f, fmt) || fmt.find('%') == std::string::npos) continue;
+        std::string out;
+        u32 next = a + 12U, used = 0;
+        for (std::size_t i = 0; i < fmt.size(); ++i) {
+            if (fmt[i] != '%') { out += fmt[i] == '\n' ? std::string("\\n") : std::string(1, fmt[i]); continue; }
+            std::size_t j = i + 1;
+            while (j < fmt.size() && std::strchr("-+ #0123456789.lhz", fmt[j]) != nullptr) ++j;
+            if (j >= fmt.size()) break;
+            const char c = fmt[j];
+            const std::string spec = fmt.substr(i, j - i);
+            i = j;
+            if (c == '%') { out += '%'; continue; }
+            if (c == 'f' || c == 'g' || c == 'e') { out += "<float>"; continue; }
+            u32 v = 0;
+            if (used >= 5U || !read_guest32(next, v)) { out += "<?>"; continue; }
+            next += 4U;
+            ++used;
+            char b[48];
+            switch (c) {
+            case 'd': case 'i': std::snprintf(b, sizeof b, "%d", static_cast<int>(v)); out += b; break;
+            case 'u': std::snprintf(b, sizeof b, "%u", v); out += b; break;
+            case 'x': std::snprintf(b, sizeof b, "%x", v); out += b; break;
+            case 'X': std::snprintf(b, sizeof b, "%X", v); out += b; break;
+            case 'p': std::snprintf(b, sizeof b, "%08X", v); out += b; break;
+            case 'c': out += static_cast<char>(v & 0x7FU); break;
+            case 's': out += raw(v, t) ? t : std::string("<?>"); break;
+            default: out += spec + c; break;
+            }
+        }
+        return out;
+    }
+    return {};
 }
 
 std::string Emulator::guest_text(u32 ea) {
@@ -299,6 +356,7 @@ bool Emulator::halted_by_guest() {
         }
     }
     if (!texts.empty()) error_ += ". Text (from the stack; may include earlier calls):" + texts;
+    if (const std::string m = panic_message(st.gpr[1]); !m.empty()) error_ += ". Message: \"" + m + "\"";
     // an exception taken on the way (the SDK's unhandled-exception handler also
     // ends in PPCHalt): where it happened
     std::snprintf(b, sizeof b, ". SRR0 %08X SRR1 %08X DAR %08X DSISR %08X", st.srr0, st.srr1, st.dar, st.dsisr);
@@ -377,6 +435,25 @@ std::string Emulator::diagnostics() {
             irq += b;
         }
     out += "\nirq" + (irq.empty() ? std::string(" none") : irq);
+    {
+        auto& dsp = sys_->dsp();
+        std::snprintf(b, sizeof b, "\nDSP CSR %04X", dsp.csr());
+        out += b;
+        if (auto* h = dsp.hle_dsp()) {
+            if (const auto* u = h->ucode()) {
+                std::snprintf(b, sizeof b, " %s (%08X)", u->name(), u->hash());
+                out += b;
+            }
+            out += " cpu->dsp";
+            for (const u32 m : h->mails_from_cpu()) { std::snprintf(b, sizeof b, " %08X", m); out += b; }
+            out += " dsp->cpu";
+            for (const u32 m : h->mails_to_cpu()) { std::snprintf(b, sizeof b, " %08X", m); out += b; }
+            std::snprintf(b, sizeof b, " pending %zu", h->pending_mails());
+            out += b;
+        } else {
+            out += " (low-level)";
+        }
+    }
     if (auto* k = sys_->ios()) out += "\n" + k->activity();
     return out;
 }
