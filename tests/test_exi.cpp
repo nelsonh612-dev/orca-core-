@@ -253,6 +253,25 @@ TEST_CASE(exi_transfer_errors_are_reported_not_invented) {
     (void)t.finish();
     CHECK_EQ(t.r(0x10), 0U);        // nothing drives the line
     CHECK_EQ(t.r(0x00) & exi::CSR_EXT, 0U); // EXT: no external device
+    // DMA with a CPU virtual address (cached 0x80..., uncached 0xC0...): the DMA
+    // engine ignores bits 30-31, so it reaches RAM (Resident Evil 0 does this)
+    for (u32 i = 0; i < 0x40; i += 4) CHECK(t.bus.write32(0x4000 + i, 0xDEADBEEFU) == mem::BusStatus::Ok);
+    CHECK(t.w(0x04, 0x80004000U));
+    CHECK_EQ(t.r(0x04), 0x80004000U);  // MAR reads back as written
+    CHECK(t.w(0x08, 0x40U));
+    CHECK(t.w(0x0C, 0x07U));           // DMA write to the empty port
+    CHECK(t.finish() > 0U);
+    CHECK(t.w(0x04, 0xC0004000U));
+    CHECK(t.w(0x0C, 0x03U));           // DMA read from the empty port: zeros into RAM
+    (void)t.finish();
+    u32 got = 0xFFFFFFFFU;
+    CHECK(t.bus.read32(0x4000, got) == mem::BusStatus::Ok);
+    CHECK_EQ(got, 0U);
+    CHECK(t.bus.read32(0x403C, got) == mem::BusStatus::Ok);
+    CHECK_EQ(got, 0U);
+    CHECK(t.w(0x04, 0x81800000U));     // past MEM1 (24 MiB here): still refused
+    CHECK(!t.w(0x0C, 0x03U));
+    CHECK(t.exi.mmio_error().find("not RAM") != std::string::npos);
     CHECK(t.w(0x00, 0x000U));
     // read+write and undefined RW
     CHECK(t.w(0x00, kSelIpl8));

@@ -53,6 +53,8 @@ inline constexpr u32 CSR_EXIINTMASK = 1U << 0, CSR_EXIINT = 1U << 1, CSR_TCINTMA
                      CSR_TCINT = 1U << 3, CSR_CLK_MASK = 7U << 4, CSR_CS_MASK = 7U << 7,
                      CSR_EXTINTMASK = 1U << 10, CSR_EXTINT = 1U << 11, CSR_EXT = 1U << 12,
                      CSR_ROMDIS = 1U << 13;
+// DMA addresses: bits 30-31 (CPU segment bits) are not decoded by the DMA engine.
+inline constexpr u32 kDmaAddressMask = 0x3FFFFFE0U;
 inline constexpr u32 CR_TSTART = 1U << 0, CR_DMA = 1U << 1, CR_RW_MASK = 3U << 2, CR_TLEN_MASK = 3U << 4;
 inline constexpr u32 RW_READ = 0U, RW_WRITE = 1U, RW_READWRITE = 2U;
 

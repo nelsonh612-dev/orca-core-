@@ -198,18 +198,22 @@ bool ExternalInterface::start(u32 channel) {
             c.pending_has_data = true;
         }
     } else {
+        // The DMA engine does not decode address bits 30-31 (the CPU's segment bits):
+        // a cached/uncached virtual address such as 0x804D7D00 reaches RAM at
+        // 0x004D7D00 (as in Dolphin: device DMA masks with 0x3FFFFFFF).
+        const u32 mar = c.mar & exi::kDmaAddressMask;
         bytes = c.length;
         if (bytes == 0U) {
             std::snprintf(buf, sizeof buf, "EXI%u: DMA with LENGTH = 0 (behaviour undocumented)", channel);
             return fail(buf);
         }
-        if (!bus_.is_ram(c.mar, bytes)) {
-            std::snprintf(buf, sizeof buf, "EXI%u: DMA range %08X+%X is not RAM", channel, c.mar, bytes);
+        if (!bus_.is_ram(mar, bytes)) {
+            std::snprintf(buf, sizeof buf, "EXI%u: DMA range %08X+%X is not RAM", channel, mar, bytes);
             return fail(buf);
         }
         std::vector<u8> data(bytes);
         if (rw == exi::RW_WRITE) {
-            (void)bus_.dma_read(c.mar, data);
+            (void)bus_.dma_read(mar, data);
             if (!dev->dma_write(data, error)) return fail(dev->exi_name() + (": " + error));
         } else {
             if (!dev->dma_read(data, error)) return fail(dev->exi_name() + (": " + error));
@@ -227,7 +231,7 @@ bool ExternalInterface::start(u32 channel) {
 void ExternalInterface::complete(u32 channel) {
     Channel& c = ch_[channel];
     if (c.pending_has_data) c.data = c.pending_data;
-    if (!c.pending_dma.empty()) (void)bus_.dma_write(c.mar, c.pending_dma);
+    if (!c.pending_dma.empty()) (void)bus_.dma_write(c.mar & exi::kDmaAddressMask, c.pending_dma);
     c.pending_has_data = false;
     c.pending_dma.clear();
     c.cr &= ~exi::CR_TSTART;
