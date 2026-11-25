@@ -2,6 +2,7 @@
 // acknowledge/reply handshake, descriptors, ordering, explicit stops).
 #include "orca/hw/hollywood_ipc.hpp"
 #include "orca/ios/kernel.hpp"
+#include "orca/ios/net_kd.hpp"
 #include "orca/ios/sdio.hpp"
 #include "orca/ios/stm.hpp"
 #include "orca/ios/es.hpp"
@@ -335,6 +336,56 @@ TEST_CASE(ios_open_of_missing_and_unemulated_devices) {
     CHECK(ios::Kernel::retail_device_exists(56, "/dev/net/kd/request"));
     CHECK(ios::Kernel::retail_device_exists(56, "/dev/usb/oh0/57e/308"));
     CHECK(!ios::Kernel::retail_device_exists(56, "/dev/flash"));
+}
+
+TEST_CASE(wiiconnect24_daemon_without_network) {
+    const auto rig = [](u32 version) {
+        auto r = std::make_unique<Rig>();
+        r->set(PPC_IRQMASK, IRQ_IPC_BROADWAY);
+        r->set(PPCCTRL, CTRL_IY1 | CTRL_IY2);
+        r->kernel.set_version(version);
+        r->kernel.add_device(std::make_unique<ios::NetKdRequest>());
+        r->put_string(0x2000, "/dev/net/kd/request");
+        r->block(0x1000, 1, 0, {0x2000, 0});
+        return r;
+    };
+    // IOS4 has no network modules: the device does not exist there
+    {
+        auto r = rig(4);
+        CHECK_EQ(r->call(0x1000), ios::err::kNotFound);
+    }
+    auto r = rig(33); // Resident Evil 0's IOS
+    const s32 fd = r->call(0x1000);
+    CHECK(fd >= 0);
+    const auto ioctl = [&](u32 number, u32 out, u32 out_size) {
+        r->block(0x1000, 6, static_cast<u32>(fd), {number, 0, 0, out, out_size});
+        return r->call(0x1000);
+    };
+    r->bus.write32(0x3000, 0xFFFFFFFFU);
+    CHECK_EQ(ioctl(0x01, 0x3000, 0x20), 0);                 // suspend: no error
+    CHECK_EQ(r->mem32(0x3000), 0U);
+    CHECK_EQ(ioctl(0x01, 0x3000, 0x20), 0);
+    CHECK_EQ(ioctl(0x02, 0, 0), 0);
+    r->bus.write32(0x3000, 0xFFFFFFFFU);
+    CHECK_EQ(ioctl(0x03, 0x3000, 0x20), 0);                 // resume
+    CHECK_EQ(r->mem32(0x3000), 0U);
+    for (u32 i = 0; i < 0x40; i += 4) r->bus.write32(0x3100 + i, 0xFFFFFFFFU);
+    CHECK_EQ(ioctl(0x1E, 0x3100, 0x40), 0);                 // scheduler stat: no errors
+    CHECK_EQ(r->mem32(0x313C), 0U);
+    CHECK_EQ(ioctl(0x1E, 0x3100, 8), ios::err::kInvalid);   // too small
+    CHECK_EQ(ioctl(0x28, 0, 0), 0);                          // shutdown
+    CHECK_EQ(ioctl(0x03, 0x3000, 0x20), 0);                 // second resume: balanced
+    r->block(0x1000, 6, static_cast<u32>(fd), {0x03, 0, 0, 0x3000, 0x20});
+    r->send(0x1000);
+    r->ticks(600);
+    CHECK(r->kernel.stopped());                              // a resume too many
+    auto r2 = rig(33);
+    const s32 fd2 = r2->call(0x1000);
+    r2->block(0x1000, 6, static_cast<u32>(fd2), {0x0E, 0, 0, 0x3000, 0x20}); // DOWNLOAD_NOW_EX
+    r2->send(0x1000);
+    r2->ticks(600);
+    CHECK(r2->kernel.stopped());
+    CHECK(r2->kernel.stop_reason().find("DOWNLOAD_NOW_EX needs the network") != std::string::npos);
 }
 
 TEST_CASE(sd_slot_is_empty) {

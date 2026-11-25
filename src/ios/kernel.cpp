@@ -177,6 +177,10 @@ Result Kernel::dispatch(const Request& r) {
             return Result::stop("IOS open: path at 0x" + hex(r.args[0]) + " is not a string of at most 63 bytes in RAM");
         const bool dev = path.rfind("/dev/", 0) == 0;
         Device* d = dev ? device(path) : (path.rfind('/', 0) == 0 ? device("/dev/fs") : nullptr);
+        // a device Orca emulates but the running IOS does not have (e.g. the
+        // network modules on IOS4): IPC_ENOENT, as that IOS answers
+        if (d != nullptr && dev && version_ != 0U && !retail_device_exists(version_, path))
+            return Result::reply(err::kNotFound, kNoDeviceTicks);
         if (d == nullptr && dev) {
             // A device this IOS has but Orca does not emulate: stop and name it. A
             // path that is no device of this IOS: IPC_ENOENT, as IOS answers

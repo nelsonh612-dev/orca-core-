@@ -77,6 +77,7 @@ System::System(SystemConfig config) : config_(config), clocks_(clocks_for(config
         stm_hook_ = hook.get();
         ios_->add_device(std::make_unique<ios::StmImmediate>(*hook));
         ios_->add_device(std::make_unique<ios::SdioSlot0>()); // empty SD slot
+        ios_->add_device(std::make_unique<ios::NetKdRequest>()); // WiiConnect24 without network
         ios_->add_device(std::move(hook));
         auto es = std::make_unique<ios::Es>();
         es_ = es.get();
