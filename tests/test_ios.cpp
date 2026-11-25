@@ -849,6 +849,40 @@ TEST_CASE(es_title_store_device_id_and_boot2) {
     CHECK(r.kernel.stop_reason().find("keys.bin") != std::string::npos);
 }
 
+TEST_CASE(setting_txt_follows_the_disc_region) {
+    TempDir t("setting_region");
+    ios::NandFs nand(t.p);
+    std::string error;
+    CHECK(nand.load(error));
+    ios::NandSetup setup; // USA, serial 000000000
+    CHECK(ios::create_nand(nand, setup, error));
+    bool changed = false;
+    // a USA disc on the USA NAND, but the serial is all zeros: a serial is given
+    auto st = ios::setting_txt_for_disc(nand, ios::WiiRegion::Usa, "123456789", changed, error);
+    CHECK(st.has_value() && changed);
+    std::string text = ios::decrypt_setting_txt(*st);
+    CHECK(ios::setting_value(text, "SERNO") == std::string("123456789"));
+    CHECK(ios::setting_value(text, "GAME") == std::string("US"));
+    // a PAL disc (Resident Evil 0, RBHP08): the file becomes a European console's, serial kept
+    st = ios::setting_txt_for_disc(nand, ios::WiiRegion::Europe, "999999999", changed, error);
+    CHECK(st.has_value() && changed);
+    text = ios::decrypt_setting_txt(*st);
+    CHECK(ios::setting_value(text, "AREA") == std::string("EUR"));
+    CHECK(ios::setting_value(text, "MODEL") == std::string("RVL-001(EUR)"));
+    CHECK(ios::setting_value(text, "VIDEO") == std::string("PAL"));
+    CHECK(ios::setting_value(text, "GAME") == std::string("EU"));
+    CHECK(ios::setting_value(text, "CODE") == std::string("LEH"));
+    CHECK(ios::setting_value(text, "SERNO") == std::string("123456789"));
+    // on the NAND too, and a second boot leaves it alone
+    const s32 h = nand.open(0, 0, "/title/00000001/00000002/data/setting.txt", ios::kFsRead);
+    std::vector<u8> on_nand(0x100);
+    CHECK_EQ(nand.read(h, on_nand), 0x100);
+    nand.close(h);
+    CHECK(on_nand == *st);
+    st = ios::setting_txt_for_disc(nand, ios::WiiRegion::Europe, "555555555", changed, error);
+    CHECK(st.has_value() && !changed);
+}
+
 TEST_CASE(nand_paths_permissions_and_files) {
     TempDir t("unit");
     ios::NandFs fs(t.p);

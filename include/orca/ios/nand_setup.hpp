@@ -17,6 +17,7 @@
 #include "orca/ios/bluetooth.hpp"
 #include "orca/ios/nand_fs.hpp"
 
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -41,6 +42,21 @@ std::vector<u8> make_sysconf(const NandSetup& s);
 std::vector<u8> make_setting_txt(const NandSetup& s);   // encrypted, 256 bytes
 std::string decrypt_setting_txt(std::span<const u8> data);
 ios::BdAddr emulated_remote_address(unsigned index);    // HCI order
+
+// The system menu's region settings for a disc of region `r` (as the system menu
+// of a console of that region has them; codes as Dolphin uses them).
+struct RegionSettings { const char* area; const char* video; const char* game; const char* code; };
+RegionSettings region_settings(WiiRegion r);
+// setting.txt (plain text) for region `r`, keeping `serial` and the model prefix.
+std::vector<u8> make_setting_txt_for(WiiRegion r, const std::string& serial);
+// Value of KEY in decrypted setting.txt text ("" if absent).
+std::string setting_value(const std::string& text, const std::string& key);
+// Makes setting.txt on the NAND match a disc of region `r`, as the console that
+// can run that disc has it: rewritten when its region differs or its serial
+// number is missing or all zeros (then `new_serial` is used). Returns the
+// encrypted 256 bytes now on the NAND; `changed` tells whether it was rewritten.
+std::optional<std::vector<u8>> setting_txt_for_disc(NandFs& nand, WiiRegion r, const std::string& new_serial,
+                                                    bool& changed, std::string& error);
 
 // Creates the directories and files above on an empty (or partial) NAND;
 // existing files are left alone. False with `error` on failure.

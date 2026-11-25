@@ -160,6 +160,7 @@ std::string Emulator::guest_text(u32 ea) {
         if (sys_->bus().read8(*pa + i, c) != mem::BusStatus::Ok) return {};
         if (c == 0U) break;
         if (c == '\n') { out += "\\n"; continue; }
+        if (c == '\t') { out += ' '; continue; }
         if (c < 0x20U || c > 0x7EU) return {};
         out += static_cast<char>(c);
     }
@@ -242,13 +243,9 @@ bool Emulator::halted_by_guest() {
     // OSPanic is variadic: its frame keeps copies of r3-r10 (file, line, format and
     // the format's arguments). Strings pointed to from the first three stack frames.
     {
-        u32 frame = st.gpr[1], end = st.gpr[1];
-        for (int i = 0; i < 3; ++i) {
-            u32 next = 0;
-            if (!read_guest32(end, next) || next <= end || next - end > 0x400U) break;
-            end = next;
-        }
-        if (end == frame) end = frame + 0x100U;
+        // the first 2 KiB of the stack above r1 (the frames of PPCHalt, OSPanic and
+        // its caller, whatever their sizes)
+        const u32 frame = st.gpr[1], end = st.gpr[1] + 0x800U;
         for (u32 a = frame; a < end && texts.size() < 400U; a += 4) {
             u32 v = 0;
             if (!read_guest32(a, v)) break;

@@ -1,5 +1,6 @@
 #include "orca/system/system.hpp"
 #include "orca/ios/iosc.hpp"
+#include "orca/ios/nand_setup.hpp"
 #include "orca/ppc/mmu.hpp"
 
 #include "orca/memory/console_maps.hpp"
@@ -7,6 +8,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdio>
+#include <random>
 #include <vector>
 
 namespace orca::system {
@@ -327,17 +329,30 @@ bool System::boot_wii_disc(std::string& error) {
     (void)bus_.write32(0x3194, game->type);         // partition type and offset (>> 2)
     (void)bus_.write32(0x3198, static_cast<u32>(game->offset >> 2));
     (void)bus_.write16(0x315E, 0x0113U);            // devkit boot program version (system menu)
-    // setting.txt (encrypted, 0x100 bytes) from the system menu's data directory
+    // setting.txt (encrypted, 0x100 bytes) from the system menu's data directory.
+    // A console runs only discs of its own region, and games read the region from
+    // this file: it is made to match the disc (region field at 0x4E000), with a
+    // serial number if it has none, as Dolphin does.
     {
-        const std::string path = "/title/00000001/00000002/data/setting.txt";
         if (nand_ == nullptr) { error = "boot_wii_disc: no NAND"; return false; }
-        const s32 h = nand_->open(0, 0, path, ios::kFsRead);
-        if (h < 0) { error = "boot_wii_disc: " + path + " is not on the NAND (" + std::to_string(h) + ")"; return false; }
-        std::vector<u8> st(0x100);
-        const s32 n = nand_->read(h, st);
-        nand_->close(h);
-        if (n != 0x100) { error = "boot_wii_disc: setting.txt is not 256 bytes"; return false; }
-        (void)bus_.dma_write(0x3800, st);
+        ios::WiiRegion disc_region = pal ? ios::WiiRegion::Europe : ios::WiiRegion::Usa;
+        std::array<u8, 4> rf{};
+        if (d->read(0x4E000, rf)) {
+            switch (rf[3]) {
+            case 0: disc_region = ios::WiiRegion::Japan; break;
+            case 1: disc_region = ios::WiiRegion::Usa; break;
+            case 2: disc_region = ios::WiiRegion::Europe; break;
+            case 4: disc_region = ios::WiiRegion::Korea; break;
+            default: break; // unknown: from the game ID
+            }
+        }
+        // a serial number of 9 digits, stable for this NAND once written
+        char serial[16];
+        std::snprintf(serial, sizeof serial, "%09u", static_cast<unsigned>(std::random_device{}() % 900000000U + 100000000U));
+        bool changed = false;
+        const auto st = ios::setting_txt_for_disc(*nand_, disc_region, serial, changed, error);
+        if (!st) { error = "boot_wii_disc: " + error; return false; }
+        (void)bus_.dma_write(0x3800, *st);
     }
     di_->after_ipl_boot(false, 0);                  // disc ID and apploader read
     // CPU: the boot state plus MEM2 BATs (BATs 4-7 enabled)

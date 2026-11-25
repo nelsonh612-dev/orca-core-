@@ -122,19 +122,62 @@ std::vector<u8> crypt_setting(std::span<const u8> in) {
 }
 } // namespace
 
-std::vector<u8> make_setting_txt(const NandSetup& s) {
-    const char* area = "USA"; const char* code = "LU"; const char* video = "NTSC"; const char* game = "US";
-    switch (s.region) {
-    case WiiRegion::Japan: area = "JPN"; code = "LJ"; game = "JP"; break;
-    case WiiRegion::Europe: area = "EUR"; code = "LEH"; video = "PAL"; game = "EU"; break;
-    case WiiRegion::Korea: area = "KOR"; code = "LKM"; game = "KR"; break;
+RegionSettings region_settings(WiiRegion r) {
+    switch (r) {
+    case WiiRegion::Japan: return {"JPN", "NTSC", "JP", "LJH"};
+    case WiiRegion::Europe: return {"EUR", "PAL", "EU", "LEH"};
+    case WiiRegion::Korea: return {"KOR", "NTSC", "KR", "LKH"};
     case WiiRegion::Usa: break;
     }
-    const std::string text = std::string("AREA=") + area + "\r\nMODEL=RVL-001(" + area + ")\r\nDVD=0\r\nMPCH=0x7FFE\r\nCODE=" +
-                             code + "\r\nSERNO=" + s.serial + "\r\nVIDEO=" + video + "\r\nGAME=" + game + "\r\n";
+    return {"USA", "NTSC", "US", "LU"};
+}
+
+std::vector<u8> make_setting_txt_for(WiiRegion r, const std::string& serial) {
+    const RegionSettings g = region_settings(r);
+    const std::string text = std::string("AREA=") + g.area + "\r\nMODEL=RVL-001(" + g.area + ")\r\nDVD=0\r\nMPCH=0x7FFE\r\nCODE=" +
+                             g.code + "\r\nSERNO=" + serial + "\r\nVIDEO=" + g.video + "\r\nGAME=" + g.game + "\r\n";
     std::vector<u8> plain(0x100, 0);
     std::copy_n(text.begin(), std::min<std::size_t>(text.size(), plain.size()), plain.begin());
     return crypt_setting(plain);
+}
+
+std::vector<u8> make_setting_txt(const NandSetup& s) { return make_setting_txt_for(s.region, s.serial); }
+
+std::string setting_value(const std::string& text, const std::string& key) {
+    std::size_t pos = 0;
+    while (pos < text.size()) {
+        std::size_t end = text.find('\n', pos);
+        if (end == std::string::npos) end = text.size();
+        std::string line = text.substr(pos, end - pos);
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line.rfind(key + "=", 0) == 0) return line.substr(key.size() + 1U);
+        pos = end + 1U;
+    }
+    return {};
+}
+
+std::optional<std::vector<u8>> setting_txt_for_disc(NandFs& nand, WiiRegion r, const std::string& new_serial,
+                                                    bool& changed, std::string& error) {
+    const std::string path = "/title/00000001/00000002/data/setting.txt";
+    changed = false;
+    std::vector<u8> st(0x100);
+    const s32 h = nand.open(0, 0, path, kFsRead);
+    if (h < 0) { error = path + " is not on the NAND (" + std::to_string(h) + ")"; return std::nullopt; }
+    const s32 n = nand.read(h, st);
+    nand.close(h);
+    if (n != 0x100) { error = "setting.txt is not 256 bytes"; return std::nullopt; }
+    const std::string text = decrypt_setting_txt(st);
+    std::string serial = setting_value(text, "SERNO");
+    const bool bad_serial = serial.empty() || serial.find_first_not_of('0') == std::string::npos;
+    const bool same_region = setting_value(text, "GAME") == region_settings(r).game &&
+                             setting_value(text, "AREA") == region_settings(r).area;
+    if (same_region && !bad_serial) return st;
+    if (bad_serial) serial = new_serial;
+    st = make_setting_txt_for(r, serial);
+    const s32 w = nand.open(0, 0, path, kFsWrite);
+    if (w < 0 || nand.write(w, st) != 0x100 || nand.close(w) != 0) { error = "cannot rewrite " + path; return std::nullopt; }
+    changed = true;
+    return st;
 }
 
 std::string decrypt_setting_txt(std::span<const u8> data) {
