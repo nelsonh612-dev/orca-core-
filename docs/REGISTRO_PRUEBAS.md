@@ -69,7 +69,7 @@ Todos los resultados son de ejecuciones reales del 2026-11-22 en este entorno, s
 
 Ejecutado el 2026-11-24 en x86-64: GCC, Clang y GCC + ASan + UBSan, **34 pruebas pasan en las tres, 0 advertencias; `real_images` *Skipped***. Todos los volcados son sintéticos (`tests/bootmii_dump.hpp`): ninguna clave real.
 
-- `bootmii_keys` (nueva, 6 pruebas, 126 comprobaciones):
+- `bootmii_keys` (nueva, 7 pruebas, 137 comprobaciones):
   - volcado válido de 1024 bytes: cada campo en su offset (0x114, 0x124, 0x128, 0x144, 0x158, 0x168, 0x200, 0x204, 0x208, 0x248, 0x274); el informe nombra campos y comprobaciones y no contiene ningún valor (ni las claves ni el ID de consola, en hex en mayúsculas o minúsculas);
   - rechazos con mensaje claro y sin valores: 1000 bytes (truncado), 1025 bytes, encabezado alterado, ID no hexadecimal, sin salto de línea, ID del encabezado ≠ NG ID de la OTP, clave común vacía, clave común = clave NAND, clave coreana = clave común, clave NAND vacía, 1 KiB sin «BackupMii», archivo inexistente; en ningún caso queda nada cargado a medias;
   - conversión a `WiiKeys`: común → índice 0, coreana → índice 1, claves de consola aparte; en OrcaIOSC van a los handles de consola (`CONSOLE_KEY`, `FS_KEY`, `FS_MAC`, `PRNG_KEY`, `CONSOLE_ID`, `BOOT2_VERSION`) e IDs MS/CA; un paquete del compilado hecho de un volcado conserva las claves comunes pero nunca las de consola;
@@ -78,6 +78,7 @@ Ejecutado el 2026-11-24 en x86-64: GCC, Clang y GCC + ASan + UBSan, **34 pruebas
   - la clave NAND nunca se usa como común: con el valor de la clave común del disco en el campo NAND (0x158) y otro en 0x114, la partición no abre («common key is wrong»);
   - prioridad: el texto va primero; un valor distinto en keys.bin se informa como «ignored: differs» sin aplicarlo ni imprimirlo; importar un keys.bin lo guarda entero con permisos 0600 y retira del texto la entrada que lo contradice; los formatos anteriores (16 bytes, texto) siguen funcionando.
 - `orca_disc check-keys`, a mano con archivos sintéticos: válido (lista de «ok», código 0, sin valores en la salida), truncado (código 1, «1000 bytes instead of 1024»), inexistente (código 1).
+- **Error encontrado en el teléfono (APK 2a3d02b):** importar solo un keys.bin dejaba un `wii_keys.txt` con solo el comentario; al arrancar se rechazaba («key file holds no keys») y el keys.bin no llegaba a leerse. Corregido: ya no se escribe ese archivo, uno así se omite al cargar, y la importación falla si el almacén no carga. Prueba nueva `keys_bin_alone_in_an_empty_store`.
 - **Error encontrado:** las pruebas antiguas usaban keys.bin mínimos que el analizador estricto rechaza; ahora usan volcados sintéticos completos.
 
 ### OrcaIOSC completo, valores por defecto del compilado, AES ARMv8 y lecturas concurrentes

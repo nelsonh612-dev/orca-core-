@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <string_view>
 
 namespace orca::ios {
 
@@ -296,6 +297,19 @@ std::string key_provision_places(const std::vector<std::string>& dirs) {
     return s;
 }
 
+namespace {
+// true when the file has no entry lines (only blank lines and # comments)
+bool key_store_text_is_empty(const std::string& path) {
+    std::ifstream in(path);
+    std::string line;
+    while (std::getline(in, line)) {
+        const auto p = line.find_first_not_of(" \t\r");
+        if (p != std::string::npos && line[p] != '#') return false;
+    }
+    return true;
+}
+} // namespace
+
 bool load_default_key_provision(const std::vector<std::string>& dirs, disc::WiiKeys& keys, std::string& report, std::string& error) {
     namespace fs = std::filesystem;
     // Priority: the earlier source wins ($ORCA_WII_KEYS, then each directory in
@@ -339,6 +353,12 @@ bool load_default_key_provision(const std::vector<std::string>& dirs, disc::WiiK
             const std::string path = d + "/" + f.name;
             std::error_code ec;
             if (!fs::is_regular_file(path, ec)) continue;
+            if (std::string_view(f.name) == "wii_keys.txt" && key_store_text_is_empty(path)) {
+                // a store whose text holds only comments (e.g. after importing a keys.bin
+                // alone, in earlier versions): nothing to load, not an error
+                report += path + ": no entries (skipped)\n";
+                continue;
+            }
             if (!merge(path, f.index)) return false;
         }
     }
@@ -367,7 +387,7 @@ bool import_key_provision(const std::string& dir, std::span<const u8> data, unsi
     if (!disc::parse_wii_keys(data, incoming, index, error)) return false;
     const std::string file = dir + "/wii_keys.txt";
     disc::WiiKeys keys;
-    if (fs::is_regular_file(file, ec) && !disc::load_wii_key_file(file, keys, 0, error)) return false;
+    if (fs::is_regular_file(file, ec) && !key_store_text_is_empty(file) && !disc::load_wii_key_file(file, keys, 0, error)) return false;
     if (incoming.console) {
         // A BootMii keys.bin is kept as it is (dir/keys.bin, owner-only), so that the
         // console's own keys stay with it; its common/Korean keys are not copied into
@@ -420,6 +440,12 @@ bool import_key_provision(const std::string& dir, std::span<const u8> data, unsi
     line("vwii_common_key", keys.common[2]);
     line("dev_common_key", keys.dev_common);
     if (!root_path.empty()) text += "root_key_file = " + root_path + "\n";
+    if (!keys.common[0] && !keys.common[1] && !keys.common[2] && !keys.dev_common && root_path.empty()) {
+        // nothing left for the text file (a keys.bin alone): no empty file that would
+        // only be in the way
+        fs::remove(file, ec);
+        ec.clear();
+    } else {
     const std::string tmp = file + ".new";
     {
         std::ofstream o(tmp, std::ios::binary | std::ios::trunc);
@@ -430,10 +456,12 @@ bool import_key_provision(const std::string& dir, std::span<const u8> data, unsi
     fs::rename(tmp, file, ec);
     crypto::secure_zero(text.data(), text.size());
     if (ec) { error = "cannot replace " + file + ": " + ec.message(); return false; }
-    // what the store holds now, all files together
+    }
+    crypto::secure_zero(text.data(), text.size());
+    // what the store holds now, all files together; the store must load as a whole
     disc::WiiKeys all;
     std::string report, e2;
-    (void)load_default_key_provision({dir}, all, report, e2);
+    if (!load_default_key_provision({dir}, all, report, e2)) { error = "the key store does not load after the import: " + e2; return false; }
     summary = summary_note + describe_keys(all);
     return true;
 }

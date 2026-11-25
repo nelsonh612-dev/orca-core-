@@ -273,4 +273,31 @@ TEST_CASE(keys_bin_with_the_text_key_file_and_import) {
     ::unsetenv("XDG_CONFIG_HOME");
 }
 
+TEST_CASE(keys_bin_alone_in_an_empty_store) {
+    // the phone case: a fresh store, only a keys.bin imported, then a Wii disc started
+    namespace fs = std::filesystem;
+    ::unsetenv("ORCA_WII_KEYS");
+    const fs::path dir = fs::temp_directory_path() / "orca_bootmii_alone";
+    fs::remove_all(dir);
+    std::string summary, report, err;
+    CHECK(ios::import_key_provision(dir.string(), make_dump(spec_with(test_wii::kTestCommon)), 0, summary, err));
+    CHECK(contains(summary, "common"));
+    CHECK(contains(summary, "console keys (keys.bin)"));
+    CHECK(!fs::exists(dir / "wii_keys.txt")); // no empty text file left behind
+    disc::WiiKeys k;
+    CHECK(ios::load_default_key_provision({dir.string()}, k, report, err));
+    CHECK(k.common[0].has_value() && *k.common[0] == test_wii::kTestCommon);
+    // a store left by the earlier version: wii_keys.txt with only its comment line
+    { std::ofstream t(dir / "wii_keys.txt"); t << "# Orca Core key store: keys from the user's own console\n"; }
+    disc::WiiKeys k2;
+    report.clear();
+    CHECK(ios::load_default_key_provision({dir.string()}, k2, report, err));
+    CHECK(k2.common[0].has_value() && k2.console.has_value());
+    CHECK(contains(report, "no entries (skipped)"));
+    // importing again over that store also works and removes the empty file
+    CHECK(ios::import_key_provision(dir.string(), make_dump(spec_with(test_wii::kTestCommon)), 0, summary, err));
+    CHECK(!fs::exists(dir / "wii_keys.txt"));
+    fs::remove_all(dir);
+}
+
 TEST_MAIN("bootmii_keys")
