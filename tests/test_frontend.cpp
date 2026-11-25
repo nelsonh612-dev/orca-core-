@@ -191,14 +191,23 @@ TEST_CASE(frontend_diagnostics_name_the_word_a_polling_loop_waits_on) {
     for (u32 i = 0; i < 3U; ++i) CHECK(emu.system()->bus().write32(pc + 4U * i, loop[i]) == mem::BusStatus::Ok);
     st.gpr[13] = 0x80400000U;
     CHECK(emu.system()->bus().write32(0x003F8FE0U, 0) == mem::BusStatus::Ok);
+    // somewhere else the code that sets the flag: stw r3,-0x7020(r13)
+    CHECK(emu.system()->bus().write32(0x00012340U, 0x906D8FE0U) == mem::BusStatus::Ok);
     CHECK(emu.run_frame());
     const std::string d = emu.diagnostics();
     char want[64];
     std::snprintf(want, sizeof want, "waits %08X-%08X on [803F8FE0]=00000000", pc0, pc0 + 8U);
     if (d.find(want) == std::string::npos) std::printf("    %s\n", d.c_str());
     CHECK(d.find(want) != std::string::npos);
+    CHECK(d.find("(stored at 80012340)") != std::string::npos);
     CHECK(d.find("\nirq") != std::string::npos);
     CHECK(d.find("\nDSP CSR ") != std::string::npos);
+    // the second report says where the host time went since the first
+    CHECK(emu.run_frame());
+    const std::string d2 = emu.diagnostics();
+    CHECK(d2.find("\nhost ms per emulated s: ") != std::string::npos);
+    CHECK(d2.find("GPU ") != std::string::npos && d2.find("DSP ") != std::string::npos);
+    CHECK(d2.find("\nvideo mode word 800000CC=") != std::string::npos);
 }
 #endif
 

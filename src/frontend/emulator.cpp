@@ -7,6 +7,8 @@
 #include <fstream>
 #include <iterator>
 #include <optional>
+#include "orca/core/host_timer.hpp"
+
 #include <cstdio>
 #include <cstring>
 
@@ -118,7 +120,11 @@ bool Emulator::run_frame() {
     field_seen_ = false;
     u64 ran = 0;
     while (!field_seen_ && ran < limit) {
-        const auto r = sys_->run(slice);
+        system::RunResult r;
+        {
+            const core::HostTimer timer(run_ns_);
+            r = sys_->run(slice);
+        }
         if (pc_samples_.size() < 4096U) { ++pc_samples_[sys_->cpu().state().pc]; ++pc_sample_total_; }
         ran += r.cycles;
         cycles_ += r.cycles;
@@ -456,6 +462,19 @@ std::string Emulator::diagnostics() {
         }
     }
     out += "\n" + video_mode_word();
+    {   // host time per emulated second since the last report: where a slow game goes
+        const HostMark now{cycles_, run_ns_, sys_->command_processor().host_ns(), sys_->dsp().host_ns()};
+        const u64 dc = now.cycles - host_mark_.cycles;
+        if (dc != 0U && host_mark_.cycles != 0U) {
+            const double es = static_cast<double>(dc) / static_cast<double>(sys_->clocks().cpu_hz);
+            const auto ms = [es](u64 ns) { return static_cast<double>(ns) / 1e6 / es; };
+            const double run = ms(now.run - host_mark_.run), gpu = ms(now.gpu - host_mark_.gpu), dsp = ms(now.dsp - host_mark_.dsp);
+            std::snprintf(b, sizeof b, "\nhost ms per emulated s: %.0f (GPU %.0f, DSP %.0f, CPU and rest %.0f)", run, gpu, dsp,
+                          run - gpu - dsp > 0.0 ? run - gpu - dsp : 0.0);
+            out += b;
+        }
+        host_mark_ = now;
+    }
     if (auto* k = sys_->ios()) out += "\n" + k->activity();
     return out;
 }
@@ -520,6 +539,28 @@ std::string Emulator::polling_loop(u32 hot) {
             std::snprintf(b, sizeof b, " [%08X]=%0*X", ea, static_cast<int>(size * 2U), v);
         }
         out += b;
+        // a small-data global (r13 / r2 relative): the code that stores to it is
+        // what the game waits for (searched once per word, in the first 4 MiB)
+        if (ra == 13U || ra == 2U) {
+            const u32 key = ins & 0x001FFFFFU; // rA and offset
+            auto it = store_sites_.find(key);
+            if (it == store_sites_.end()) {
+                std::string sites;
+                unsigned found = 0;
+                for (u32 a = 0x00003100U; a < 0x00400000U && found < 4U; a += 4U) {
+                    u32 w = 0;
+                    if (sys_->bus().read32(a, w) != mem::BusStatus::Ok) break;
+                    const u32 o = w >> 26;
+                    if ((o == 36U || o == 37U || o == 38U || o == 39U || o == 44U || o == 45U) && (w & 0x001FFFFFU) == key) {
+                        std::snprintf(b, sizeof b, " %08X", 0x80000000U | a);
+                        sites += b;
+                        ++found;
+                    }
+                }
+                it = store_sites_.emplace(key, sites.empty() ? std::string(" none found") : sites).first;
+            }
+            out += " (stored at" + it->second + ")";
+        }
     }
     if (out.empty()) return {};
     std::snprintf(b, sizeof b, "\nwaits %08X-%08X on", start, end);

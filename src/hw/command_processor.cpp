@@ -1,5 +1,6 @@
 // Orca Core — Command Processor and GPU FIFO. See command_processor.hpp.
 #include "orca/hw/command_processor.hpp"
+#include "orca/core/host_timer.hpp"
 
 #include <array>
 #include <cstdio>
@@ -113,6 +114,7 @@ void CommandProcessor::on_gather_burst() {
 void CommandProcessor::run_gpu() {
     if (running_) return; // a GPU command can touch CP registers only through the CPU; guard anyway
     running_ = true;
+    const core::HostTimer timer(host_ns_);
     while ((ctrl_ & cp::CTRL_READ) != 0U && dist_ != 0U && !at_breakpoint() && !stopped()) {
         std::array<u8, 32> chunk{};
         char b[96];

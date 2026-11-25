@@ -117,6 +117,9 @@ private:
     u32 pc_sample_total_{0};
     bool field_seen_{false};
     u64 cycles_{0};
+    u64 run_ns_{0};
+    std::map<u32, std::string> store_sites_; // diagnostics: stores to a polled global   // host time in System::run (diagnostics)
+    struct HostMark { u64 cycles{0}, run{0}, gpu{0}, dsp{0}; } host_mark_;
     std::string error_;
     std::mutex audio_mutex_;
     std::deque<s16> audio_;

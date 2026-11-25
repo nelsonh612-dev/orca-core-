@@ -93,6 +93,8 @@ public:
     bool aram_busy() const noexcept { return (csr_ & dsp::CSR_DMABUSY) != 0U; }
     // ARAM DMAs that went to the empty expansion (HSP) port (AR address >= 16 MiB).
     u64 hsp_empty_transfers() const noexcept { return hsp_empty_transfers_; }
+    // Diagnostics: host time spent running the DSP (HLE ucode work or LLE core), ns.
+    u64 host_ns() const noexcept { return host_ns_; }
     u16 csr() const noexcept { return csr_; }
     ::orca::dsp::DspCore& core() noexcept override { return core_; } // also hle::Host
     // High-level emulation instead of the DSP core (orca/dsp/hle.hpp): mailboxes and
@@ -145,6 +147,7 @@ private:
     u64 aram_cycles_per_unit_{246};
     u64 hsp_empty_transfers_{0};
     u64 init_generation_{0};
+    u64 host_ns_{0};
     u64 cpu_hz_;
     bool wii_;
     std::function<bool()> aid_32khz_;

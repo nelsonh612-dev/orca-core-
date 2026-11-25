@@ -1,4 +1,5 @@
 #include "orca/hw/dsp_interface.hpp"
+#include "orca/core/host_timer.hpp"
 
 #include <cstdio>
 #include <cstring>
@@ -70,7 +71,10 @@ void DspInterface::hle_tick() {
     const u64 gen = hle_generation_;
     scheduler_.schedule_in(cpu_hz_ / 1000U, "DSP HLE update", [this, gen](u64, u64) {
         if (gen != hle_generation_ || !hle_) return;
-        hle_->update();
+        {
+            const core::HostTimer timer(host_ns_);
+            hle_->update();
+        }
         hle_tick();
     });
 }
@@ -83,7 +87,10 @@ void DspInterface::kick_dsp() {
 
 void DspInterface::run_slice() {
     slice_pending_ = false;
-    (void)core_.run(kSliceInstructions);
+    {
+        const core::HostTimer timer(host_ns_);
+        (void)core_.run(kSliceInstructions);
+    }
     kick_dsp();
 }
 
@@ -122,8 +129,9 @@ bool DspInterface::read16(u32 offset, u16& v) {
 
 bool DspInterface::write16(u32 offset, u16 v) {
     if (hle_ && (offset == dsp::DSPMBH || offset == dsp::DSPMBL)) {
+        const core::HostTimer timer(host_ns_);
         if (offset == dsp::DSPMBH) hle_->cpu_write_high(v);
-        else hle_->cpu_write_low(v);
+        else hle_->cpu_write_low(v); // a ucode's work (an AX command list) runs here
         return true;
     }
     switch (offset) {

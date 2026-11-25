@@ -47,6 +47,8 @@ inline constexpr u16 ST_OVERFLOW = 0x01, ST_UNDERFLOW = 0x02, ST_READ_IDLE = 0x0
 
 class CommandProcessor final : public mem::MmioDevice {
 public:
+    // Diagnostics: host time spent executing GPU commands (ns).
+    u64 host_ns() const noexcept { return host_ns_; }
     CommandProcessor(mem::Bus& bus, ProcessorInterface& pi, gpu::Gpu& gpu, bool wii = false);
     bool mmio_read(u32 offset, unsigned size, u64& value) override;
     bool mmio_write(u32 offset, unsigned size, u64 value) override;
@@ -83,6 +85,7 @@ private:
     u32 base_{0}, end_{0}, hi_wm_{0}, lo_wm_{0}, dist_{0}, wp_{0}, rp_{0}, bp_{0};
     bool bp_hit_{false}, overflow_{false}, underflow_{false};
     bool running_{false};
+    u64 host_ns_{0};
     bool fifo_failed_{false};
     std::string fifo_error_;
     std::string error_;
