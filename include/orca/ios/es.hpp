@@ -7,6 +7,12 @@
 //   0x15 TMD view            0x16 consumption      0x19 DI TMD view size
 //   0x1A DI TMD view         0x1B DI ticket view   0x1D title data directory
 //   0x20 title ID
+//   0x07 device ID (the console ID from the user's keys.bin; without it, stop)
+//   0x0C/0x0D owned titles (tickets in /ticket)  0x0E/0x0F installed titles
+//   (TMDs in /title/*/*/content/title.tmd)  0x34/0x35 stored TMD size / TMD
+//   0x2E boot2 version (from keys.bin, else stop)  0x45 Korea check (-1017:
+//   no Korean key, as IOS70 answers on a non-Korean console; 0 with one)
+//   The NAND title store is read as IOS's ES does, as root.
 // Views:
 //   ticket view (0xD8 bytes) = ticket version byte, three zero bytes, then the
 //     ticket's 0xD4 bytes from the ticket ID (0x1D0);
@@ -18,6 +24,7 @@
 // other independent ES implementations do.
 #pragma once
 #include "orca/ios/kernel.hpp"
+#include "orca/ios/nand_fs.hpp"
 
 #include <optional>
 #include <vector>
@@ -47,6 +54,17 @@ public:
     // Validates and installs the active title; false (with `error`) if malformed.
     bool set_active_title(std::vector<u8> ticket, std::vector<u8> tmd, std::string& error);
     const std::optional<TitleContext>& active_title() const noexcept { return title_; }
+    // NAND title/ticket store (nullptr: none) and the console's identity
+    // (from the user's keys.bin) used by the requests above.
+    void set_nand(NandFs* nand) noexcept { nand_ = nand; }
+    void set_console(std::optional<u32> console_id, std::optional<u8> boot2_version, bool korean_key) noexcept {
+        console_id_ = console_id;
+        boot2_version_ = boot2_version;
+        korean_key_ = korean_key;
+    }
+    std::vector<u64> installed_titles() const; // with a TMD
+    std::vector<u64> owned_titles() const;     // with a ticket
+    std::optional<std::vector<u8>> stored_tmd(u64 title_id) const;
 
     Result open(Kernel& k, const Request& r, const std::string& path, u32 mode) override;
     Result close(Kernel& k, const Request& r) override;
@@ -55,6 +73,11 @@ public:
 
 private:
     std::optional<TitleContext> title_;
+    NandFs* nand_{nullptr};
+    std::optional<u32> console_id_;
+    std::optional<u8> boot2_version_;
+    bool korean_key_{false};
+    std::optional<std::vector<u8>> read_nand_file(const std::string& path) const;
 };
 
 } // namespace orca::ios

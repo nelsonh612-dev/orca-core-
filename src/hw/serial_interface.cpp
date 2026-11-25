@@ -89,7 +89,10 @@ bool SerialInterface::mmio_write(u32 offset, unsigned size, u64 value) {
     const auto v = static_cast<u32>(value);
     if (offset < 0x30U) {
         const unsigned c = offset / 0xCU;
-        if (offset % 0xCU != 0U) return fail("SI: SICnINBUF registers are read-only");
+        // SICnINBUFH/L can also be written by software (Dolphin: plain stores); the
+        // next poll result replaces them
+        if (offset % 0xCU == 4U) { inbuf_h_[c] = v; return true; }
+        if (offset % 0xCU == 8U) { inbuf_l_[c] = v; return true; }
         outbuf_[c] = v;
         return true;
     }

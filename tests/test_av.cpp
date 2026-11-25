@@ -132,6 +132,18 @@ TEST_CASE(vi_display_interrupt_fires_every_field_and_clears) {
     CHECK_EQ(fires[3] - fires[2], kNtscField);
 }
 
+TEST_CASE(vi_byte_reads_give_one_half_of_a_register) {
+    Rig t;
+    t.ntsc();
+    const u32 v = t.r32(0x00); // VTR and DCR
+    u64 b = 0;
+    for (u32 i = 0; i < 4; ++i) {
+        CHECK(t.vi.mmio_read(i, 1, b));
+        CHECK_EQ(b, (v >> (24U - 8U * i)) & 0xFFU);
+    }
+    CHECK(!t.vi.mmio_write(0x00, 1, 0)); // byte writes: not implemented (Dolphin: invalid)
+}
+
 TEST_CASE(vi_software_cannot_set_int) {
     Rig t;
     t.pi.mmio_write(0x04, 4, pi::CAUSE_VI);
@@ -252,7 +264,10 @@ TEST_CASE(si_errors_and_interrupts) {
     CHECK(t.si.mmio_write(0x80, 4, 0x55000000U));
     CHECK(!t.si.mmio_write(0x34, 4, (1U << 16) | (8U << 8) | si::TSTART));
     CHECK(t.si.mmio_error().find("0x55") != std::string::npos);
-    CHECK(!t.si.mmio_write(0x04, 4, 0));               // INBUF is read-only
+    CHECK(t.si.mmio_write(0x04, 4, 0x12345678U));      // INBUF can be written (Dolphin: plain store)
+    u64 inb = 0;
+    CHECK(t.si.mmio_read(0x04, 4, inb));
+    CHECK_EQ(inb, 0x12345678U);
 }
 
 TEST_CASE(si_automatic_polling_follows_video_lines) {
@@ -313,7 +328,8 @@ TEST_CASE(ai_sample_counter_rates_and_interrupt) {
     w(0x0C, r(0x08) + 10);
     sched.advance_to(sched.now() + 15187 * 20);
     CHECK_EQ(r(0x00) & ai::AIINT, 0U);
-    CHECK(!ai.mmio_write(0x08, 4, 0));                 // AISCNT is read-only
+    CHECK(ai.mmio_write(0x08, 4, 1000));               // AISCNT can be set; it counts on from there
+    CHECK(r(0x08) >= 1000U && r(0x08) < 1010U);
 }
 
 // ------------------------------------------------------------ whole program

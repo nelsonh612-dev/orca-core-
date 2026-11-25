@@ -221,9 +221,15 @@ void DspInterface::audio_block() {
 bool DspInterface::start_aram_dma() {
     char buf[160];
     const u32 len = cnt_ & 0x7FFFFFE0U;
-    if (aram_.empty()) return fail("DSP: ARAM DMA on a console without ARAM (Wii)");
     if (len == 0U) return fail("DSP: ARAM DMA with length 0 (behaviour undocumented)");
-    if (static_cast<u64>(araddr_) + len > aram_.size()) {
+    if (wii_) {
+        // Wii: no ARAM chip; the "ARAM" side of this DMA is MEM2 (Dolphin's wii_mode:
+        // the ARAM pointer is the 64 MiB EXRAM). AR address = offset into MEM2.
+        if (!bus_.is_ram(dsp::kWiiAramBase + araddr_, len)) {
+            std::snprintf(buf, sizeof buf, "DSP: ARAM DMA range %08X+%X is outside MEM2 (Wii)", araddr_, len);
+            return fail(buf);
+        }
+    } else if (static_cast<u64>(araddr_) + len > aram_.size()) {
         std::snprintf(buf, sizeof buf, "DSP: ARAM DMA range %08X+%X is outside the 16 MiB ARAM", araddr_, len);
         return fail(buf);
     }
@@ -238,7 +244,17 @@ bool DspInterface::start_aram_dma() {
 
 void DspInterface::complete_aram_dma() {
     const u32 len = cnt_ & 0x7FFFFFE0U;
-    if ((cnt_ & dsp::kCntToMain) != 0U)
+    if (wii_) {
+        std::vector<u8> data(len);
+        const bool to_main = (cnt_ & dsp::kCntToMain) != 0U;
+        const u32 ar = dsp::kWiiAramBase + araddr_;
+        (void)bus_.dma_read(to_main ? ar : mmaddr_, data);
+        (void)bus_.dma_write(to_main ? mmaddr_ : ar, data);
+        if (!to_main && (ar_size_ & 0xFU) == 4U) // same mirroring of the low 4 MiB as on GameCube
+            for (u32 off = 0; off < len; off += 32U)
+                if (araddr_ + off < 0x400000U)
+                    (void)bus_.dma_write(ar + off + 0x400000U, std::span<const u8>(data.data() + off, 32U));
+    } else if ((cnt_ & dsp::kCntToMain) != 0U)
         (void)bus_.dma_write(mmaddr_, std::span<const u8>(aram_.data() + araddr_, len));
     else {
         (void)bus_.dma_read(mmaddr_, std::span<u8>(aram_.data() + araddr_, len));

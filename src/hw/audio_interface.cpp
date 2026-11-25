@@ -93,7 +93,12 @@ bool AudioInterface::mmio_write(u32 offset, unsigned size, u64 value) {
         return true;
     }
     case 0x04: aivr_ = v; return true;
-    case 0x08: return fail("AI: AISCNT is read-only");
+    case 0x08: // AISCNT can be set (Dolphin: sets the counter and restarts its timing)
+        rebase();
+        base_count_ = v;
+        reschedule();
+        schedule_stream();
+        return true;
     case 0x0C: aiit_ = v; reschedule(); return true;
     default: return fail("AI: register not implemented");
     }

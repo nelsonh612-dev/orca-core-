@@ -173,7 +173,12 @@ bool VideoInterface::mmio_read(u32 offset, unsigned size, u64& value) {
     if (offset >= 0x80U) return fail("VI: register offset beyond 0x7F not implemented");
     if (size == 2U && (offset & 1U) == 0U) { value = read16(offset); return true; }
     if (size == 4U && (offset & 3U) == 0U) { value = (u64{read16(offset)} << 16U) | read16(offset + 2U); return true; }
-    return fail("VI: only aligned 16/32-bit accesses are implemented");
+    if (size == 1U) { // one byte of a 16-bit register (Dolphin's ReadToLarger<u8>)
+        const u16 r = read16(offset & ~1U);
+        value = (offset & 1U) != 0U ? (r & 0xFFU) : (r >> 8U);
+        return true;
+    }
+    return fail("VI: only aligned 16/32-bit accesses and 8-bit reads are implemented");
 }
 
 bool VideoInterface::mmio_write(u32 offset, unsigned size, u64 value) {

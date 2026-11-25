@@ -44,12 +44,20 @@ inline constexpr u32 kBase = 0x0D000000U;
 inline constexpr u32 PPCMSG = 0x000U;
 inline constexpr u32 PPCCTRL = 0x004U;
 inline constexpr u32 ARMMSG = 0x008U;
+inline constexpr u32 PPCSPEED = 0x018U;
 inline constexpr u32 VISOLID = 0x024U;
+inline constexpr u32 AHBPROT = 0x064U;
 inline constexpr u32 PPC_IRQFLAG = 0x030U;
 inline constexpr u32 PPC_IRQMASK = 0x034U;
 inline constexpr u32 GPIOB_OUT = 0x0C0U;
 inline constexpr u32 GPIOB_DIR = 0x0C4U;
 inline constexpr u32 GPIOB_IN = 0x0C8U;
+inline constexpr u32 GPIO_OUT = 0x0E0U; // Starlet's view of the same pins (all of them)
+inline constexpr u32 GPIO_DIR = 0x0E4U;
+inline constexpr u32 GPIO_IN = 0x0E8U;
+inline constexpr u32 UNK_180 = 0x180U; // undocumented; read by Wii games
+inline constexpr u32 UNK_1CC = 0x1CCU;
+inline constexpr u32 UNK_1D0 = 0x1D0U;
 inline constexpr u32 RESETS = 0x194U;
 
 inline constexpr u32 CTRL_X1 = 0x01U;
@@ -123,6 +131,7 @@ private:
     u32 gpio_out_{0}, gpio_dir_{hollywood::kGpioOutputsAfterIos};
     u32 resets_{0xFFFFFFFFU};
     u32 visolid_{0};
+    u32 ppcspeed_{0};
     u32 visible_{0};                 // Y1/Y2 bits the interrupt logic already sees
     std::array<u64, 2> generation_{}; // Y1, Y2: invalidates stale visibility events
     std::string last_error_;

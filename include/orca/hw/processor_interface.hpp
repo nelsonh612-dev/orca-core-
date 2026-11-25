@@ -19,6 +19,7 @@
 
 #include <array>
 #include <functional>
+#include <string>
 
 namespace orca::hw {
 
@@ -42,6 +43,8 @@ inline constexpr u32 CAUSE_DEBUG = 0x00001000U;
 inline constexpr u32 CAUSE_HSP = 0x00002000U;
 inline constexpr u32 CAUSE_HOLLYWOOD = 0x00004000U; // Wii IPC
 inline constexpr u32 FIFO_WRAP = 0x20000000U;
+// PI_FLIPPER_REV of a retail console (Flipper/Hollywood revision C, as Dolphin reports)
+inline constexpr u32 kFlipperRevision = 0x246500B1U;
 inline constexpr u32 FIFO_ADDR_MASK = 0x03FFFFE0U;
 } // namespace pi
 
@@ -78,7 +81,10 @@ public:
     bool mmio_read(u32 offset, unsigned size, u64& value) override;
     bool mmio_write(u32 offset, unsigned size, u64 value) override;
     const char* mmio_name() const noexcept override { return "PI"; }
-    std::string mmio_error() const override { return "register not implemented, or not a 32-bit access"; }
+    std::string mmio_error() const override { return error_.empty() ? "register not implemented" : error_; }
+    // GameCube: clearing bit 2 of PI_RESET_CODE resets the drive (not on Wii).
+    void set_gamecube(bool gc) noexcept { gamecube_ = gc; }
+    u32 reset_code() const noexcept { return reset_code_; }
 
 private:
     void update_line();
@@ -90,6 +96,12 @@ private:
     u32 mask_{0};
     u32 fifo_base_{0}, fifo_end_{0}, fifo_wp_{0};
     bool line_level_{false};
+    bool gamecube_{true};
+    // Dolphin's power-on values: cold reset, PI_UNKNOWN 0x1FF, bus drive strength
+    u32 error_cause_{0}, reset_code_{0}, unknown_{0x000001FFU}, bus_strength_{0x02492492U};
+    std::string error_;
+    bool fail(std::string why) { error_ = std::move(why); return false; }
+    bool read32(u32 offset, u32& value);
 };
 
 class GatherPipe final : public mem::MmioDevice {

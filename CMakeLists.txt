@@ -60,6 +60,7 @@ add_library(orca_core
     src/ios/iosc.cpp
     src/ios/kernel.cpp
     src/ios/stm.cpp
+    src/ios/sdio.cpp
     src/ios/es.cpp
     src/ios/nand_fs.cpp
     src/ios/fs_device.cpp
@@ -174,7 +175,7 @@ endif()
 
 if(ORCA_BUILD_TESTS)
     enable_testing()
-    foreach(suite memory cpu_integer cpu_system mmu reference fpu_engine cpu_fpu system crypto wii_disc filesystem iosc bootmii_keys audio dsp_hle ios wiimote frontend)
+    foreach(suite memory cpu_integer cpu_system mmu reference fpu_engine cpu_fpu system crypto wii_disc filesystem iosc bootmii_keys mmio_coverage audio dsp_hle ios wiimote frontend)
         add_executable(orca_test_${suite} tests/test_${suite}.cpp)
         target_link_libraries(orca_test_${suite} PRIVATE orca_core)
         target_include_directories(orca_test_${suite} PRIVATE tests)

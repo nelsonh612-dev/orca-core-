@@ -71,6 +71,82 @@ bool Es::set_active_title(std::vector<u8> ticket, std::vector<u8> tmd, std::stri
     return true;
 }
 
+std::optional<std::vector<u8>> Es::read_nand_file(const std::string& path) const {
+    if (nand_ == nullptr) return std::nullopt;
+    const s32 h = nand_->open(0, 0, path, kFsRead);
+    if (h < 0) return std::nullopt;
+    u32 size = 0, pos = 0;
+    nand_->status(h, size, pos);
+    std::vector<u8> data(size);
+    const s32 n = nand_->read(h, data);
+    nand_->close(h);
+    if (n != static_cast<s32>(size)) return std::nullopt;
+    return data;
+}
+
+namespace {
+bool parse_hex32(const std::string& s, u32& v) {
+    if (s.size() != 8U) return false;
+    v = 0;
+    for (const char c : s) {
+        u32 d = 0;
+        if (c >= '0' && c <= '9') d = static_cast<u32>(c - '0');
+        else if (c >= 'a' && c <= 'f') d = static_cast<u32>(c - 'a' + 10);
+        else return false; // IOS names title directories in lower case
+        v = v << 4 | d;
+    }
+    return true;
+}
+} // namespace
+
+std::vector<u64> Es::installed_titles() const {
+    std::vector<u64> out;
+    if (nand_ == nullptr) return out;
+    std::vector<std::string> highs;
+    if (nand_->list(0, 0, "/title", highs) < 0) return out;
+    for (const auto& h : highs) {
+        u32 hi = 0;
+        if (!parse_hex32(h, hi)) continue;
+        std::vector<std::string> lows;
+        if (nand_->list(0, 0, "/title/" + h, lows) < 0) continue;
+        for (const auto& l : lows) {
+            u32 lo = 0;
+            if (!parse_hex32(l, lo)) continue;
+            FsMeta meta;
+            if (nand_->metadata(0, 0, "/title/" + h + "/" + l + "/content/title.tmd", meta) < 0) continue;
+            out.push_back(u64{hi} << 32 | lo);
+        }
+    }
+    return out;
+}
+
+std::vector<u64> Es::owned_titles() const {
+    std::vector<u64> out;
+    if (nand_ == nullptr) return out;
+    std::vector<std::string> highs;
+    if (nand_->list(0, 0, "/ticket", highs) < 0) return out;
+    for (const auto& h : highs) {
+        u32 hi = 0;
+        if (!parse_hex32(h, hi)) continue;
+        std::vector<std::string> files;
+        if (nand_->list(0, 0, "/ticket/" + h, files) < 0) continue;
+        for (const auto& f : files) {
+            u32 lo = 0;
+            if (f.size() != 12U || f.substr(8) != ".tik" || !parse_hex32(f.substr(0, 8), lo)) continue;
+            out.push_back(u64{hi} << 32 | lo);
+        }
+    }
+    return out;
+}
+
+std::optional<std::vector<u8>> Es::stored_tmd(u64 id) const {
+    char path[48];
+    std::snprintf(path, sizeof path, "/title/%08x/%08x/content/title.tmd", static_cast<unsigned>(id >> 32), static_cast<unsigned>(id));
+    auto tmd = read_nand_file(path);
+    if (!tmd || !tmd_content_count(*tmd)) return std::nullopt;
+    return tmd;
+}
+
 Result Es::open(Kernel&, const Request&, const std::string&, u32) { return Result::reply(err::kOk, kDefaultReplyTicks); }
 Result Es::close(Kernel&, const Request&) { return Result::reply(err::kOk, kDefaultReplyTicks); }
 
@@ -209,6 +285,60 @@ Result Es::ioctlv(Kernel& k, const Request& r, u32 number, std::span<const IoVec
         if (!k.write32(io[0].address, static_cast<u32>(title_->tmd.size()))) return ram();
         return ok();
     }
+    case 0x07: { // device ID
+        if (!vectors_ok(in, io, 0, 1) || io[0].size != 4U) return inval();
+        if (!console_id_)
+            return Result::stop("IOS /dev/es: GetDeviceID needs the console ID, which comes from the user's keys.bin "
+                                "(not imported)");
+        if (!k.write32(io[0].address, *console_id_)) return ram();
+        return ok();
+    }
+    case 0x0C: case 0x0E: { // owned / installed title count
+        if (!vectors_ok(in, io, 0, 1) || io[0].size != 4U) return inval();
+        if (nand_ == nullptr) return Result::stop("IOS /dev/es: title list without a NAND");
+        const auto t = number == 0x0C ? owned_titles() : installed_titles();
+        if (!k.write32(io[0].address, static_cast<u32>(t.size()))) return ram();
+        return ok();
+    }
+    case 0x0D: case 0x0F: { // owned / installed titles
+        if (!vectors_ok(in, io, 1, 1) || in[0].size != 4U) return inval();
+        if (nand_ == nullptr) return Result::stop("IOS /dev/es: title list without a NAND");
+        u32 max = 0;
+        if (!k.read32(in[0].address, max)) return ram();
+        const auto t = number == 0x0D ? owned_titles() : installed_titles();
+        for (std::size_t i = 0; i < t.size() && i < max && (i + 1U) * 8U <= io[0].size; ++i) {
+            const u32 a = io[0].address + static_cast<u32>(i) * 8U;
+            if (!k.write32(a, static_cast<u32>(t[i] >> 32)) || !k.write32(a + 4U, static_cast<u32>(t[i]))) return ram();
+        }
+        return ok();
+    }
+    case 0x34: case 0x35: { // stored TMD size / stored TMD
+        if (!vectors_ok(in, io, number == 0x34 ? 1U : 2U, 1) || in[0].size != 8U) return inval();
+        if (nand_ == nullptr) return Result::stop("IOS /dev/es: stored TMD without a NAND");
+        u64 id = 0;
+        if (!read64(in[0].address, id)) return ram();
+        const auto tmd = stored_tmd(id);
+        if (!tmd) return Result::reply(es_err::kFsNotFound, kDefaultReplyTicks);
+        if (number == 0x34) {
+            if (io[0].size != 4U) return inval();
+            if (!k.write32(io[0].address, static_cast<u32>(tmd->size()))) return ram();
+            return ok();
+        }
+        if (io[0].size != tmd->size()) return inval();
+        if (!k.write_bytes(io[0].address, *tmd)) return ram();
+        return ok();
+    }
+    case 0x2E: { // boot2 version
+        if (!vectors_ok(in, io, 0, 1) || io[0].size < 4U) return inval();
+        if (!boot2_version_)
+            return Result::stop("IOS /dev/es: GetBoot2Version needs the console's boot2 version, which comes from the "
+                                "user's keys.bin (not imported)");
+        if (!k.write32(io[0].address, *boot2_version_)) return ram();
+        return ok();
+    }
+    case 0x45: // Korea check (IOS70+): -1017 without the Korean common key
+        if (!vectors_ok(in, io, 0, 0)) return inval();
+        return korean_key_ ? ok() : inval();
     case 0x3A: { // DI TMD
         if (!vectors_ok(in, io, 1, 1) || in[0].size != 4U) return inval();
         u32 size = 0;

@@ -78,6 +78,23 @@ bool HollywoodIpc::mmio_read(u32 offset, unsigned size, u64& value) {
         return true;
     }
     case RESETS: value = resets_; return true;
+    // AHBPROT: which bus masters may reach which devices. Orca does not restrict
+    // Broadway's accesses, so every bit reads as "allowed" (Dolphin: 0xFFFFFFFF).
+    case AHBPROT: value = 0xFFFFFFFFU; return true;
+    case PPCSPEED: value = ppcspeed_; return true;
+    // Starlet's GPIO registers: one set of pin data seen through both banks; the
+    // owner register (IOS: kBroadwayPins) only decides which bank may change a pin.
+    case GPIO_OUT: value = gpio_out_; return true;
+    case GPIO_DIR: value = gpio_dir_; return true;
+    case GPIO_IN: {
+        u32 in = 0;
+        if (disc_present_ && disc_present_()) in |= GPIO_SLOT_IN;
+        value = in;
+        return true;
+    }
+    // Undocumented registers that Wii games read: no known function; they read 0 and
+    // take writes without effect (the behaviour Dolphin settled on for them).
+    case UNK_180: case UNK_1CC: case UNK_1D0: value = 0; return true;
     default:
         return fail("Hollywood register 0x" + hex(kBase + offset) + " is not emulated");
     }
@@ -138,6 +155,19 @@ bool HollywoodIpc::mmio_write(u32 offset, unsigned size, u64 value64) {
         resets_ = v;
         return true;
     }
+    case AHBPROT: return fail("AHBPROT: changing bus access permissions is not emulated (write " + hex(v) + ")");
+    case PPCSPEED: ppcspeed_ = v; return true; // bus clock ratio setting: no timing effect modelled
+    case GPIO_OUT: {
+        const u32 out = (gpio_out_ & kBroadwayPins) | (v & ~kBroadwayPins);
+        if ((out & GPIO_DO_EJECT) != 0U) return fail("GPIO_OUT: disc eject through the GPIO pin is not emulated");
+        gpio_out_ = out;
+        return true;
+    }
+    case GPIO_DIR:
+        gpio_dir_ = (gpio_dir_ & kBroadwayPins) | (v & ~kBroadwayPins);
+        return true;
+    case GPIO_IN: return true; // input pins: writes have no effect
+    case UNK_180: case UNK_1CC: case UNK_1D0: return true;
     default:
         return fail("Hollywood register 0x" + hex(kBase + offset) + " is not emulated");
     }

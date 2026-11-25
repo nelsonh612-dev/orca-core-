@@ -2,6 +2,7 @@
 // acknowledge/reply handshake, descriptors, ordering, explicit stops).
 #include "orca/hw/hollywood_ipc.hpp"
 #include "orca/ios/kernel.hpp"
+#include "orca/ios/sdio.hpp"
 #include "orca/ios/stm.hpp"
 #include "orca/ios/es.hpp"
 #include "orca/ios/fs_device.hpp"
@@ -303,6 +304,90 @@ TEST_CASE(ios_unknown_paths_and_commands_stop_explicitly) {
     }
 }
 
+TEST_CASE(ios_open_of_missing_and_unemulated_devices) {
+    // a /dev path that no retail IOS has: IPC_ENOENT, as IOS answers (no stop)
+    {
+        Rig r;
+        r.set(PPC_IRQMASK, IRQ_IPC_BROADWAY);
+        r.set(PPCCTRL, CTRL_IY1 | CTRL_IY2);
+        r.put_string(0x2000, "/dev/flash");
+        r.block(0x1000, 1, 0, {0x2000, 0});
+        CHECK_EQ(r.call(0x1000), ios::err::kNotFound);
+        CHECK(!r.kernel.stopped());
+    }
+    // a device the running IOS has but Orca does not emulate: explicit stop naming it
+    {
+        Rig r;
+        r.kernel.set_version(36);
+        r.put_string(0x2000, "/dev/usb/kbd");
+        r.block(0x1000, 1, 0, {0x2000, 0});
+        r.send(0x1000);
+        r.ticks(600);
+        CHECK(r.kernel.stopped());
+        CHECK(r.kernel.stop_reason().find("IOS36 open of \"/dev/usb/kbd\": this IOS has the device") != std::string::npos);
+    }
+    // which IOS has what (Dolphin's version feature table)
+    CHECK(ios::Kernel::retail_device_exists(36, "/dev/usb/kbd"));
+    CHECK(!ios::Kernel::retail_device_exists(58, "/dev/usb/kbd"));   // new USB stack
+    CHECK(ios::Kernel::retail_device_exists(58, "/dev/usb/ven"));
+    CHECK(!ios::Kernel::retail_device_exists(36, "/dev/usb/ven"));
+    CHECK(!ios::Kernel::retail_device_exists(4, "/dev/net/kd/request")); // IOS4: no network
+    CHECK(ios::Kernel::retail_device_exists(56, "/dev/net/kd/request"));
+    CHECK(ios::Kernel::retail_device_exists(56, "/dev/usb/oh0/57e/308"));
+    CHECK(!ios::Kernel::retail_device_exists(56, "/dev/flash"));
+}
+
+TEST_CASE(sd_slot_is_empty) {
+    Rig r;
+    r.set(PPC_IRQMASK, IRQ_IPC_BROADWAY);
+    r.set(PPCCTRL, CTRL_IY1 | CTRL_IY2);
+    r.kernel.add_device(std::make_unique<ios::SdioSlot0>());
+    r.put_string(0x2000, "/dev/sdio/slot0");
+    r.block(0x1000, 1, 0, {0x2000, 0});
+    const s32 fd = r.call(0x1000);
+    CHECK(fd >= 0);
+    const auto ioctl = [&](u32 number, u32 in, u32 in_size, u32 out, u32 out_size) {
+        r.block(0x1000, 6, static_cast<u32>(fd), {number, in, in_size, out, out_size});
+        return r.call(0x1000);
+    };
+    r.bus.write32(0x3000, 0xFFFFFFFFU);
+    CHECK_EQ(ioctl(0x0B, 0, 0, 0x3000, 4), 0);      // GETSTATUS: no card
+    CHECK_EQ(r.mem32(0x3000), 0U);
+    CHECK_EQ(ioctl(0x0C, 0, 0, 0x3000, 4), 0);      // GETOCR
+    CHECK_EQ(r.mem32(0x3000), 0x00FF8000U);
+    // host-controller registers: clock control reports "stable" once enabled
+    r.bus.write32(0x4000, 0x2C);
+    r.bus.write32(0x4010, 1);
+    CHECK_EQ(ioctl(0x01, 0x4000, 0x18, 0, 0), 0);
+    CHECK_EQ(ioctl(0x02, 0x4000, 0x18, 0x3000, 4), 0);
+    CHECK_EQ(r.mem32(0x3000), 3U);
+    // remove event: answered at once (empty slot); insert event: stays pending
+    r.bus.write32(0x4000, 0x40);
+    r.bus.write32(0x400C, 2);
+    CHECK_EQ(ioctl(0x07, 0x4000, 0x24, 0x3000, 0x10), 2);
+    r.bus.write32(0x400C, 1);
+    r.block(0x1100, 6, static_cast<u32>(fd), {0x07, 0x4000, 0x24, 0x3000, 0x10});
+    r.send(0x1100);
+    CHECK(r.service(2000) == std::optional<u32>(0U));
+    CHECK(!r.service(100000).has_value());         // no card arrives
+    // cancelling it answers the pending request with "invalid" (3)
+    r.bus.write32(0x4000, 0x41);
+    r.block(0x1000, 6, static_cast<u32>(fd), {0x07, 0x4000, 0x24, 0x3000, 0x10});
+    r.send(0x1000);
+    std::vector<u32> replies;
+    for (int i = 0; i < 4; ++i) if (auto a = r.service(100000); a && *a != 0U) replies.push_back(*a);
+    CHECK(replies.size() == 2U);
+    CHECK_EQ(static_cast<s32>(r.mem32(0x1104)), 3);
+    CHECK_EQ(static_cast<s32>(r.mem32(0x1004)), 0);
+    // a card command with no card: explicit stop
+    r.bus.write32(0x4000, 0x09); // SEND_CSD
+    r.block(0x1000, 6, static_cast<u32>(fd), {0x07, 0x4000, 0x24, 0x3000, 0x10});
+    r.send(0x1000);
+    r.ticks(20000);
+    CHECK(r.kernel.stopped());
+    CHECK(r.kernel.stop_reason().find("no SD card inserted") != std::string::npos);
+}
+
 TEST_CASE(hollywood_gpio_resets_and_unknown_registers) {
     Rig r;
     bool disc = false;
@@ -325,8 +410,23 @@ TEST_CASE(hollywood_gpio_resets_and_unknown_registers) {
     r.set(RESETS, 0xFFFFFFFFU);
     CHECK(r.bus.write32(kBase + RESETS, 0xFFFFFBFFU) == mem::BusStatus::DeviceError);
     CHECK(r.ipc.mmio_error().find("00000400") != std::string::npos);
-    CHECK(r.bus.read32(kBase + 0x18, v) == mem::BusStatus::DeviceError);
-    CHECK(r.bus.read32(kBase + 0x64, v) == mem::BusStatus::DeviceError);
+    // registers Dolphin also has: AHBPROT (no restriction), PPCSPEED, Starlet's
+    // GPIO view, and three undocumented ones that games read (0)
+    CHECK(r.bus.read32(kBase + AHBPROT, v) == mem::BusStatus::Ok);
+    CHECK_EQ(v, 0xFFFFFFFFU);
+    CHECK(r.bus.write32(kBase + AHBPROT, 0) == mem::BusStatus::DeviceError);
+    CHECK(r.bus.write32(kBase + PPCSPEED, 5) == mem::BusStatus::Ok);
+    CHECK_EQ(r.reg(PPCSPEED), 5U);
+    for (const u32 unk : {UNK_180, UNK_1CC, UNK_1D0}) {
+        CHECK(r.bus.write32(kBase + unk, 0x1234U) == mem::BusStatus::Ok);
+        CHECK_EQ(r.reg(unk), 0U);
+    }
+    CHECK_EQ(r.reg(GPIO_OUT) & kBroadwayPins, r.reg(GPIOB_OUT)); // one set of pin data
+    CHECK(r.bus.write32(kBase + GPIO_OUT, 0x00000001U) == mem::BusStatus::Ok); // POWER: Starlet-owned pin
+    CHECK_EQ(r.reg(GPIO_OUT) & 1U, 1U);
+    CHECK_EQ(r.reg(GPIOB_OUT) & 1U, 0U);       // the Broadway bank shows only its pins
+    CHECK(r.bus.write32(kBase + GPIO_OUT, GPIO_DO_EJECT | 1U) == mem::BusStatus::Ok); // eject is Broadway's pin: unchanged here
+    CHECK(r.bus.read32(kBase + 0x18C, v) == mem::BusStatus::DeviceError); // no register
     CHECK(r.bus.write32(kBase + VISOLID, 1) == mem::BusStatus::DeviceError);
     r.set(VISOLID, 0);
     u16 h = 0;
@@ -352,6 +452,17 @@ TEST_CASE(system_maps_hollywood_only_on_wii) {
     CHECK(w.bus().read32(0x0C006C00U, a) == mem::BusStatus::Ok);
     CHECK(w.bus().read32(0x0D006C00U, b) == mem::BusStatus::Ok);
     CHECK_EQ(a, b);
+    // and everything Hollywood is mirrored at 0x0D800000 (Dolphin folds it the same way)
+    CHECK(w.bus().read32(0x0D800000U + PPCCTRL, a) == mem::BusStatus::Ok);
+    CHECK(w.bus().read32(kBase + PPCCTRL, b) == mem::BusStatus::Ok);
+    CHECK_EQ(a, b);
+    CHECK(w.bus().write32(0x0D800000U + PPC_IRQMASK, 0x40000000U) == mem::BusStatus::Ok);
+    CHECK(w.bus().read32(kBase + PPC_IRQMASK, b) == mem::BusStatus::Ok);
+    CHECK_EQ(b, 0x40000000U);
+    CHECK(w.bus().read32(0x0D806C00U, a) == mem::BusStatus::Ok); // AI control via the mirror
+    CHECK(w.bus().read32(0x0D006C00U, b) == mem::BusStatus::Ok);
+    CHECK_EQ(a, b);
+    CHECK(g.bus().read32(0x0D800000U, v) != mem::BusStatus::Ok); // not on GameCube
     // an IOS stop ends System::run with the reason
     w.ios()->stop("test stop");
     const auto res = w.run(1000);
@@ -566,6 +677,83 @@ struct TempDir {
     ~TempDir() { std::filesystem::remove_all(p); }
 };
 } // namespace
+
+TEST_CASE(es_title_store_device_id_and_boot2) {
+    TempDir t("es_store");
+    ios::NandFs nand(t.p);
+    std::string error;
+    CHECK(nand.load(error));
+    const auto mkfile = [&](const std::string& path, const std::vector<u8>& data) {
+        CHECK_EQ(nand.create(0, 0, path, 0, {3, 3, 3}, true), 0);
+        const s32 h = nand.open(0, 0, path, ios::kFsWrite);
+        CHECK(h >= 0);
+        CHECK_EQ(nand.write(h, data), static_cast<s32>(data.size()));
+        nand.close(h);
+    };
+    for (const char* d : {"/title", "/title/00000001", "/title/00000001/00000002", "/title/00000001/00000002/content",
+                          "/title/00010000", "/title/00010000/52534245", "/ticket", "/ticket/00000001"})
+        CHECK_EQ(nand.create(0, 0, d, 0, {3, 3, 3}, false), 0);
+    const auto menu_tmd = make_tmd(0x0000000100000002ULL, 2);
+    mkfile("/title/00000001/00000002/content/title.tmd", menu_tmd);
+    mkfile("/ticket/00000001/00000002.tik", make_ticket(0x0000000100000002ULL));
+    // (00010000/52534245 has a data directory only: not installed)
+    Rig r;
+    auto es = std::make_unique<ios::Es>();
+    ios::Es* e = es.get();
+    e->set_nand(&nand);
+    r.kernel.add_device(std::move(es));
+    r.set(PPC_IRQMASK, IRQ_IPC_BROADWAY);
+    r.set(PPCCTRL, CTRL_IY1 | CTRL_IY2);
+    r.put_string(0x2000, "/dev/es");
+    r.block(0x1000, 1, 0, {0x2000, 0});
+    CHECK_EQ(r.call(0x1000), 0);
+    const auto ioctlv = [&](u32 number, std::vector<std::pair<u32, u32>> vecs, u32 n_in) {
+        for (std::size_t i = 0; i < vecs.size(); ++i) {
+            r.bus.write32(0x2800 + 8 * static_cast<u32>(i), vecs[i].first);
+            r.bus.write32(0x2804 + 8 * static_cast<u32>(i), vecs[i].second);
+        }
+        r.block(0x1000, 7, 0, {number, n_in, static_cast<u32>(vecs.size()) - n_in, 0x2800});
+        return r.call(0x1000);
+    };
+    CHECK(e->installed_titles() == std::vector<u64>{0x0000000100000002ULL});
+    CHECK(e->owned_titles() == std::vector<u64>{0x0000000100000002ULL});
+    CHECK_EQ(ioctlv(0x0E, {{0x3000, 4}}, 0), 0);
+    CHECK_EQ(r.mem32(0x3000), 1U);
+    r.bus.write32(0x3100, 4);
+    CHECK_EQ(ioctlv(0x0F, {{0x3100, 4}, {0x3200, 32}}, 1), 0);
+    CHECK_EQ(r.mem32(0x3200), 1U);
+    CHECK_EQ(r.mem32(0x3204), 2U);
+    CHECK_EQ(ioctlv(0x0C, {{0x3000, 4}}, 0), 0);
+    CHECK_EQ(r.mem32(0x3000), 1U);
+    // stored TMD
+    r.bus.write32(0x3300, 1);
+    r.bus.write32(0x3304, 2);
+    CHECK_EQ(ioctlv(0x34, {{0x3300, 8}, {0x3000, 4}}, 1), 0);
+    CHECK_EQ(r.mem32(0x3000), static_cast<u32>(menu_tmd.size()));
+    r.bus.write32(0x3308, static_cast<u32>(menu_tmd.size()));
+    CHECK_EQ(ioctlv(0x35, {{0x3300, 8}, {0x3308, 4}, {0x4000, static_cast<u32>(menu_tmd.size())}}, 2), 0);
+    CHECK_EQ(r.mem32(0x4000 + 0x18C), 1U);
+    r.bus.write32(0x3304, 3);                                   // not installed
+    CHECK_EQ(ioctlv(0x34, {{0x3300, 8}, {0x3000, 4}}, 1), ios::es_err::kFsNotFound);
+    // Korea check: no Korean key -> -1017
+    CHECK_EQ(ioctlv(0x45, {}, 0), ios::es_err::kInvalid);
+    // device ID and boot2 version come from keys.bin
+    e->set_console(0x0badc0deU, 7, true);
+    CHECK_EQ(ioctlv(0x07, {{0x3000, 4}}, 0), 0);
+    CHECK_EQ(r.mem32(0x3000), 0x0badc0deU);
+    CHECK_EQ(ioctlv(0x2E, {{0x3000, 4}}, 0), 0);
+    CHECK_EQ(r.mem32(0x3000), 7U);
+    CHECK_EQ(ioctlv(0x45, {}, 0), 0);
+    // without keys.bin: explicit stop naming what is missing
+    e->set_console(std::nullopt, std::nullopt, false);
+    r.bus.write32(0x2800, 0x3000);
+    r.bus.write32(0x2804, 4);
+    r.block(0x1000, 7, 0, {0x07, 0, 1, 0x2800});
+    r.send(0x1000);
+    r.ticks(600);
+    CHECK(r.kernel.stopped());
+    CHECK(r.kernel.stop_reason().find("keys.bin") != std::string::npos);
+}
 
 TEST_CASE(nand_paths_permissions_and_files) {
     TempDir t("unit");

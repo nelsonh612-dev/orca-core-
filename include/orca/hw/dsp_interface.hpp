@@ -62,6 +62,8 @@
 namespace orca::hw {
 
 namespace dsp {
+// Wii: the ARAM side of an ARAM DMA is MEM2 (physical base).
+inline constexpr u32 kWiiAramBase = 0x10000000U;
 inline constexpr u32 kBase = 0x0C005000U;
 inline constexpr u32 kSize = 0x200U;
 inline constexpr u32 kAramSize = 16U * 1024U * 1024U; // GameCube internal ARAM

@@ -56,10 +56,17 @@ TEST_CASE(mi_registers_and_interrupts) {
     CHECK(t.mi.mmio_write(mi::ADDRLO, 2, 0x1234)); // read-only: ignored
     CHECK(t.mi.mmio_read(mi::ADDRLO, 2, v));
     CHECK_EQ(v, 0U);
-    // timers: writes reset them; reads are not implemented
+    // timers (access counters): keep what is written, no counting (as in Dolphin)
     CHECK(t.mi.mmio_write(0x32, 2, 0));
-    CHECK(!t.mi.mmio_read(0x32, 2, v));
-    CHECK(t.mi.mmio_error().find("timer") != std::string::npos);
+    CHECK(t.mi.mmio_read(0x32, 2, v));
+    CHECK_EQ(v, 0U);
+    CHECK(t.mi.mmio_write(0x58, 2, 7));
+    CHECK(t.mi.mmio_read(0x58, 2, v));
+    CHECK_EQ(v, 7U);
+    // 32-bit access of PROT_TYPE covers an empty halfword (reads 0)
+    CHECK(t.mi.mmio_write(mi::TYPE, 4, 0x00AA0000U));
+    CHECK(t.mi.mmio_read(mi::TYPE, 4, v));
+    CHECK_EQ(v, 0x00AA0000U);
     CHECK(!t.mi.mmio_read(0x60, 2, v));
     CHECK(!t.mi.mmio_read(0x00, 1, v));
 }
@@ -244,15 +251,39 @@ TEST_CASE(aram_dma_alignment_timing_and_errors) {
     CHECK(t.dw(hw::dsp::CNT_L, 0x80)); // 4 units
     CHECK_EQ(*t.sched.next_event_time() - t0, 400U);
     t.settle();
-    // no ARAM on Wii
+    // Wii: no ARAM chip; the ARAM side of the DMA is MEM2 (as in Dolphin's wii_mode)
     mem::Bus bus2;
     core::Scheduler s2;
     ProcessorInterface pi2{bus2, nullptr};
     DspInterface wii{bus2, s2, pi2, false};
     CHECK(wii.aram().empty());
     CHECK(wii.mmio_write(hw::dsp::CNT_H, 2, 0));
-    CHECK(!wii.mmio_write(hw::dsp::CNT_L, 2, 0x20));
-    CHECK(wii.mmio_error().find("Wii") != std::string::npos);
+    CHECK(!wii.mmio_write(hw::dsp::CNT_L, 2, 0x20)); // no MEM2 mapped in this rig yet
+    CHECK(wii.mmio_error().find("outside MEM2") != std::string::npos);
+    CHECK(bus2.map_ram("MEM1", 0, 0x01800000U));
+    CHECK(bus2.map_ram("MEM2", 0x10000000U, 0x04000000U));
+    for (u32 i = 0; i < 0x40; i += 4) CHECK(bus2.write32(0x2000 + i, 0xA0B0C000U + i) == mem::BusStatus::Ok);
+    const auto ww = [&](u32 reg, u32 v32) { // a 32-bit pair write (H, L)
+        CHECK(wii.mmio_write(reg, 2, v32 >> 16));
+        CHECK(wii.mmio_write(reg + 2U, 2, v32 & 0xFFFFU));
+    };
+    ww(hw::dsp::MMADDR_H, 0x2000U);
+    ww(hw::dsp::ARADDR_H, 0x00100000U);
+    CHECK(wii.mmio_write(hw::dsp::CNT_H, 2, 0));          // main memory -> "ARAM" (MEM2)
+    CHECK(wii.mmio_write(hw::dsp::CNT_L, 2, 0x40));
+    s2.advance_to(s2.now() + 1000000U);
+    u32 got = 0;
+    CHECK(bus2.read32(0x10100000U, got) == mem::BusStatus::Ok);
+    CHECK_EQ(got, 0xA0B0C000U);
+    CHECK(bus2.read32(0x1010003CU, got) == mem::BusStatus::Ok);
+    CHECK_EQ(got, 0xA0B0C03CU);
+    ww(hw::dsp::MMADDR_H, 0x3000U);                       // and back: MEM2 -> main memory
+    ww(hw::dsp::ARADDR_H, 0x00100000U);
+    CHECK(wii.mmio_write(hw::dsp::CNT_H, 2, 0x8000));
+    CHECK(wii.mmio_write(hw::dsp::CNT_L, 2, 0x40));
+    s2.advance_to(s2.now() + 1000000U);
+    CHECK(bus2.read32(0x3020, got) == mem::BusStatus::Ok);
+    CHECK_EQ(got, 0xA0B0C020U);
 }
 
 TEST_CASE(aram_register_masks_reset_values_and_timing) {

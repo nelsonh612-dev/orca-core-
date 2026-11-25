@@ -17,6 +17,7 @@ System::System(SystemConfig config) : config_(config), clocks_(clocks_for(config
     else mem::map_wii_ram(bus_);
     cpu_ = std::make_unique<ppc::Cpu>(bus_, ppc::CpuConfig{config_.pvr, config_.console == Console::Wii});
     pi_ = std::make_unique<hw::ProcessorInterface>(bus_, [this](bool level) { cpu_->set_external_interrupt(level); });
+    pi_->set_gamecube(config_.console == Console::GameCube);
     gather_pipe_ = std::make_unique<hw::GatherPipe>(*pi_);
     bus_.map_mmio("PI", hw::pi::kBase, 0x1000, *pi_);
     bus_.map_mmio("GatherPipe", hw::pi::kGatherPipeBase, 0x1000, *gather_pipe_);
@@ -67,10 +68,15 @@ System::System(SystemConfig config) : config_(config), clocks_(clocks_for(config
         hollywood_->set_disc_present([this] { return di_->disc() != nullptr; });
         bus_.map_mmio("Hollywood", hw::hollywood::kBase, 0x1000, *hollywood_);
         bus_.map_mmio("DI/SI/EXI/AI (Hollywood)", 0x0D006000U, 0x1000, *page_0c006_);
+        // The Hollywood registers are also seen at 0x0D800000 (the mirror Starlet uses;
+        // Dolphin's MMIO mapping folds 0x0D80xxxx onto 0x0D00xxxx the same way)
+        bus_.map_mmio("Hollywood (0x0D800000 mirror)", 0x0D800000U, 0x1000, *hollywood_);
+        bus_.map_mmio("DI/SI/EXI/AI (0x0D806000 mirror)", 0x0D806000U, 0x1000, *page_0c006_);
         ios_ = std::make_unique<ios::Kernel>(bus_, scheduler_, *hollywood_, clocks_.cpu_cycles_per_timebase_tick);
         auto hook = std::make_unique<ios::StmEventHook>();
         stm_hook_ = hook.get();
         ios_->add_device(std::make_unique<ios::StmImmediate>(*hook));
+        ios_->add_device(std::make_unique<ios::SdioSlot0>()); // empty SD slot
         ios_->add_device(std::move(hook));
         auto es = std::make_unique<ios::Es>();
         es_ = es.get();
@@ -105,6 +111,12 @@ System::System(SystemConfig config) : config_(config), clocks_(clocks_for(config
         di_->set_wii_mode(); // the drive belongs to Starlet
         // OrcaIOSC's key provision: fill the empty slots automatically
         if (config_.auto_keys) (void)ios::load_default_key_provision(config_.key_dirs, config_.wii_keys, key_report_, key_error_);
+        es_->set_nand(nand_.get());
+        {
+            const auto& c = config_.wii_keys.console;
+            es_->set_console(c ? std::optional<u32>(c->ng_id) : std::nullopt,
+                             c ? std::optional<u8>(c->boot2_version) : std::nullopt, config_.wii_keys.common[1].has_value());
+        }
         auto di_dev = std::make_unique<ios::DiDevice>(*di_, *es_, nand_.get(), config_.wii_keys);
         di_dev_ = di_dev.get();
         ios_->add_device(std::move(di_dev));
@@ -282,6 +294,7 @@ bool System::boot_wii_disc(std::string& error) {
     const u32 ios_hi = static_cast<u32>(tmd[0x184]) << 24 | static_cast<u32>(tmd[0x185]) << 16 | static_cast<u32>(tmd[0x186]) << 8 | tmd[0x187];
     const u32 ios_lo = static_cast<u32>(tmd[0x188]) << 24 | static_cast<u32>(tmd[0x189]) << 16 | static_cast<u32>(tmd[0x18A]) << 8 | tmd[0x18B];
     const auto values = ios_hi == 1U ? ios::ios_memory_values(ios_lo) : std::nullopt;
+    if (ios_hi == 1U) ios_->set_version(ios_lo); // which devices this IOS has
     if (!values) {
         char b[96];
         std::snprintf(b, sizeof b, "boot_wii_disc: the title needs IOS %08X-%08X, which is not in the table", ios_hi, ios_lo);

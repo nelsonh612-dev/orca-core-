@@ -7,6 +7,7 @@ namespace orca::ios {
 namespace {
 constexpr u64 kAckDelayTicks = 500;       // X1 -> IOS takes the request
 constexpr u64 kInvalidCommandTicks = 978; // unknown command number
+constexpr u64 kNoDeviceTicks = 3700;       // open of a path that is no device (Dolphin)
 constexpr u64 kInvalidFdTicks = 550;      // descriptor not open
 constexpr u64 kNoFreeFdTicks = 5000;      // all descriptors in use
 constexpr u32 kMaxVectors = 32;           // sanity bound for ioctlv vector counts
@@ -60,6 +61,27 @@ bool Kernel::add_device(std::unique_ptr<Device> device) {
     if (!device) return false;
     const std::string path = device->path();
     return devices_.emplace(path, std::move(device)).second;
+}
+
+bool Kernel::retail_device_exists(u32 major, std::string_view path) {
+    // Present on every retail IOS (Dolphin's AddStaticDevices, Feature::Core/SDIO/SO)
+    static constexpr std::string_view kAlways[] = {
+        "/dev/usb/oh1", "/dev/usb/oh1/57e/305", "/dev/stm/immediate", "/dev/stm/eventhook", "/dev/di",
+        "/dev/sdio/slot0", "/dev/sdio/slot1", "/dev/net/ip/top", "/dev/usb/oh0", "/dev/es", "/dev/fs"};
+    for (const auto p : kAlways) if (path == p) return true;
+    if (path.rfind("/dev/usb/oh0/", 0) == 0) return true; // USB device paths under OH0
+    const bool unknown = major == 0U;
+    const bool net = unknown || major != 4U; // IOS4 has no network modules
+    if (net && (path == "/dev/net/kd/time" || path == "/dev/net/kd/request" || path == "/dev/net/ncd/manage" ||
+                path == "/dev/net/wd/command" || path == "/dev/net/ssl"))
+        return true;
+    const bool new_usb = unknown || major == 57U || major == 58U || major == 59U;
+    const bool old_usb = unknown || !(major == 57U || major == 58U || major == 59U);
+    if (new_usb && (path == "/dev/usb/hid" || path == "/dev/usb/ven")) return true;
+    if (old_usb && path == "/dev/usb/hid") return true;
+    if (old_usb && (unknown || major >= 30U) && path == "/dev/usb/kbd") return true;
+    if ((unknown || major == 59U) && (path == "/dev/usb/wfssrv" || path == "/dev/wfsi")) return true;
+    return false;
 }
 
 Device* Kernel::device(std::string_view path) const {
@@ -155,7 +177,16 @@ Result Kernel::dispatch(const Request& r) {
             return Result::stop("IOS open: path at 0x" + hex(r.args[0]) + " is not a string of at most 63 bytes in RAM");
         const bool dev = path.rfind("/dev/", 0) == 0;
         Device* d = dev ? device(path) : (path.rfind('/', 0) == 0 ? device("/dev/fs") : nullptr);
-        if (d == nullptr) return Result::stop("IOS open of \"" + path + "\": no emulated device or file system path");
+        if (d == nullptr && dev) {
+            // A device this IOS has but Orca does not emulate: stop and name it. A
+            // path that is no device of this IOS: IPC_ENOENT, as IOS answers
+            // (Dolphin: IPC_ENOENT after 3700 ticks).
+            if (retail_device_exists(version_, path))
+                return Result::stop("IOS" + (version_ != 0U ? std::to_string(version_) : std::string()) + " open of \"" +
+                                    path + "\": this IOS has the device, Orca does not emulate it yet");
+            return Result::reply(err::kNotFound, kNoDeviceTicks);
+        }
+        if (d == nullptr) return Result::stop("IOS open of \"" + path + "\": not an absolute path");
         u32 fd = 0;
         while (fd < kMaxFds && fds_[fd] != nullptr) ++fd;
         if (fd == kMaxFds) return Result::reply(err::kMaxFds, kNoFreeFdTicks);

@@ -26,8 +26,13 @@ void MemoryInterface::note_protection() {
 }
 
 bool MemoryInterface::read16(u32 offset, u16& v) {
-    if (offset >= mi::TIMER_FIRST && offset <= mi::TIMER_LAST + 1U)
-        return fail("MI: timer registers cannot be read (their count source is undocumented)");
+    // MI_TIMER0-9 (0x32-0x58) and 0x5A: memory access counters whose count source
+    // is undocumented. They keep the value last written and do not count (the
+    // model Dolphin uses); software that only clears/reads them sees 0.
+    if ((offset >= mi::TIMER_FIRST && offset <= mi::TIMER_LAST + 1U) || offset == mi::UNKNOWN2) {
+        v = regs_[offset / 2U];
+        return true;
+    }
     if (offset < mi::TYPE + 2U || offset == mi::IMASK || offset == mi::ICAUSE || offset == mi::STATUS ||
         offset == mi::ADDRLO || offset == mi::ADDRHI) {
         v = regs_[offset / 2U];
@@ -37,7 +42,10 @@ bool MemoryInterface::read16(u32 offset, u16& v) {
 }
 
 bool MemoryInterface::write16(u32 offset, u16 v) {
-    if (offset >= mi::TIMER_FIRST && offset <= mi::TIMER_LAST + 1U) return true; // resets the timer
+    if ((offset >= mi::TIMER_FIRST && offset <= mi::TIMER_LAST + 1U) || offset == mi::UNKNOWN2) {
+        regs_[offset / 2U] = v; // see read16: no counting is modelled
+        return true;
+    }
     if (offset < mi::TYPE + 2U) {
         regs_[offset / 2U] = offset == mi::TYPE ? static_cast<u16>(v & 0xFFU) : v;
         note_protection();
@@ -56,7 +64,13 @@ bool MemoryInterface::mmio_read(u32 offset, unsigned size, u64& value) {
     if (size == 2U) { u16 v = 0; if (!read16(offset, v)) return false; value = v; return true; }
     if (size == 4U) {
         u16 h = 0, l = 0;
-        if (!read16(offset, h) || !read16(offset + 2U, l)) return false;
+        if (!read16(offset, h)) return false;
+        // a 32-bit read of PROT_TYPE (0x10) or PROT_ADDR_HI (0x24) also covers the
+        // halfword after it, where there is no register: that half reads 0
+        if (!read16(offset + 2U, l)) {
+            if (offset + 2U != mi::TYPE + 2U && offset + 2U != mi::ADDRHI + 2U) return false;
+            l = 0;
+        }
         value = (static_cast<u32>(h) << 16) | l;
         return true;
     }
@@ -72,7 +86,10 @@ bool MemoryInterface::mmio_write(u32 offset, unsigned size, u64 value) {
             note_protection();
             return true;
         }
-        return write16(offset, static_cast<u16>(value >> 16)) && write16(offset + 2U, static_cast<u16>(value));
+        if (!write16(offset, static_cast<u16>(value >> 16))) return false;
+        // the halfword after PROT_TYPE / PROT_ADDR_HI holds no register (see mmio_read)
+        if (offset + 2U == mi::TYPE + 2U || offset + 2U == mi::ADDRHI + 2U) return true;
+        return write16(offset + 2U, static_cast<u16>(value));
     }
     return fail("MI: only 16- and 32-bit accesses are implemented");
 }

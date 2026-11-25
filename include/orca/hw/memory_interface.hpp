@@ -33,7 +33,8 @@ namespace mi {
 inline constexpr u32 kBase = 0x0C004000U;
 inline constexpr u32 kSize = 0x80U;
 inline constexpr u32 REGION0 = 0x00, TYPE = 0x10, IMASK = 0x1C, ICAUSE = 0x1E, STATUS = 0x20, ADDRLO = 0x22,
-                     ADDRHI = 0x24, TIMER_FIRST = 0x32, TIMER_LAST = 0x58;
+                     ADDRHI = 0x24, TIMER_FIRST = 0x32, TIMER_LAST = 0x58,
+                     UNKNOWN2 = 0x5A;
 } // namespace mi
 
 class MemoryInterface final : public mem::MmioDevice {

@@ -128,6 +128,14 @@ public:
     bool add_device(std::unique_ptr<Device> device);
     Device* device(std::string_view path) const;
 
+    // The running IOS's major version (the title's IOS), which decides which
+    // devices exist (0: unknown, every retail device counted as present).
+    void set_version(u32 major) noexcept { version_ = major; }
+    u32 version() const noexcept { return version_; }
+    // True if retail IOS `major` registers device `path` (whether or not Orca
+    // emulates it). Feature sets per version as in Dolphin's VersionInfo.
+    static bool retail_device_exists(u32 major, std::string_view path);
+
     // Completes a deferred request `delay_ticks` from now.
     void reply(u32 request_address, s32 value, u64 delay_ticks);
 
@@ -160,6 +168,7 @@ public:
     u64 requests_executed() const noexcept { return executed_; }
 
 private:
+    u32 version_{0};
     void on_execute(u32 address);
     void update();
     void execute(u32 address);

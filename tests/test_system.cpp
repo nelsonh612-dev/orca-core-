@@ -79,8 +79,28 @@ TEST_CASE(pi_interrupt_line_follows_cause_and_mask) {
     CHECK_EQ(pi.causes(), hw::pi::CAUSE_RSW);
     CHECK(pi.mmio_write(0x00, 4, hw::pi::CAUSE_RSW));
     CHECK_EQ(pi.causes(), 0U);
-    CHECK(!pi.mmio_read(0x2C, 4, v));                    // unimplemented register: device error
-    CHECK(!pi.mmio_read(0x00, 2, v));                    // 16-bit access not supported
+    // registers Dolphin also has: Flipper revision, reset code, bus strength
+    CHECK(pi.mmio_read(0x2C, 4, v));
+    CHECK_EQ(v, hw::pi::kFlipperRevision);
+    CHECK(!pi.mmio_write(0x2C, 4, 0));                   // read-only
+    CHECK(pi.mmio_read(0x24, 4, v));
+    CHECK_EQ(v, 0U);                                     // cold reset
+    CHECK(pi.mmio_read(0x30, 4, v));
+    CHECK_EQ(v, 0x02492492U);
+    CHECK(pi.mmio_write(0x30, 4, 0xFFFFFFFFU));
+    CHECK(pi.mmio_read(0x30, 4, v));
+    CHECK_EQ(v, 0x07FFFFFFU);
+    CHECK(!pi.mmio_write(0x24, 4, 0));                   // GameCube drive reset: not implemented
+    CHECK(pi.mmio_error().find("drive reset") != std::string::npos);
+    CHECK(!pi.mmio_write(0x18, 4, 1));                   // FIFO reset: not implemented, said so
+    CHECK(pi.mmio_error().find("GXAbortFrame") != std::string::npos);
+    // 16-bit reads give one half of the 32-bit register
+    CHECK(pi.mmio_read(0x2C, 2, v));
+    CHECK_EQ(v, 0x2465U);
+    CHECK(pi.mmio_read(0x2E, 2, v));
+    CHECK_EQ(v, 0x00B1U);
+    CHECK(!pi.mmio_write(0x04, 2, 0));                   // 16-bit writes: not implemented
+    CHECK(!pi.mmio_read(0x34, 4, v));                    // no register: device error
 }
 
 TEST_CASE(gather_pipe_bursts_into_fifo_and_wraps) {
@@ -308,7 +328,7 @@ TEST_CASE(cpu_access_to_pi_and_gather_pipe_through_mmu) {
     code(sys, 0x3000, {A::addis(3, 0, static_cast<int>(0xCC00U)), A::ori(3, 3, 0x3000), A::addi(4, 0, 0x100), A::stw(4, 4, 3),
                        A::lwz(5, 4, 3), A::addis(6, 0, static_cast<int>(0xCC00U)), A::ori(6, 6, 0x8000)});
     for (int i = 0; i < 8; ++i) code(sys, 0x301C + static_cast<u32>(i) * 4, {A::stw(4, 0, 6)});
-    code(sys, 0x303C, {A::lwz(7, 0x2C, 3)}); // unimplemented PI register
+    code(sys, 0x303C, {A::lwz(7, 0x34, 3)}); // no PI register there
     sys.pi().mmio_write(0x0C, 4, 0x8000); sys.pi().mmio_write(0x10, 4, 0x9000); sys.pi().mmio_write(0x14, 4, 0x8000);
     const auto r = sys.run(100);
     CHECK_EQ(s.gpr[5], 0x100U);
@@ -318,7 +338,7 @@ TEST_CASE(cpu_access_to_pi_and_gather_pipe_through_mmu) {
     CHECK_EQ(sys.pi().fifo_write_pointer(), 0x8020U);
     CHECK(r.stop == StepResult::MemoryFault);           // clear stop at the unimplemented register
     CHECK_EQ(s.pc, 0x8000303CU);
-    CHECK_EQ(sys.cpu().last_stop().address, 0x0C00302CU);
+    CHECK_EQ(sys.cpu().last_stop().address, 0x0C003034U);
 }
 
 TEST_MAIN("system")
