@@ -19,6 +19,26 @@ std::string hex(u32 v) {
 HollywoodIpc::HollywoodIpc(core::Scheduler& scheduler, ProcessorInterface& pi, u32 cpu_cycles_per_timebase_tick)
     : scheduler_(scheduler), pi_(pi), cycles_per_tick_(cpu_cycles_per_timebase_tick) {}
 
+// The A/V encoder's I2C pins: a pin set as an output is driven to its output
+// value; one set as an input is released and the bus pull-up holds it high.
+void HollywoodIpc::drive_ave_pins() {
+    const bool scl = (gpio_dir_ & GPIO_AVE_SCL) == 0U || (gpio_out_ & GPIO_AVE_SCL) != 0U;
+    const bool sda = (gpio_dir_ & GPIO_AVE_SDA) == 0U || (gpio_out_ & GPIO_AVE_SDA) != 0U;
+    ave_.update(scl, sda);
+}
+
+// Input levels: the disc slot sensor and the two I2C lines (SDA low while the
+// encoder pulls it down to acknowledge or to send a 0 bit).
+u32 HollywoodIpc::gpio_in() const {
+    u32 in = 0;
+    if (disc_present_ && disc_present_()) in |= GPIO_SLOT_IN;
+    const bool scl = (gpio_dir_ & GPIO_AVE_SCL) == 0U || (gpio_out_ & GPIO_AVE_SCL) != 0U;
+    const bool sda = (gpio_dir_ & GPIO_AVE_SDA) == 0U || (gpio_out_ & GPIO_AVE_SDA) != 0U;
+    if (scl) in |= GPIO_AVE_SCL;
+    if (ave_.sda_line(sda)) in |= GPIO_AVE_SDA;
+    return in;
+}
+
 bool HollywoodIpc::ready() const noexcept {
     return (ctrl_ & (CTRL_Y1 | CTRL_Y2)) == 0U && (flags_ & IRQ_IPC_BROADWAY) == 0U;
 }
@@ -69,14 +89,7 @@ bool HollywoodIpc::mmio_read(u32 offset, unsigned size, u64& value) {
     case PPC_IRQMASK: value = mask_; return true;
     case GPIOB_OUT: value = gpio_out_ & kBroadwayPins; return true;
     case GPIOB_DIR: value = gpio_dir_ & kBroadwayPins; return true;
-    case GPIOB_IN: {
-        if ((gpio_dir_ & GPIO_AVE_SDA) == 0U)
-            return fail("GPIOB_IN with the A/V encoder data pin as input: the A/V encoder (I2C) is not emulated");
-        u32 in = 0;
-        if (disc_present_ && disc_present_()) in |= GPIO_SLOT_IN;
-        value = in;
-        return true;
-    }
+    case GPIOB_IN: value = gpio_in() & kBroadwayPins; return true;
     case RESETS: value = resets_; return true;
     // AHBPROT: which bus masters may reach which devices. Orca does not restrict
     // Broadway's accesses, so every bit reads as "allowed" (Dolphin: 0xFFFFFFFF).
@@ -86,12 +99,7 @@ bool HollywoodIpc::mmio_read(u32 offset, unsigned size, u64& value) {
     // owner register (IOS: kBroadwayPins) only decides which bank may change a pin.
     case GPIO_OUT: value = gpio_out_; return true;
     case GPIO_DIR: value = gpio_dir_; return true;
-    case GPIO_IN: {
-        u32 in = 0;
-        if (disc_present_ && disc_present_()) in |= GPIO_SLOT_IN;
-        value = in;
-        return true;
-    }
+    case GPIO_IN: value = gpio_in(); return true;
     // Undocumented registers that Wii games read: no known function; they read 0 and
     // take writes without effect (the behaviour Dolphin settled on for them).
     case UNK_180: case UNK_1CC: case UNK_1D0: value = 0; return true;
@@ -141,10 +149,12 @@ bool HollywoodIpc::mmio_write(u32 offset, unsigned size, u64 value64) {
         const u32 out = (v & kBroadwayPins) | (gpio_out_ & ~kBroadwayPins);
         if ((out & GPIO_DO_EJECT) != 0U) return fail("GPIOB_OUT: disc eject through the GPIO pin is not emulated");
         gpio_out_ = out;
+        drive_ave_pins();
         return true;
     }
     case GPIOB_DIR:
         gpio_dir_ = (v & kBroadwayPins) | (gpio_dir_ & ~kBroadwayPins);
+        drive_ave_pins();
         return true;
     case GPIOB_IN:
         return true; // input pins: writes have no effect
@@ -161,10 +171,12 @@ bool HollywoodIpc::mmio_write(u32 offset, unsigned size, u64 value64) {
         const u32 out = (gpio_out_ & kBroadwayPins) | (v & ~kBroadwayPins);
         if ((out & GPIO_DO_EJECT) != 0U) return fail("GPIO_OUT: disc eject through the GPIO pin is not emulated");
         gpio_out_ = out;
+        drive_ave_pins();
         return true;
     }
     case GPIO_DIR:
         gpio_dir_ = (gpio_dir_ & kBroadwayPins) | (v & ~kBroadwayPins);
+        drive_ave_pins();
         return true;
     case GPIO_IN: return true; // input pins: writes have no effect
     case UNK_180: case UNK_1CC: case UNK_1D0: return true;

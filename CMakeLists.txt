@@ -57,6 +57,7 @@ add_library(orca_core
     src/hw/dsp_interface.cpp
     src/hw/memory_interface.cpp
     src/hw/hollywood_ipc.cpp
+    src/hw/av_encoder.cpp
     src/ios/iosc.cpp
     src/ios/kernel.cpp
     src/ios/stm.cpp

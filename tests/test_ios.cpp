@@ -483,6 +483,77 @@ TEST_CASE(sd_slot_is_empty) {
     CHECK(r.kernel.stop_reason().find("no SD card inserted") != std::string::npos);
 }
 
+// Broadway bit-bangs I2C on GPIO pins 14 (SCL) and 15 (SDA) to set up the A/V
+// encoder (address 0x70), checking SDA for the encoder's acknowledge. This is the
+// SDK's VI initialisation; a game stopped here when the encoder was missing.
+namespace {
+struct I2cMaster {
+    Rig& r;
+    u32 out = GPIO_AVE_SCL | GPIO_AVE_SDA, dir = kGpioOutputsAfterIos;
+    void put() { r.set(GPIOB_DIR, dir); r.set(GPIOB_OUT, out); }
+    void scl(bool h) { out = h ? (out | GPIO_AVE_SCL) : (out & ~GPIO_AVE_SCL); put(); }
+    void sda(bool h) { dir |= GPIO_AVE_SDA; out = h ? (out | GPIO_AVE_SDA) : (out & ~GPIO_AVE_SDA); put(); }
+    void release() { dir &= ~GPIO_AVE_SDA; put(); }
+    bool sample() { return (r.reg(GPIOB_IN) & GPIO_AVE_SDA) != 0U; }
+    void start() { sda(true); scl(true); sda(false); scl(false); }
+    void stop() { sda(false); scl(true); sda(true); }
+    bool send(u8 b) { // true = acknowledged
+        for (int i = 7; i >= 0; --i) { sda(((b >> i) & 1U) != 0U); scl(true); scl(false); }
+        release();
+        scl(true);
+        const bool ack = !sample();
+        scl(false);
+        return ack;
+    }
+    u8 receive(bool ack) {
+        release();
+        u8 b = 0;
+        for (int i = 0; i < 8; ++i) { scl(true); b = static_cast<u8>((u32{b} << 1) | (sample() ? 1U : 0U)); scl(false); }
+        sda(!ack);
+        scl(true);
+        scl(false);
+        return b;
+    }
+};
+} // namespace
+
+TEST_CASE(av_encoder_answers_on_the_gpio_i2c_bus) {
+    Rig r;
+    I2cMaster m{r};
+    m.put();
+    // write registers 0x01.. = 23 C5 00 at address 0x70
+    m.start();
+    CHECK(m.send(0xE0));
+    CHECK(m.send(0x01));
+    CHECK(m.send(0x23));
+    CHECK(m.send(0xC5));
+    CHECK(m.send(0x00));
+    m.stop();
+    CHECK_EQ(r.ipc.av_encoder().registers()[0x01], 0x23U);
+    CHECK_EQ(r.ipc.av_encoder().registers()[0x02], 0xC5U);
+    CHECK_EQ(r.ipc.av_encoder().bytes_written(), 3U);
+    // read them back: set the index, repeated start, read with ack, ack, nack
+    m.start();
+    CHECK(m.send(0xE0));
+    CHECK(m.send(0x01));
+    m.start();
+    CHECK(m.send(0xE1));
+    CHECK_EQ(m.receive(true), 0x23U);
+    CHECK_EQ(m.receive(true), 0xC5U);
+    CHECK_EQ(m.receive(false), 0x00U);
+    m.stop();
+    CHECK_EQ(r.ipc.av_encoder().bytes_read(), 3U);
+    // another address: no device acknowledges, the line stays high
+    m.start();
+    CHECK(!m.send(0xA0));
+    CHECK(!m.send(0x55));
+    m.stop();
+    CHECK_EQ(r.ipc.av_encoder().bytes_written(), 3U);
+    // after a stop the encoder releases SDA
+    m.release();
+    CHECK(m.sample());
+}
+
 TEST_CASE(hollywood_gpio_resets_and_unknown_registers) {
     Rig r;
     bool disc = false;
@@ -498,9 +569,12 @@ TEST_CASE(hollywood_gpio_resets_and_unknown_registers) {
     // eject pin, A/V encoder data as input, asserting a reset, unknown registers: device errors
     CHECK(r.bus.write32(kBase + GPIOB_OUT, GPIO_DO_EJECT) == mem::BusStatus::DeviceError);
     CHECK(r.ipc.mmio_error().find("eject") != std::string::npos);
+    // A/V encoder data pin as input with nobody pulling it low: the pull-up reads 1
     r.set(GPIOB_DIR, kGpioOutputsAfterIos & ~GPIO_AVE_SDA);
     u32 v = 0;
-    CHECK(r.bus.read32(kBase + GPIOB_IN, v) == mem::BusStatus::DeviceError);
+    CHECK(r.bus.read32(kBase + GPIOB_IN, v) == mem::BusStatus::Ok);
+    CHECK_EQ(v & GPIO_AVE_SDA, GPIO_AVE_SDA);
+    r.set(GPIOB_DIR, kGpioOutputsAfterIos);
     CHECK_EQ(r.reg(RESETS), 0xFFFFFFFFU);
     r.set(RESETS, 0xFFFFFFFFU);
     CHECK(r.bus.write32(kBase + RESETS, 0xFFFFFBFFU) == mem::BusStatus::DeviceError);

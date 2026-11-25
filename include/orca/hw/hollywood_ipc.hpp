@@ -30,6 +30,7 @@
 // reading the A/V encoder I2C data pin, and asserting any reset line.
 #pragma once
 #include "orca/core/scheduler.hpp"
+#include "orca/hw/av_encoder.hpp"
 #include "orca/hw/processor_interface.hpp"
 #include "orca/memory/bus.hpp"
 
@@ -108,6 +109,7 @@ public:
     u32 irq_flags() const noexcept { return flags_; }
     u32 irq_mask() const noexcept { return mask_; }
     u32 gpio_out() const noexcept { return gpio_out_; }
+    const AvEncoder& av_encoder() const noexcept { return ave_; }
     u32 ppc_message() const noexcept { return ppc_msg_; }
 
     bool mmio_read(u32 offset, unsigned size, u64& value) override;
@@ -117,6 +119,8 @@ public:
 
 private:
     void update_interrupt();
+    void drive_ave_pins();
+    u32 gpio_in() const;
     void schedule_visible(u32 bit);
     bool fail(std::string why) { last_error_ = std::move(why); return false; }
 
@@ -130,6 +134,7 @@ private:
     u32 flags_{0}, mask_{0};
     u32 gpio_out_{0}, gpio_dir_{hollywood::kGpioOutputsAfterIos};
     u32 resets_{0xFFFFFFFFU};
+    AvEncoder ave_;
     u32 visolid_{0};
     u32 ppcspeed_{0};
     u32 visible_{0};                 // Y1/Y2 bits the interrupt logic already sees
