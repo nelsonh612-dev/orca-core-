@@ -145,6 +145,16 @@ TEST_CASE(xer_reserved_bits_and_pvr) {
     CHECK(m.exec(A::mtspr(spr::PVR, 3)) == StepResult::UnsupportedInstruction);
     m.s().pc = 0x1000;
     CHECK(m.exec(A::mfspr(3, 1000)) == StepResult::UnsupportedInstruction); // unknown SPR
+    // ECID_U/M/L: read-only chip ID, 0 (no particular chip); writes stop
+    for (const u32 n : {924U, 925U, 926U}) {
+        m.s().pc = 0x1000;
+        m.s().gpr[3] = 0xFFFFFFFFU;
+        CHECK(m.exec(A::mfspr(3, n)) == StepResult::Executed);
+        CHECK_EQ(m.s().gpr[3], 0U);
+        m.s().pc = 0x1000;
+        CHECK(m.exec(A::mtspr(n, 3)) == StepResult::UnsupportedInstruction);
+    }
+    m.s().gpr[3] = 0xFFFFFFFFU;
     m.s().pc = 0x1000;
     CHECK(m.exec(A::mtspr(spr::DMAL, 3)) == StepResult::UnsupportedInstruction);
 }

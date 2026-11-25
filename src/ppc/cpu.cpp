@@ -823,6 +823,9 @@ Cpu::Outcome Cpu::read_spr(unsigned n, u32& v) {
     case spr::SRR1: v = s.srr1; return Outcome::done();
     case spr::EAR: v = s.ear; return Outcome::done();
     case spr::PVR: v = config_.pvr; return Outcome::done();
+    // ECID_U/M/L (924-926): the 750CL's electronic chip ID, read-only and unique
+    // per chip. Orca emulates no particular chip: the fuses read 0.
+    case 924: case 925: case 926: v = 0; return Outcome::done();
     case spr::HID0: v = s.hid0; return Outcome::done();
     case spr::HID1: v = s.hid1; return Outcome::done();
     case spr::HID2: v = s.hid2; return Outcome::done();
