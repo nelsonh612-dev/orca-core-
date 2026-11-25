@@ -116,6 +116,13 @@ TEST_CASE(frontend_reports_a_game_that_halts_itself) {
     CHECK(bus.write32(0x380044U, 0x801F76E0U) == mem::BusStatus::Ok);  // saved LR
     CHECK(bus.write32(0x380070U, 0x80300100U) == mem::BusStatus::Ok);  // saved r5 (format)
     CHECK(bus.write32(0x380100U, 0U) == mem::BusStatus::Ok);
+    // the caller of OSPanic: OSPanic("OSFile.c", 123, "DVD: no disc") built just before the call
+    const char file[] = "OSFile.c";
+    for (u32 i = 0; i < sizeof file; ++i) CHECK(bus.write8(0x300200U + i, static_cast<u8>(file[i])) == mem::BusStatus::Ok);
+    const u32 caller[] = {0x3C608030U /* lis r3,0x8030 */, 0x38630200U /* addi r3,r3,0x200 */, 0x3880007BU /* li r4,123 */,
+                          0x3CA08030U /* lis r5,0x8030 */, 0x60A50100U /* ori r5,r5,0x100 */, 0x4CC63182U /* crclr 6 */,
+                          0x48000001U /* bl (OSPanic) */};
+    for (u32 i = 0; i < 7U; ++i) CHECK(bus.write32(0x1F76C4U + 4U * i, caller[i]) == mem::BusStatus::Ok);
     int frames = 0;
     while (emu.run_frame() && frames < 20) ++frames;
     CHECK(frames < 20);
@@ -127,6 +134,7 @@ TEST_CASE(frontend_reports_a_game_that_halts_itself) {
     CHECK_EQ(emu.system()->cpu().state().gpr[5], 0U);       // the delay loop ran to its end
     CHECK(e.find("801B65EC <- 801F76E0") != std::string::npos);
     CHECK(e.find("\"DVD: no disc\"") != std::string::npos);
+    CHECK(e.find("Panic call at 801F76DC: r3=\"OSFile.c\" r4=123 r5=\"DVD: no disc\"") != std::string::npos);
     CHECK(e.find("r3=\"Failed assertion in nwc24.c\"") != std::string::npos);
     // with interrupts on the same loop can be left (by an interrupt): not reported
     frontend::Emulator emu2(s);

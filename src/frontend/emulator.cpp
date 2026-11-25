@@ -3,6 +3,7 @@
 #include "orca/video/xfb.hpp"
 
 #include <algorithm>
+#include <array>
 #include <fstream>
 #include <iterator>
 #include <optional>
@@ -234,6 +235,50 @@ bool Emulator::halted_by_guest() {
         std::snprintf(b, sizeof b, " <- %08X", lr);
         error_ += b;
         sp = next;
+    }
+    // The call into the function that panicked (the first LR saved on the stack is
+    // the return address in its caller): rebuild r3-r6 from the instructions just
+    // before that call (lis/addi/ori/li, also relative to r2 and r13), which gives
+    // OSPanic's file, line and message.
+    {
+        u32 caller_lr = 0, sp0 = 0;
+        if (read_guest32(st.gpr[1], sp0) && sp0 > st.gpr[1] && read_guest32(sp0 + 4U, caller_lr) && caller_lr >= 0x80000000U) {
+            const u32 call = caller_lr - 4U;
+            std::array<std::optional<u32>, 32> v{};
+            v[2] = st.gpr[2];
+            v[13] = st.gpr[13];
+            for (u32 a = call - 4U * 24U; a < call; a += 4) {
+                u32 ins = 0;
+                if (!read_guest32(a, ins)) continue;
+                const u32 op = ins >> 26, d = (ins >> 21) & 31U, ra = (ins >> 16) & 31U;
+                const auto simm = static_cast<u32>(static_cast<s32>(static_cast<s16>(ins & 0xFFFFU)));
+                const u32 xo = (ins >> 1) & 0x3FFU, rb = (ins >> 11) & 31U;
+                if (op == 15U) v[d] = ra == 0U ? std::optional<u32>((ins & 0xFFFFU) << 16) : (v[ra] ? std::optional<u32>(*v[ra] + ((ins & 0xFFFFU) << 16)) : std::nullopt); // addis
+                else if (op == 14U) v[d] = ra == 0U ? std::optional<u32>(simm) : (v[ra] ? std::optional<u32>(*v[ra] + simm) : std::nullopt); // addi
+                else if (op == 24U) v[ra] = v[d] ? std::optional<u32>(*v[d] | (ins & 0xFFFFU)) : std::nullopt; // ori rA,rS
+                else if (op == 18U || op == 16U) { if ((ins & 1U) != 0U) for (unsigned i = 3; i <= 12; ++i) v[i].reset(); } // a call clobbers r3-r12
+                else if (op == 31U && xo == 444U && d == rb) v[ra] = v[d];                 // mr rA,rS
+                else if (op >= 20U && op <= 29U) v[ra].reset();                            // rotate/logical: rA
+                else if (op == 31U) { v[ra].reset(); v[d].reset(); }                      // X-form: rD or rA
+                else if (op == 10U || op == 11U || op == 19U || (op >= 36U && op <= 39U) || (op >= 44U && op <= 47U) ||
+                         op >= 48U) {}                                                     // compares, CR ops, stores, FP
+                else v[d].reset();                                                         // loads and the rest write rD
+            }
+            std::snprintf(b, sizeof b, ". Panic call at %08X:", call);
+            std::string args = b;
+            bool any = false;
+            for (unsigned rnum = 3; rnum <= 6; ++rnum) {
+                if (!v[rnum]) continue;
+                any = true;
+                const std::string t = guest_text(*v[rnum]);
+                if (!t.empty()) args += " r" + std::to_string(rnum) + "=\"" + t + "\"";
+                else {
+                    std::snprintf(b, sizeof b, " r%u=%u", rnum, *v[rnum]);
+                    args += b;
+                }
+            }
+            if (any) error_ += args;
+        }
     }
     std::string texts;
     for (unsigned rnum = 3; rnum <= 10; ++rnum) {
