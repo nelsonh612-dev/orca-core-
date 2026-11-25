@@ -160,12 +160,40 @@ void Kernel::execute(u32 address) {
     r.fd = words[2];
     for (u32 i = 0; i < 5; ++i) r.args[i] = words[3 + i];
     ++executed_;
+    const std::string what = describe(r);
     Result res = dispatch(r);
+    last_request_ = what;
     switch (res.kind) {
-    case Result::Kind::Reply: finish(r, res.value, res.delay_ticks); break;
-    case Result::Kind::Deferred: pending_[address] = r.command; break;
+    case Result::Kind::Reply: finish(r, res.value, res.delay_ticks); last_request_ += " -> " + std::to_string(res.value); break;
+    case Result::Kind::Deferred: pending_[address] = r.command; pending_desc_[address] = what; last_request_ += " (waits)"; break;
     case Result::Kind::Stop: stop(std::move(res.reason)); break;
     }
+}
+
+std::string Kernel::describe(const Request& r) {
+    static constexpr const char* kNames[] = {"?", "open", "close", "read", "write", "seek", "ioctl", "ioctlv"};
+    const char* c = r.command <= 7U ? kNames[r.command] : "?";
+    if (r.command == 1U) {
+        std::string path;
+        if (!read_string(r.args[0], kMaxPath, path)) path = "?";
+        return std::string("open ") + path;
+    }
+    const Device* d = r.fd < kMaxFds ? fds_[r.fd] : nullptr;
+    std::string out = (d != nullptr ? d->path() : "fd " + std::to_string(r.fd)) + " " + c;
+    if (r.command == 6U || r.command == 7U) out += " 0x" + hex(r.args[0]);
+    return out;
+}
+
+std::string Kernel::activity() const {
+    std::string out = "IOS " + std::to_string(executed_) + " req; last " + (last_request_.empty() ? "-" : last_request_);
+    if (!pending_desc_.empty()) {
+        out += "; waiting:";
+        for (const auto& [addr, what] : pending_desc_) {
+            if (pending_.count(addr) == 0U) continue;
+            out += " [" + what + "]";
+        }
+    }
+    return out;
 }
 
 Result Kernel::dispatch(const Request& r) {
@@ -260,6 +288,7 @@ void Kernel::reply(u32 request_address, s32 value, u64 delay_ticks) {
     Request r;
     r.address = request_address;
     r.command = it->second;
+    pending_desc_.erase(it->first);
     pending_.erase(it);
     finish(r, value, delay_ticks);
 }

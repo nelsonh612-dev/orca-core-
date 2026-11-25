@@ -213,6 +213,8 @@ void run_loop(Session* s) {
             std::snprintf(b, sizeof b, "%s %.0f%% frame %llu ", s->emu.game_id().c_str(), speed * 100.0,
                           static_cast<unsigned long long>(s->emu.frame().number));
             s->status = b + s->renderer;
+            // nothing shown yet: say where the game waits (for a screenshot)
+            if (s->emu.frame().number == 0U) s->status += "\n" + s->emu.diagnostics();
         }
     }
 }

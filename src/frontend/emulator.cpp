@@ -116,6 +116,7 @@ bool Emulator::run_frame() {
     u64 ran = 0;
     while (!field_seen_ && ran < limit) {
         const auto r = sys_->run(slice);
+        if (pc_samples_.size() < 4096U) { ++pc_samples_[sys_->cpu().state().pc]; ++pc_sample_total_; }
         ran += r.cycles;
         cycles_ += r.cycles;
         if (r.device_stop) { error_ = r.device_error; return false; }
@@ -131,6 +132,35 @@ bool Emulator::run_frame() {
     }
     if (field_seen_) (void)capture_frame();
     return true;
+}
+
+std::string Emulator::diagnostics() {
+    if (!sys_) return {};
+    const auto& st = sys_->cpu().state();
+    char b[160];
+    std::snprintf(b, sizeof b, "PC %08X LR %08X EE%u", st.pc, st.lr, (st.msr >> 15) & 1U);
+    std::string out = b;
+    // most sampled PCs (where a waiting game loops)
+    std::vector<std::pair<u32, u32>> hot(pc_samples_.begin(), pc_samples_.end());
+    std::sort(hot.begin(), hot.end(), [](const auto& a, const auto& c) { return a.second > c.second; });
+    if (pc_sample_total_ != 0U) {
+        out += " hot";
+        for (std::size_t i = 0; i < hot.size() && i < 3U; ++i) {
+            std::snprintf(b, sizeof b, " %08X:%u%%", hot[i].first, hot[i].second * 100U / pc_sample_total_);
+            out += b;
+        }
+    }
+    pc_samples_.clear();
+    pc_sample_total_ = 0;
+    const hw::XfbField f = sys_->vi().xfb_field(false);
+    u64 dcr64 = 0;
+    (void)sys_->vi().mmio_read(0x02, 2, dcr64); // display configuration (bit 0: enabled)
+    const auto dcr = static_cast<unsigned>(dcr64);
+    std::snprintf(b, sizeof b, "\nVI %ux%u xfb %08X DCR %04X | PI cause %08X mask %08X", f.width, f.height, f.address,
+                  dcr, sys_->pi().causes(), sys_->pi().mask());
+    out += b;
+    if (auto* k = sys_->ios()) out += "\n" + k->activity();
+    return out;
 }
 
 void Emulator::set_pad(unsigned port, const hw::PadState& state) {

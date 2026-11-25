@@ -24,6 +24,7 @@
 
 #include <array>
 #include <deque>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -68,6 +69,11 @@ public:
 
     // False when emulation stopped (error() says why).
     bool run_frame();
+    // Diagnostics for a game that runs but shows nothing: where the CPU spends
+    // its time (most sampled PCs since the last call), LR, MSR[EE], the VI frame
+    // buffer, pending interrupt causes and the IOS requests waiting. Resets the
+    // PC samples.
+    std::string diagnostics();
     const Frame& frame() const noexcept { return frame_; }
     // Decodes the field the VI shows now into frame() (run_frame does this at every field).
     bool capture_frame();
@@ -97,6 +103,8 @@ private:
     std::string game_id_;
     disc::ImageFormat format_{disc::ImageFormat::Raw};
     Frame frame_;
+    std::map<u32, u32> pc_samples_;
+    u32 pc_sample_total_{0};
     bool field_seen_{false};
     u64 cycles_{0};
     std::string error_;

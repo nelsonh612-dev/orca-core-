@@ -136,6 +136,10 @@ public:
     // emulates it). Feature sets per version as in Dolphin's VersionInfo.
     static bool retail_device_exists(u32 major, std::string_view path);
 
+    // Diagnostics: the last request and the deferred ones still waiting
+    // (device, command, number), e.g. for a game that waits forever.
+    std::string activity() const;
+
     // Completes a deferred request `delay_ticks` from now.
     void reply(u32 request_address, s32 value, u64 delay_ticks);
 
@@ -182,6 +186,9 @@ private:
     std::map<std::string, std::unique_ptr<Device>, std::less<>> devices_;
     std::array<Device*, kMaxFds> fds_{};
     std::map<u32, u32> pending_; // deferred request address -> command
+    std::map<u32, std::string> pending_desc_; // deferred request address -> what it is
+    std::string last_request_;
+    std::string describe(const Request& r);
     std::deque<u32> requests_, replies_;
     u64 last_reply_time_{0};
     u64 executed_{0};

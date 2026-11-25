@@ -85,6 +85,26 @@ TEST_CASE(frontend_runs_gpu_draw_and_shows_its_frame) {
     std::array<s16, 64> audio{};
     CHECK_EQ(emu.take_audio(audio), 0U); // the program plays no sound
 }
+
+TEST_CASE(frontend_diagnostics_show_where_the_game_runs) {
+    frontend::Settings s;
+    s.jit = false;
+    frontend::Emulator emu(s);
+    std::string error;
+    CHECK(emu.load_executable(read_file(ORCA_PROGRAMS_DIR "/gpu_draw.dol"), false, error));
+    test::TestPort port;
+    port.cpu = &emu.system()->cpu();
+    emu.system()->bus().map_mmio("test-port", test::TestPort::kPhysical, 0x1000, port);
+    (void)emu.run_frame(); // runs some time (the program may finish within it)
+    const std::string d = emu.diagnostics();
+    if (d.find(" hot 8") == std::string::npos) std::printf("    %s\n", d.c_str());
+    CHECK(d.find("PC 8") != std::string::npos);
+    CHECK(d.find(" hot 8") != std::string::npos); // sampled PCs, with their share
+    CHECK(d.find("%") != std::string::npos);
+    CHECK(d.find("\nVI ") != std::string::npos);
+    CHECK(d.find("PI cause") != std::string::npos);
+    CHECK(emu.diagnostics().find(" hot") == std::string::npos); // samples were reset
+}
 #endif
 
 int main() { return orca::test::run_all("frontend"); }

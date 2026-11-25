@@ -372,6 +372,7 @@ TEST_CASE(wiiconnect24_daemon_without_network) {
     CHECK_EQ(r->mem32(0x3000), 0U);
     for (u32 i = 0; i < 0x40; i += 4) r->bus.write32(0x3100 + i, 0xFFFFFFFFU);
     CHECK_EQ(ioctl(0x1E, 0x3100, 0x40), 0);                 // scheduler stat: no errors
+    CHECK(r->kernel.activity().find("last /dev/net/kd/request ioctl 0x0000001E -> 0") != std::string::npos);
     CHECK_EQ(r->mem32(0x313C), 0U);
     CHECK_EQ(ioctl(0x1E, 0x3100, 8), ios::err::kInvalid);   // too small
     CHECK_EQ(ioctl(0x28, 0, 0), 0);                          // shutdown
@@ -462,6 +463,7 @@ TEST_CASE(sd_slot_is_empty) {
     r.send(0x1100);
     CHECK(r.service(2000) == std::optional<u32>(0U));
     CHECK(!r.service(100000).has_value());         // no card arrives
+    CHECK(r.kernel.activity().find("waiting: [/dev/sdio/slot0 ioctl 0x00000007]") != std::string::npos);
     // cancelling it answers the pending request with "invalid" (3)
     r.bus.write32(0x4000, 0x41);
     r.block(0x1000, 6, static_cast<u32>(fd), {0x07, 0x4000, 0x24, 0x3000, 0x10});
