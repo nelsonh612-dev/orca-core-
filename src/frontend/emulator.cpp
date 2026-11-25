@@ -402,7 +402,7 @@ bool Emulator::halted_by_guest() {
 std::string Emulator::diagnostics() {
     if (!sys_) return {};
     const auto& st = sys_->cpu().state();
-    char b[160];
+    char b[320];
     std::snprintf(b, sizeof b, "PC %08X LR %08X EE%u", st.pc, st.lr, (st.msr >> 15) & 1U);
     std::string out = b;
     // most sampled PCs (where a waiting game loops)
@@ -463,17 +463,75 @@ std::string Emulator::diagnostics() {
     }
     out += "\n" + video_mode_word();
     {   // host time per emulated second since the last report: where a slow game goes
-        const HostMark now{cycles_, run_ns_, sys_->command_processor().host_ns(), sys_->dsp().host_ns()};
+        HostMark now;
+        now.cycles = cycles_;
+        now.run = run_ns_;
+        now.gpu = sys_->command_processor().host_ns();
+        now.dsp = sys_->dsp().host_ns();
+        now.events_ns = sys_->events_host_ns();
+        now.slices = sys_->run_slices();
+        now.fired = sys_->scheduler().fired();
+        now.copies = sys_->gpu().copies();
+        now.readback = sys_->gpu().copy_times().readback;
+        now.encode = sys_->gpu().copy_times().encode;
+        now.upload = sys_->gpu().copy_times().upload;
+        if (const auto* j = sys_->jit()) {
+            const auto& js = j->stats();
+            now.jit_steps = js.block_steps;
+            now.jit_runs = js.block_runs;
+            now.interp = js.interpreter_steps;
+            now.compiled = js.blocks_compiled;
+            now.invalidations = js.invalidations;
+            now.helper = js.helper_steps;
+            now.fallbacks = js.fallback_exits;
+        }
+        now.by_name = sys_->scheduler().fired_by_name();
         const u64 dc = now.cycles - host_mark_.cycles;
         if (dc != 0U && host_mark_.cycles != 0U) {
             const double es = static_cast<double>(dc) / static_cast<double>(sys_->clocks().cpu_hz);
             const auto ms = [es](u64 ns) { return static_cast<double>(ns) / 1e6 / es; };
+            const auto per = [es](u64 n) { return static_cast<double>(n) / es; };
             const double run = ms(now.run - host_mark_.run), gpu = ms(now.gpu - host_mark_.gpu), dsp = ms(now.dsp - host_mark_.dsp);
-            std::snprintf(b, sizeof b, "\nhost ms per emulated s: %.0f (GPU %.0f, DSP %.0f, CPU and rest %.0f)", run, gpu, dsp,
-                          run - gpu - dsp > 0.0 ? run - gpu - dsp : 0.0);
+            const double ev = ms(now.events_ns - host_mark_.events_ns);
+            std::snprintf(b, sizeof b, "\nhost ms per emulated s: %.0f (GPU %.0f, DSP %.0f, other device events %.0f, CPU %.0f)",
+                          run, gpu, dsp, ev > dsp ? ev - dsp : 0.0, run - gpu - (ev > dsp ? ev : dsp) > 0.0 ? run - gpu - (ev > dsp ? ev : dsp) : 0.0);
             out += b;
+            std::snprintf(b, sizeof b, "\nGPU EFB copies %.0f/s: readback %.0f ms, encode %.0f ms, clear upload %.0f ms (per emulated s)",
+                          per(now.copies - host_mark_.copies), ms(now.readback - host_mark_.readback),
+                          ms(now.encode - host_mark_.encode), ms(now.upload - host_mark_.upload));
+            out += b;
+            // the CPU side: how much ran as translated blocks, per emulated second
+            const u64 js = now.jit_steps - host_mark_.jit_steps, ip = now.interp - host_mark_.interp;
+            if (sys_->jit() != nullptr) {
+                const u64 runs = now.jit_runs - host_mark_.jit_runs;
+                std::snprintf(b, sizeof b,
+                              "\nCPU JIT: %.1f%% of %.0fM instr in blocks (%.1f per block run; %.0f%% of those by in-block interpreter), "
+                              "%.0f slices, %.0f blocks compiled, %.0f invalidations, %.0f fallbacks",
+                              js + ip != 0U ? 100.0 * static_cast<double>(js) / static_cast<double>(js + ip) : 0.0,
+                              per(js + ip) / 1e6, runs != 0U ? static_cast<double>(js) / static_cast<double>(runs) : 0.0,
+                              js != 0U ? 100.0 * static_cast<double>(now.helper - host_mark_.helper) / static_cast<double>(js) : 0.0,
+                              per(now.slices - host_mark_.slices), per(now.compiled - host_mark_.compiled),
+                              per(now.invalidations - host_mark_.invalidations), per(now.fallbacks - host_mark_.fallbacks));
+            } else {
+                std::snprintf(b, sizeof b, "\nCPU interpreter only (JIT off or unavailable): %.0f slices", per(now.slices - host_mark_.slices));
+            }
+            out += b;
+            // the busiest scheduler events
+            std::vector<std::pair<u64, std::string>> top;
+            for (const auto& [name, n] : now.by_name) {
+                const auto it = host_mark_.by_name.find(name);
+                const u64 d = n - (it == host_mark_.by_name.end() ? 0U : it->second);
+                if (d != 0U) top.emplace_back(d, name);
+            }
+            std::sort(top.begin(), top.end(), [](const auto& a, const auto& c) { return a.first > c.first; });
+            std::snprintf(b, sizeof b, "\nevents %.0f/s:", per(now.fired - host_mark_.fired));
+            out += b;
+            for (std::size_t i = 0; i < top.size() && i < 4U; ++i) {
+                std::snprintf(b, sizeof b, " %s %.0f", top[i].second.c_str(), per(top[i].first));
+                out += b;
+            }
         }
-        host_mark_ = now;
+        host_mark_ = std::move(now);
     }
     if (auto* k = sys_->ios()) out += "\n" + k->activity();
     return out;

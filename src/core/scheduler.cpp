@@ -33,6 +33,8 @@ void Scheduler::advance_to(u64 time) {
         index_.erase(node.key().second);
         const u64 due = node.key().first;
         if (due > now_) now_ = due;
+        ++fired_;
+        ++fired_by_name_[node.mapped().name];
         node.mapped().callback(now_, now_ - due);
     }
     now_ = target;

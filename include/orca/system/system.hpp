@@ -147,6 +147,10 @@ public:
     const Clocks& clocks() const noexcept { return clocks_; }
     // The JIT, when SystemConfig::use_jit was set and the host can run it.
     const ppc::Jit* jit() const noexcept { return jit_.get(); }
+    // Diagnostics: host time in scheduler events (device work), ns, and how many
+    // times the run loop handed the CPU a slice (one JIT run or interpreter step).
+    u64 events_host_ns() const noexcept { return events_ns_; }
+    u64 run_slices() const noexcept { return run_slices_; }
 
     // Parses and loads a DOL or ELF; with `boot` the CPU is put in the HLE boot state.
     bool load_executable(std::span<const u8> file, std::string& error, bool boot = true);
@@ -259,6 +263,7 @@ private:
     std::unique_ptr<gpu::Gpu> gpu_;
     std::unique_ptr<gpu::EfbAccess> efb_access_;
     std::unique_ptr<hw::CommandProcessor> cp_;
+    u64 events_ns_{0}, run_slices_{0};
     std::unique_ptr<hw::MmioSplitter> page_0c006_;
     std::unique_ptr<hw::DiscInterface> di_;
     std::unique_ptr<hw::VideoInterface> vi_;

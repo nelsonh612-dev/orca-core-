@@ -1,4 +1,5 @@
 #include "orca/system/system.hpp"
+#include "orca/core/host_timer.hpp"
 #include "orca/ios/iosc.hpp"
 #include "orca/ios/nand_setup.hpp"
 #include "orca/ppc/mmu.hpp"
@@ -159,6 +160,7 @@ void System::advance(u64 cycles) {
     const u64 ticks = timebase_remainder_ / clocks_.cpu_cycles_per_timebase_tick;
     timebase_remainder_ %= clocks_.cpu_cycles_per_timebase_tick;
     if (ticks != 0U) cpu_->advance_timebase(ticks);
+    const core::HostTimer timer(events_ns_);
     scheduler_.advance_to(scheduler_.now() + cycles);
 }
 
@@ -457,6 +459,7 @@ RunResult System::run(u64 max_cycles) {
         if (stop_pc_ && cpu_->state().pc == *stop_pc_) { r.reached_stop_pc = true; break; }
         ppc::StepResult s;
         u64 steps = 1;
+        ++run_slices_;
         const u32 pc_before = cpu_->state().pc;
         if (jit_ && !stop_pc_) {
             const ppc::Jit::Result jr = jit_->run(steps_until_next_event(end));

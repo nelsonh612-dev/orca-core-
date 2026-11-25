@@ -28,6 +28,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace orca::frontend {
@@ -119,7 +120,12 @@ private:
     u64 cycles_{0};
     u64 run_ns_{0};
     std::map<u32, std::string> store_sites_; // diagnostics: stores to a polled global   // host time in System::run (diagnostics)
-    struct HostMark { u64 cycles{0}, run{0}, gpu{0}, dsp{0}; } host_mark_;
+    struct HostMark {
+        u64 cycles{0}, run{0}, gpu{0}, dsp{0}, events_ns{0}, slices{0}, fired{0};
+        u64 copies{0}, readback{0}, encode{0}, upload{0};
+        u64 jit_steps{0}, jit_runs{0}, interp{0}, compiled{0}, invalidations{0}, helper{0}, fallbacks{0};
+        std::unordered_map<std::string, u64> by_name;
+    } host_mark_;
     std::string error_;
     std::mutex audio_mutex_;
     std::deque<s16> audio_;

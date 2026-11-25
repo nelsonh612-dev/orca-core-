@@ -207,6 +207,9 @@ TEST_CASE(frontend_diagnostics_name_the_word_a_polling_loop_waits_on) {
     const std::string d2 = emu.diagnostics();
     CHECK(d2.find("\nhost ms per emulated s: ") != std::string::npos);
     CHECK(d2.find("GPU ") != std::string::npos && d2.find("DSP ") != std::string::npos);
+    CHECK(d2.find("\nCPU interpreter only") != std::string::npos); // this emulator runs without the JIT
+    CHECK(d2.find("\nevents ") != std::string::npos);
+    CHECK(d2.find("\nGPU EFB copies ") != std::string::npos);
     CHECK(d2.find("\nvideo mode word 800000CC=") != std::string::npos);
 }
 #endif
