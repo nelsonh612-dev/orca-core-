@@ -73,6 +73,10 @@ bool DiscInterface::mmio_read(u32 offset, unsigned size, u64& value) {
     case 0x18: value = dilength_; return true;
     case 0x1C: value = dicr_; return true;
     case 0x20: value = diimmbuf_; return true;
+    // DICFG: configuration, read-only. Bits 0-7 CONFIG; after the boot ROM has run
+    // (the state Orca starts games in) the descrambler is disabled: CONFIG = 1, as
+    // Dolphin's DVDInterface sets it.
+    case 0x24: value = di::kDicfgAfterBoot; return true;
     default: return fail("DI: register not implemented");
     }
 }
@@ -104,6 +108,7 @@ bool DiscInterface::mmio_write(u32 offset, unsigned size, u64 value) {
         if ((dicr_ & di::DICR_TSTART) != 0U && !start_command()) { dicr_ = 0; return false; }
         return true;
     case 0x20: diimmbuf_ = v; return true;
+    case 0x24: return fail("DI: DICFG (0x24) is read-only; write not supported");
     default: return fail("DI: register not implemented");
     }
 }

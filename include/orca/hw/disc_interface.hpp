@@ -42,6 +42,8 @@
 namespace orca::hw {
 
 namespace di {
+// DICFG (0x24) value once the boot ROM has run: CONFIG = 1 (descrambler disabled).
+inline constexpr u32 kDicfgAfterBoot = 1U;
 inline constexpr u32 kBase = 0x0C006000U;
 inline constexpr u32 DISR_BRK = 0x01U, DISR_DEINTMASK = 0x02U, DISR_DEINT = 0x04U, DISR_TCINTMASK = 0x08U,
                      DISR_TCINT = 0x10U, DISR_BRKINTMASK = 0x20U, DISR_BRKINT = 0x40U;

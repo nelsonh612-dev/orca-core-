@@ -343,8 +343,15 @@ TEST_CASE(di_errors_are_explicit) {
     t.w(0x1C, 3);
     CHECK(!t.di.mmio_write(0x1C, 4, 3));   // DICR while busy
     CHECK(t.di.last_error().find("in progress") != std::string::npos);
+    // DICFG (0x24): read-only configuration, CONFIG = 1 after the boot ROM
+    u64 cfg = 0xFFFFFFFFU;
+    CHECK(t.di.mmio_read(0x24, 4, cfg));
+    CHECK_EQ(cfg, 1U);
+    CHECK(!t.di.mmio_write(0x24, 4, 0));
+    CHECK(t.di.last_error().find("read-only") != std::string::npos);
+    u64 none = 0;
+    CHECK(!t.di.mmio_read(0x28, 4, none)); // past DICFG: no register
     u64 v = 0;
-    CHECK(!t.di.mmio_read(0x24, 4, v));    // DICFG not implemented
     CHECK(!t.di.mmio_read(0x00, 2, v));
     t.sched.advance_to(t.sched.now() + 1);
     t.w(0x08, 0xA8000080U);                // read sub-command not documented
