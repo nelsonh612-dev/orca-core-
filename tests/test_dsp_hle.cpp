@@ -282,7 +282,7 @@ TEST_CASE(ax_through_the_dsp_interface_with_a_matching_ucode_image) {
     di.use_hle(true);
     auto w = [&](u32 o, u16 v) { CHECK(di.mmio_write(o, 2, v)); };
     auto rd = [&](u32 o) { u64 v = 0; CHECK(di.mmio_read(o, 2, v)); return static_cast<u16>(v); };
-    w(0x0A, hw::dsp::CSR_RES | hw::dsp::CSR_DSPINTMASK);
+    w(0x0A, hw::dsp::CSR_RES | hw::dsp::CSR_BIT11 | hw::dsp::CSR_DSPINTMASK);
     CHECK_EQ(rd(0x04), 0x8071U); CHECK_EQ(rd(0x06), 0xFEEDU);
     auto mail = [&](u32 m) { w(0x00, static_cast<u16>(m >> 16)); w(0x02, static_cast<u16>(m)); };
     mail(0x80F3A001U); mail(0x80200000U);

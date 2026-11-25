@@ -133,13 +133,30 @@ bool DspInterface::write16(u32 offset, u16 v) {
     case dsp::CSR: {
         const u16 rw = dsp::CSR_HALT | dsp::CSR_AIDINTMASK | dsp::CSR_ARINTMASK | dsp::CSR_DSPINTMASK | dsp::CSR_BIT11;
         const u16 w1c = dsp::CSR_AIDINT | dsp::CSR_ARINT | dsp::CSR_DSPINT;
+        const bool init_cleared = (csr_ & dsp::CSR_BIT11) != 0U && (v & dsp::CSR_BIT11) == 0U;
         csr_ = static_cast<u16>((csr_ & ~rw) | (v & rw));
         csr_ = static_cast<u16>(csr_ & ~(v & w1c));
+        // RES restarts the DSP at its boot ROM (Dolphin DSPHLE: SetUCode(UCODE_ROM);
+        // the LLE core starts at the ROM reset vector).
         if ((v & dsp::CSR_RES) != 0U) {
-            if (hle_) hle_->reset((v & dsp::CSR_BIT11) != 0U);
-            else dsp_reset((v & dsp::CSR_BIT11) != 0U); // completes at once (model)
-            aidma_ctrl_ = 0;                        // Dolphin: RES clears the AI DMA control
+            if (hle_) hle_->reset(false);
+            else dsp_reset(false); // completes at once (model)
+            aidma_ctrl_ = 0;       // Dolphin: RES clears the AI DMA control
             ++aid_generation_;
+        }
+        // Clearing DSPInit (bit 11, set at power-on) runs the init code that
+        // __OSInitAudioSystem placed at main memory 0x01000000: 1 KiB copied to IMEM 0
+        // and started there; the HLE runs the known init ucode (mail 0x80544348).
+        // Bit 10 then reads 1 for a short while (Dolphin: 130 timebase ticks,
+        // measured on a Wii), which the SDK waits out.
+        if (init_cleared) {
+            if (hle_) hle_->reset(true);
+            else dsp_reset(true);
+            csr_ |= dsp::CSR_INITCODE;
+            const u64 gen = ++init_generation_;
+            scheduler_.schedule_in(130U * 12U, "DSP init code", [this, gen](u64, u64) {
+                if (gen == init_generation_) csr_ = static_cast<u16>(csr_ & ~dsp::CSR_INITCODE);
+            });
         }
         if (hle_) { // PIINT wakes DSP code; the HLE ucodes react to mail only
             hle_->set_halted((csr_ & dsp::CSR_HALT) != 0U);

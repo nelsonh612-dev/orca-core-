@@ -73,7 +73,7 @@ inline constexpr u32 DSPMBH = 0x00, DSPMBL = 0x02, CPUMBH = 0x04, CPUMBL = 0x06,
                      AIDMA_LEFT = 0x3A;
 inline constexpr u16 CSR_RES = 1U << 0, CSR_PIINT = 1U << 1, CSR_HALT = 1U << 2, CSR_AIDINT = 1U << 3,
                      CSR_AIDINTMASK = 1U << 4, CSR_ARINT = 1U << 5, CSR_ARINTMASK = 1U << 6, CSR_DSPINT = 1U << 7,
-                     CSR_DSPINTMASK = 1U << 8, CSR_DMABUSY = 1U << 9, CSR_BIT11 = 1U << 11;
+                     CSR_DSPINTMASK = 1U << 8, CSR_DMABUSY = 1U << 9, CSR_INITCODE = 1U << 10, CSR_BIT11 = 1U << 11;
 inline constexpr u32 kCntToMain = 0x80000000U;
 } // namespace dsp
 
@@ -144,6 +144,7 @@ private:
     std::vector<u8> aram_;
     u64 aram_cycles_per_unit_{246};
     u64 hsp_empty_transfers_{0};
+    u64 init_generation_{0};
     u64 cpu_hz_;
     bool wii_;
     std::function<bool()> aid_32khz_;
@@ -154,7 +155,8 @@ private:
     u64 aid_generation_{0}; // invalidates scheduled block events after a stop
     ::orca::dsp::DspCore core_{*this};
     bool slice_pending_{false};
-    u16 csr_{dsp::CSR_HALT}, ar_size_{0}, ar_refresh_{156};
+    // DSPInit (bit 11) starts set (Dolphin DSPHLE::Initialize)
+    u16 csr_{dsp::CSR_HALT | dsp::CSR_BIT11}, ar_size_{0}, ar_refresh_{156};
     u32 mmaddr_{0}, araddr_{0}, cnt_{0};
     u16 aidma_h_{0}, aidma_l_{0}, aidma_ctrl_{0};
     std::string last_error_;

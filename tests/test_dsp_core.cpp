@@ -922,10 +922,10 @@ TEST_CASE(dsp_interface_boot_mailbox_round_trip) {
                          0xFFFD, 0x16FB, 0x0001, 0x0021};
     for (std::size_t i = 0; i < std::size(ucode); ++i) CHECK(sys.bus().write16(0x01000000U + 2U * static_cast<u32>(i), ucode[i]) == mem::BusStatus::Ok);
     auto& d = sys.dsp();
-    CHECK(d.mmio_write(hw::dsp::CSR, 2, 0x08AD)); // SDK value: RES | HALT | acks | bit 11
-    CHECK_EQ(d.core().iram()[0], 0x16FCU);
+    CHECK(d.mmio_write(hw::dsp::CSR, 2, 0x08AD)); // SDK value: RES | HALT | acks | bit 11 (ROM reset)
     CHECK(d.core().halted());
-    CHECK(d.mmio_write(hw::dsp::CSR, 2, 0x0000)); // release HALT
+    CHECK(d.mmio_write(hw::dsp::CSR, 2, 0x0000)); // clear DSPInit: boot from main 0x01000000; release HALT
+    CHECK_EQ(d.core().iram()[0], 0x16FCU);
     sys.scheduler().advance_to(sys.scheduler().now() + 20000);
     u64 v = 0;
     CHECK(d.mmio_read(hw::dsp::CPUMBH, 4, v));
@@ -946,6 +946,7 @@ TEST_CASE(dsp_failure_stops_the_system_run) {
     CHECK(sys.bus().write32(0x3000, 0x48000000U) == mem::BusStatus::Ok);
     sys.hle_boot(0x80003000U);
     CHECK(sys.dsp().mmio_write(hw::dsp::CSR, 2, 0x0801));
+    CHECK(sys.dsp().mmio_write(hw::dsp::CSR, 2, 0x0000)); // clear DSPInit: boot from main memory
     const auto r = sys.run(100000);
     CHECK(r.device_stop);
     CHECK(r.device_error.find("unknown opcode 2A00") != std::string::npos);

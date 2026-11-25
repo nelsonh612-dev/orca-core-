@@ -88,14 +88,14 @@ TEST_CASE(mi_protection_is_reported_as_not_enforced) {
 // ------------------------------------------------------------ DSP CSR / mailboxes
 TEST_CASE(dsp_csr_masks_w1c_and_pi_cause) {
     Rig t;
-    CHECK_EQ(t.dr(hw::dsp::CSR), hw::dsp::CSR_HALT); // the DSP starts halted (model)
-    CHECK(t.dw(hw::dsp::CSR, hw::dsp::CSR_HALT | hw::dsp::CSR_AIDINTMASK | hw::dsp::CSR_ARINTMASK | hw::dsp::CSR_DSPINTMASK | hw::dsp::CSR_DMABUSY));
-    CHECK_EQ(t.dr(hw::dsp::CSR), hw::dsp::CSR_HALT | hw::dsp::CSR_AIDINTMASK | hw::dsp::CSR_ARINTMASK | hw::dsp::CSR_DSPINTMASK); // busy is RO
+    CHECK_EQ(t.dr(hw::dsp::CSR), hw::dsp::CSR_HALT | hw::dsp::CSR_BIT11); // halted (model), DSPInit set
+    CHECK(t.dw(hw::dsp::CSR, hw::dsp::CSR_BIT11 | hw::dsp::CSR_HALT | hw::dsp::CSR_AIDINTMASK | hw::dsp::CSR_ARINTMASK | hw::dsp::CSR_DSPINTMASK | hw::dsp::CSR_DMABUSY));
+    CHECK_EQ(t.dr(hw::dsp::CSR), hw::dsp::CSR_BIT11 | hw::dsp::CSR_HALT | hw::dsp::CSR_AIDINTMASK | hw::dsp::CSR_ARINTMASK | hw::dsp::CSR_DSPINTMASK); // busy is RO
     t.dsp.raise_dspint();
     CHECK(t.cause(pi::CAUSE_DSP));
-    CHECK(t.dw(hw::dsp::CSR, hw::dsp::CSR_HALT | hw::dsp::CSR_DSPINT)); // w1c, masks cleared
+    CHECK(t.dw(hw::dsp::CSR, hw::dsp::CSR_BIT11 | hw::dsp::CSR_HALT | hw::dsp::CSR_DSPINT)); // w1c, masks cleared
     CHECK(!t.cause(pi::CAUSE_DSP));
-    CHECK_EQ(t.dr(hw::dsp::CSR), hw::dsp::CSR_HALT);
+    CHECK_EQ(t.dr(hw::dsp::CSR), hw::dsp::CSR_BIT11 | hw::dsp::CSR_HALT);
     t.dsp.raise_dspint();
     CHECK(!t.cause(pi::CAUSE_DSP)); // masked: status latched, no PI cause
     CHECK_EQ(t.dr(hw::dsp::CSR) & hw::dsp::CSR_DSPINT, hw::dsp::CSR_DSPINT);
@@ -114,7 +114,8 @@ TEST_CASE(dsp_mailboxes_connect_to_the_core) {
     t.dsp.core().iram()[0] = 0x16FC; t.dsp.core().iram()[1] = 0x0071; // SI @DMBH
     t.dsp.core().iram()[2] = 0x16FD; t.dsp.core().iram()[3] = 0xFEED; // SI @DMBL
     t.dsp.core().iram()[4] = 0x0021;                                  // HALT
-    CHECK(t.dw(hw::dsp::CSR, hw::dsp::CSR_RES | hw::dsp::CSR_BIT11 | hw::dsp::CSR_HALT)); // boot copies main 0x01000000
+    CHECK(t.dw(hw::dsp::CSR, hw::dsp::CSR_BIT11 | hw::dsp::CSR_HALT));
+    CHECK(t.dw(hw::dsp::CSR, hw::dsp::CSR_HALT)); // clearing DSPInit boots from main 0x01000000
     CHECK_EQ(t.dsp.core().iram()[0], 0U); // the boot DMA replaced IRAM with main memory (zeros here)
     t.dsp.core().iram()[0] = 0x16FC; t.dsp.core().iram()[1] = 0x0071;
     t.dsp.core().iram()[2] = 0x16FD; t.dsp.core().iram()[3] = 0xFEED;
@@ -151,9 +152,9 @@ TEST_CASE(dsp_hle_boot_rom_and_init_protocol) {
     r.dsp.use_hle(true);
     CHECK(r.dsp.hle());
     // reset while halted: the boot ROM's mail stays invisible until HALT is cleared
-    CHECK(r.dw(0x0A, orca::hw::dsp::CSR_RES | orca::hw::dsp::CSR_HALT | orca::hw::dsp::CSR_DSPINTMASK));
+    CHECK(r.dw(0x0A, orca::hw::dsp::CSR_RES | orca::hw::dsp::CSR_BIT11 | orca::hw::dsp::CSR_HALT | orca::hw::dsp::CSR_DSPINTMASK));
     CHECK_EQ(r.dr(0x04) & 0x8000U, 0U);
-    CHECK(r.dw(0x0A, orca::hw::dsp::CSR_DSPINTMASK));
+    CHECK(r.dw(0x0A, orca::hw::dsp::CSR_BIT11 | orca::hw::dsp::CSR_DSPINTMASK));
     CHECK_EQ(r.dr(0x04), 0x8071U);
     CHECK_EQ(r.dr(0x06), 0xFEEDU);
     CHECK_EQ(r.dr(0x04), 0x0071U);                    // taken: bit 15 clears, the rest stays
@@ -179,11 +180,29 @@ TEST_CASE(dsp_hle_boot_rom_and_init_protocol) {
     char expect[16];
     std::snprintf(expect, sizeof expect, "%08X", orca::dsp::hle::ucode_hash(code));
     CHECK(r.dsp.dsp_error().find(expect) != std::string::npos);
-    // CSR bit 11 with RES: the init ucode answers 0x80544348; the failure is cleared
-    CHECK(r.dw(0x0A, orca::hw::dsp::CSR_RES | orca::hw::dsp::CSR_BIT11 | orca::hw::dsp::CSR_DSPINTMASK));
+    // __OSInitAudioSystem's order (Dolphin DSPHLE): RES with DSPInit (bit 11) set
+    // restarts the boot ROM; clearing bit 11 then runs the init code, which answers
+    // 0x80544348, and bit 10 reads 1 for a short while
+    CHECK(r.dw(0x0A, 0x08AC | orca::hw::dsp::CSR_RES));
     CHECK(!r.dsp.dsp_failed());
+    CHECK(std::string(r.dsp.hle_dsp()->ucode()->name()) == "boot ROM");
+    CHECK_EQ(r.dr(0x0A) & orca::hw::dsp::CSR_INITCODE, 0U);
+    CHECK(r.dw(0x0A, (0x08AC & ~orca::hw::dsp::CSR_BIT11)));
+    CHECK_EQ(r.dr(0x0A) & orca::hw::dsp::CSR_INITCODE, orca::hw::dsp::CSR_INITCODE);
+    CHECK(std::string(r.dsp.hle_dsp()->ucode()->name()) == "init");
+    r.sched.advance_to(r.sched.now() + 130U * 12U);
+    CHECK_EQ(r.dr(0x0A) & orca::hw::dsp::CSR_INITCODE, 0U);
+    CHECK(r.dw(0x0A, (0x08AC & ~orca::hw::dsp::CSR_BIT11 & ~orca::hw::dsp::CSR_HALT)));
     CHECK_EQ(r.dr(0x04), 0x8054U);
     CHECK_EQ(r.dr(0x06), 0x4348U);
+    // the SDK then resets again with bit 11 set: back to the boot ROM (its mail
+    // 0x8071FEED), ready for the game's ucode. Here Orca used to run the init code
+    // again, so a game's ucode upload went unanswered (Resident Evil, GameCube).
+    CHECK(r.dw(0x0A, 0x08AC | orca::hw::dsp::CSR_RES));
+    CHECK(r.dw(0x0A, 0x08A8));
+    CHECK(std::string(r.dsp.hle_dsp()->ucode()->name()) == "boot ROM");
+    CHECK_EQ(r.dr(0x04), 0x8071U);
+    CHECK_EQ(r.dr(0x06), 0xFEEDU);
     // the HLE is updated every millisecond of emulated time (one event pending)
     CHECK(r.sched.next_event_time().has_value());
     r.dsp.use_hle(false);
@@ -438,10 +457,10 @@ TEST_CASE(system_ai_dma_rate_follows_aicr_bit6) {
 
 TEST_CASE(system_maps_mi_and_dsp) {
     system::System gc({});
-    CHECK(gc.bus().write16(0x0C00500AU, hw::dsp::CSR_HALT) == mem::BusStatus::Ok);
+    CHECK(gc.bus().write16(0x0C00500AU, hw::dsp::CSR_HALT | hw::dsp::CSR_BIT11) == mem::BusStatus::Ok);
     u16 v = 0;
     CHECK(gc.bus().read16(0x0C00500AU, v) == mem::BusStatus::Ok);
-    CHECK_EQ(v, hw::dsp::CSR_HALT);
+    CHECK_EQ(v, hw::dsp::CSR_HALT | hw::dsp::CSR_BIT11);
     CHECK(gc.bus().read16(0x0C004010U, v) == mem::BusStatus::Ok);
     CHECK_EQ(v, 0xFFU);
     CHECK_EQ(gc.dsp().aram().size(), static_cast<std::size_t>(hw::dsp::kAramSize));
