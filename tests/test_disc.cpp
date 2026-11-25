@@ -442,6 +442,9 @@ TEST_CASE(di_drive_states_and_immediate_commands) {
     w(0x14, 0x4000); w(0x18, 0x20);
     CHECK(run(0xA8000040U, 0, 0x20, 3));
     bus.read32(0x4000, word); CHECK_EQ(word, 0x4F524341U); // "ORCA"
+    // diagnostics: the last commands with their outcome
+    CHECK(di.recent_commands().find("[A8000000 00000000 00000020]error") != std::string::npos);
+    CHECK(di.recent_commands().find("[A8000040 00000000 00000020]ok") != std::string::npos);
     CHECK(di.drive_state() == hw::di::DriveState::ReadyNoReadsMade);
     CHECK(run(0xE4010000U | 10U, 0, 0, 1));
     CHECK(di.streaming_enabled());

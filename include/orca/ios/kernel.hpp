@@ -139,6 +139,8 @@ public:
     // Diagnostics: the last request and the deferred ones still waiting
     // (device, command, number), e.g. for a game that waits forever.
     std::string activity() const;
+    // The last requests (at most 10) with their results, oldest first.
+    std::string history() const;
 
     // Completes a deferred request `delay_ticks` from now.
     void reply(u32 request_address, s32 value, u64 delay_ticks);
@@ -188,6 +190,7 @@ private:
     std::map<u32, u32> pending_; // deferred request address -> command
     std::map<u32, std::string> pending_desc_; // deferred request address -> what it is
     std::string last_request_;
+    std::deque<std::string> history_; // the last requests with their results
     std::string describe(const Request& r);
     std::deque<u32> requests_, replies_;
     u64 last_reply_time_{0};

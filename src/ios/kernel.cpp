@@ -168,6 +168,8 @@ void Kernel::execute(u32 address) {
     case Result::Kind::Deferred: pending_[address] = r.command; pending_desc_[address] = what; last_request_ += " (waits)"; break;
     case Result::Kind::Stop: stop(std::move(res.reason)); break;
     }
+    history_.push_back(last_request_);
+    if (history_.size() > 10U) history_.pop_front();
 }
 
 std::string Kernel::describe(const Request& r) {
@@ -181,6 +183,12 @@ std::string Kernel::describe(const Request& r) {
     const Device* d = r.fd < kMaxFds ? fds_[r.fd] : nullptr;
     std::string out = (d != nullptr ? d->path() : "fd " + std::to_string(r.fd)) + " " + c;
     if (r.command == 6U || r.command == 7U) out += " 0x" + hex(r.args[0]);
+    return out;
+}
+
+std::string Kernel::history() const {
+    std::string out;
+    for (const auto& h : history_) out += (out.empty() ? "" : "; ") + h;
     return out;
 }
 

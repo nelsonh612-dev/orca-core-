@@ -224,7 +224,18 @@ bool DiscInterface::start_command() {
     return done(true, length, offset);
 }
 
+std::string DiscInterface::recent_commands() const {
+    std::string out;
+    for (const auto& h : history_) out += (out.empty() ? "" : " ") + h;
+    return out;
+}
+
 void DiscInterface::finish(bool ok, u32 from_disc, u64 offset) {
+    {
+        char b[48];
+        std::snprintf(b, sizeof b, "[%08X %08X %08X]", cmd_[0], cmd_[1], cmd_[2]);
+        history_.push_back(b);
+    }
     if (ok && from_disc != 0U) {
         std::vector<u8> data(from_disc);
         if (!disc_ || !disc_->read(offset, data)) {
@@ -240,6 +251,8 @@ void DiscInterface::finish(bool ok, u32 from_disc, u64 offset) {
         }
         else (void)bus_.dma_write(dimar_, data);
     }
+    history_.back() += ok ? "ok" : "error";
+    if (history_.size() > 6U) history_.pop_front();
     if (ok) {
         dimar_ += dilength_;
         dilength_ = 0;

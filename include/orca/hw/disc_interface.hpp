@@ -37,6 +37,7 @@
 #include <functional>
 #include <memory>
 #include <span>
+#include <deque>
 #include <string>
 
 namespace orca::hw {
@@ -62,6 +63,8 @@ enum class DriveError : u32 { None = 0x00000, MotorStopped = 0x20400, NoDiscId =
 
 class DiscInterface final : public mem::MmioDevice {
 public:
+    // Diagnostics: the last commands (command words and outcome), oldest first.
+    std::string recent_commands() const;
     DiscInterface(mem::Bus& bus, core::Scheduler& scheduler, ProcessorInterface& pi);
 
     // A new disc: the drive must read its ID before data (state DiscIdNotRead).
@@ -120,6 +123,7 @@ private:
     std::unique_ptr<disc::DiscReader> disc_;
     u64 latency_{0};
     u32 disr_{0}, dicvr_{0}, cmd_[3]{}, dimar_{0}, dilength_{0}, dicr_{0}, diimmbuf_{0};
+    std::deque<std::string> history_;
     di::DriveState state_{di::DriveState::NoMediumPresent};
     di::DriveError error_{di::DriveError::None};
     // streaming audio

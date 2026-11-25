@@ -253,7 +253,9 @@ bool Emulator::halted_by_guest() {
             if (!t.empty() && texts.find(t) == std::string::npos) texts += " \"" + t + "\"";
         }
     }
-    if (!texts.empty()) error_ += ". Text:" + texts;
+    if (!texts.empty()) error_ += ". Text (from the stack; may include earlier calls):" + texts;
+    if (auto* k = sys_->ios(); k != nullptr && !k->history().empty()) error_ += ". Last IOS requests: " + k->history();
+    if (const std::string di = sys_->di().recent_commands(); !di.empty()) error_ += ". Last disc commands: " + di;
     return true;
 }
 

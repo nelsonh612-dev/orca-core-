@@ -373,6 +373,7 @@ TEST_CASE(wiiconnect24_daemon_without_network) {
     for (u32 i = 0; i < 0x40; i += 4) r->bus.write32(0x3100 + i, 0xFFFFFFFFU);
     CHECK_EQ(ioctl(0x1E, 0x3100, 0x40), 0);                 // scheduler stat: no errors
     CHECK(r->kernel.activity().find("last /dev/net/kd/request ioctl 0x0000001E -> 0") != std::string::npos);
+    CHECK(r->kernel.history().find("open /dev/net/kd/request -> 0; /dev/net/kd/request ioctl 0x00000001 -> 0") != std::string::npos);
     CHECK_EQ(r->mem32(0x313C), 0U);
     CHECK_EQ(ioctl(0x1E, 0x3100, 8), ios::err::kInvalid);   // too small
     CHECK_EQ(ioctl(0x28, 0, 0), 0);                          // shutdown
