@@ -123,7 +123,7 @@ private:
     struct HostMark {
         u64 cycles{0}, run{0}, gpu{0}, dsp{0}, events_ns{0}, slices{0}, fired{0};
         u64 copies{0}, readback{0}, encode{0}, upload{0};
-        u64 jit_steps{0}, jit_runs{0}, interp{0}, compiled{0}, invalidations{0}, helper{0}, fallbacks{0};
+        u64 jit_steps{0}, jit_runs{0}, interp{0}, compiled{0}, invalidations{0}, helper{0}, fallbacks{0}, resumed{0};
         std::unordered_map<std::string, u64> by_name;
     } host_mark_;
     std::string error_;

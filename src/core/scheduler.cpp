@@ -1,4 +1,5 @@
 #include "orca/core/scheduler.hpp"
+#include "orca/core/host_timer.hpp"
 
 namespace orca::core {
 
@@ -35,6 +36,7 @@ void Scheduler::advance_to(u64 time) {
         if (due > now_) now_ = due;
         ++fired_;
         ++fired_by_name_[node.mapped().name];
+        const HostTimer timer(host_ns_);
         node.mapped().callback(now_, now_ - due);
     }
     now_ = target;

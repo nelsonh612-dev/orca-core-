@@ -484,6 +484,7 @@ std::string Emulator::diagnostics() {
             now.invalidations = js.invalidations;
             now.helper = js.helper_steps;
             now.fallbacks = js.fallback_exits;
+            now.resumed = js.resumed;
         }
         now.by_name = sys_->scheduler().fired_by_name();
         const u64 dc = now.cycles - host_mark_.cycles;
@@ -506,12 +507,13 @@ std::string Emulator::diagnostics() {
                 const u64 runs = now.jit_runs - host_mark_.jit_runs;
                 std::snprintf(b, sizeof b,
                               "\nCPU JIT: %.1f%% of %.0fM instr in blocks (%.1f per block run; %.0f%% of those by in-block interpreter), "
-                              "%.0f slices, %.0f blocks compiled, %.0f invalidations, %.0f fallbacks",
+                              "%.0f slices, %.0f blocks compiled, %.0f invalidations, %.0f fallbacks (%.0f interpreted in place)",
                               js + ip != 0U ? 100.0 * static_cast<double>(js) / static_cast<double>(js + ip) : 0.0,
                               per(js + ip) / 1e6, runs != 0U ? static_cast<double>(js) / static_cast<double>(runs) : 0.0,
                               js != 0U ? 100.0 * static_cast<double>(now.helper - host_mark_.helper) / static_cast<double>(js) : 0.0,
                               per(now.slices - host_mark_.slices), per(now.compiled - host_mark_.compiled),
-                              per(now.invalidations - host_mark_.invalidations), per(now.fallbacks - host_mark_.fallbacks));
+                              per(now.invalidations - host_mark_.invalidations), per(now.fallbacks - host_mark_.fallbacks),
+                              per(now.resumed - host_mark_.resumed));
             } else {
                 std::snprintf(b, sizeof b, "\nCPU interpreter only (JIT off or unavailable): %.0f slices", per(now.slices - host_mark_.slices));
             }

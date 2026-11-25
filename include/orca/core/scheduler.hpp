@@ -21,6 +21,8 @@ public:
     // Diagnostics: events fired, in total and by name.
     u64 fired() const noexcept { return fired_; }
     const std::unordered_map<std::string, u64>& fired_by_name() const noexcept { return fired_by_name_; }
+    // Host time spent in event callbacks (ns); measured only when an event fires.
+    u64 host_ns() const noexcept { return host_ns_; }
 
     using EventId = u64;
     // `now` is the event's due time (time advances event by event); `late` is
@@ -55,6 +57,7 @@ private:
     u64 now_{0};
     u64 next_seq_{1};
     u64 fired_{0};
+    u64 host_ns_{0};
     std::unordered_map<std::string, u64> fired_by_name_;
 };
 
