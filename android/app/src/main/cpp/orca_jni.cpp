@@ -128,7 +128,7 @@ bool start_gles(Session& s, std::string& error) {
     if (!s.backend->init(error)) { s.backend.reset(); return false; }
     orca::gpu::gles::Backend* b = s.backend.get();
     s.emu.system()->gpu().set_backend(
-        b, [b](orca::gpu::sw::Efb& f, const orca::gpu::sw::EfbRect& r) { b->download(f, r); },
+        b, [b](orca::gpu::sw::Efb& f, const orca::gpu::sw::EfbRect& r, bool c, bool d) { b->download(f, r, c, d); },
         [b](const orca::gpu::sw::Efb& f, const orca::gpu::sw::EfbRect& r) { b->upload(f, r); });
     return true;
 }

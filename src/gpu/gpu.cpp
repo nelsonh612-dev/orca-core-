@@ -1,5 +1,6 @@
 // Orca Core — GPU command execution. See gpu.hpp.
 #include "orca/gpu/gpu.hpp"
+#include "orca/core/host_timer.hpp"
 
 #include <algorithm>
 #include <cstdio>
@@ -78,9 +79,24 @@ bool Gpu::on_bp(u8 reg, u32 value, std::string& error) {
     case bp::TRIGGER_EFB_COPY: {
         sw::CopyResult res;
         const sw::EfbRect area = sw::copy_source_area(bp_);
-        if (renderer_.sink() != nullptr && download_) download_(renderer_.efb(), area);
-        if (!sw::efb_copy(v, bp_, renderer_.efb(), bus_, phys_mask_, res, error)) return false;
-        if (res.cleared && renderer_.sink() != nullptr && upload_) upload_(renderer_.efb(), area);
+        if (renderer_.sink() != nullptr && download_) {
+            // only the plane the copy reads, unless it also clears: the cleared
+            // area goes back to the backend whole (colour and depth)
+            const bool clears = (v & 0x800U) != 0U;
+            const u32 fmt = bp_.reg(bp::ZCOMPARE) & 7U;
+            const bool depth_copy = fmt == 3U;
+            const bool all = clears || (fmt != 0U && fmt != 3U && fmt != 1U);
+            const core::HostTimer t(copy_ns_.readback);
+            download_(renderer_.efb(), area, all || !depth_copy, all || depth_copy);
+        }
+        {
+            const core::HostTimer t(copy_ns_.encode);
+            if (!sw::efb_copy(v, bp_, renderer_.efb(), bus_, phys_mask_, res, error)) return false;
+        }
+        if (res.cleared && renderer_.sink() != nullptr && upload_) {
+            const core::HostTimer t(copy_ns_.upload);
+            upload_(renderer_.efb(), area);
+        }
         last_copy_ = res;
         ++copies_;
         return true;

@@ -82,7 +82,10 @@ public:
 
     // EFB transfer (24-bit colour and depth values, same layout as sw::Efb), of
     // the whole EFB or of one area.
-    void download(sw::Efb& efb, const sw::EfbRect& area = {0, 0, sw::kEfbWidth, sw::kEfbHeight});
+    // `color` / `depth`: which planes to read back (an EFB copy needs one of them,
+    // a copy that also clears needs both, since the clear is written back whole).
+    void download(sw::Efb& efb, const sw::EfbRect& area = {0, 0, sw::kEfbWidth, sw::kEfbHeight}, bool color = true,
+                  bool depth = true);
     void upload(const sw::Efb& efb, const sw::EfbRect& area = {0, 0, sw::kEfbWidth, sw::kEfbHeight});
 
     u64 draws() const noexcept { return draws_; }

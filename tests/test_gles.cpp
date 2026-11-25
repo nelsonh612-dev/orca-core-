@@ -41,7 +41,7 @@ struct Side {
             std::string e;
             if (!be->init(e)) std::printf("    backend init: %s\n", e.c_str());
             gles::Backend* b = be.get();
-            gpu.set_backend(b, [b](sw::Efb& f, const sw::EfbRect& r) { b->download(f, r); }, [b](const sw::Efb& f, const sw::EfbRect& r) { b->upload(f, r); });
+            gpu.set_backend(b, [b](sw::Efb& f, const sw::EfbRect& r, bool c, bool d) { b->download(f, r, c, d); }, [b](const sw::Efb& f, const sw::EfbRect& r) { b->upload(f, r); });
         }
     }
 };
@@ -379,6 +379,17 @@ TEST_CASE(gles_perspective_indirect_misc) {
     CHECK_EQ(d.depth, 0U);
     sw::Efb g;
     t.gl.be->download(g);
+    {   // an EFB copy reads back only the plane it uses (colour or depth)
+        sw::Efb c, z;
+        c.set_depth24(410, 410, 0x123456U);
+        z.set_color24(410, 410, 0x654321U);
+        t.gl.be->download(c, {0, 0, sw::kEfbWidth, sw::kEfbHeight}, true, false);
+        t.gl.be->download(z, {0, 0, sw::kEfbWidth, sw::kEfbHeight}, false, true);
+        CHECK_EQ(c.color24(410, 410), g.color24(410, 410));
+        CHECK_EQ(c.depth24(410, 410), 0x123456U);
+        CHECK_EQ(z.depth24(410, 410), g.depth24(410, 410));
+        CHECK_EQ(z.color24(410, 410), 0x654321U);
+    }
     unsigned ortho = 0;
     auto cmp = [&](u32 x0, u32 y0, u32 x1, u32 y1) {
         unsigned n = 0;
@@ -744,7 +755,7 @@ TEST_CASE(gles_gpu_draw_program) {
         if (side == 1) {
             std::string e;
             CHECK(be.init(e));
-            sys.gpu().set_backend(&be, [&be](sw::Efb& f, const sw::EfbRect& r) { be.download(f, r); }, [&be](const sw::Efb& f, const sw::EfbRect& r) { be.upload(f, r); });
+            sys.gpu().set_backend(&be, [&be](sw::Efb& f, const sw::EfbRect& r, bool c, bool d) { be.download(f, r, c, d); }, [&be](const sw::Efb& f, const sw::EfbRect& r) { be.upload(f, r); });
         }
         std::string err;
         CHECK(sys.load_executable(file, err));

@@ -576,13 +576,14 @@ bool Backend::poke_pixel(u32 x, u32 y, bool depth, u32 value, std::string& error
     return true;
 }
 
-void Backend::download(sw::Efb& efb, const sw::EfbRect& area) {
+void Backend::download(sw::Efb& efb, const sw::EfbRect& area, bool color, bool depth) {
     Impl& g = *impl_;
     const int x0 = static_cast<int>(area.x0), y0 = static_cast<int>(area.y0);
     const int w = static_cast<int>(area.x1) - x0, h = static_cast<int>(area.y1) - y0;
     if (w <= 0 || h <= 0) return;
     glBindFramebuffer(GL_FRAMEBUFFER, g.fbo);
     for (int a = 0; a < 2; ++a) {
+        if ((a == 0 && !color) || (a == 1 && !depth)) continue;
         glReadBuffer(static_cast<GLenum>(GL_COLOR_ATTACHMENT0 + a));
         // GL ES always accepts RGBA_INTEGER; the implementation may also offer
         // RED_INTEGER for an R32UI attachment (a quarter of the data to move)

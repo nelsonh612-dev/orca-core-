@@ -68,7 +68,8 @@ public:
     // EFB copies and clears, which run on the CPU.
     // `download` / `upload` move the given EFB area between the backend and
     // renderer().efb() around an EFB copy (and its clear).
-    void set_backend(sw::TriangleSink* sink, std::function<void(sw::Efb&, const sw::EfbRect&)> download,
+    // `download` gets which planes the copy reads (colour, depth).
+    void set_backend(sw::TriangleSink* sink, std::function<void(sw::Efb&, const sw::EfbRect&, bool, bool)> download,
                      std::function<void(const sw::Efb&, const sw::EfbRect&)> upload) {
         renderer_.set_sink(sink);
         PixelStats& s = pe_.stats();
@@ -97,6 +98,10 @@ public:
     // Result of the last BP 0x52 (EFB copy / clear) and how many there were.
     const sw::CopyResult& last_copy() const noexcept { return last_copy_; }
     u64 copies() const noexcept { return copies_; }
+    // Diagnostics: host time in EFB copies (ns): reading the EFB back from a GPU
+    // backend, encoding it into RAM on the CPU, and writing a cleared area back.
+    struct CopyTimes { u64 readback{0}, encode{0}, upload{0}; };
+    const CopyTimes& copy_times() const noexcept { return copy_ns_; }
 
     // CommandSink
     bool on_cp(u8 reg, u32 value, std::string& error) override;
@@ -129,9 +134,10 @@ private:
     std::vector<u8> tmem_ = std::vector<u8>(1U << 20, 0); // 1 MiB texture memory
     std::vector<u8> pending_;
     sw::CopyResult last_copy_;
-    std::function<void(sw::Efb&, const sw::EfbRect&)> download_;
+    std::function<void(sw::Efb&, const sw::EfbRect&, bool, bool)> download_;
     std::function<void(const sw::Efb&, const sw::EfbRect&)> upload_;
     u64 copies_{0};
+    CopyTimes copy_ns_;
     u64 cycles_{0};       // total GPU time
     u64 batch_start_{0};  // cycles_ at the start of the current feed()
     bool failed_{false};
