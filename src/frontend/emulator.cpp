@@ -166,15 +166,61 @@ std::string Emulator::guest_text(u32 ea) {
     return out.size() >= 4U ? out : std::string();
 }
 
+Emulator::LoopKind Emulator::closed_loop(u32 pc, std::string* words, u32* length) {
+    // instructions from pc up to a branch back to pc (at most 16)
+    bool loads = false;
+    for (u32 n = 0; n < 16U; ++n) {
+        u32 ins = 0;
+        if (!read_guest32(pc + 4U * n, ins)) return LoopKind::None;
+        if (words != nullptr) {
+            char b[12];
+            std::snprintf(b, sizeof b, " %08X", ins);
+            *words += b;
+        }
+        const u32 op = ins >> 26;
+        bool ok = false;
+        switch (op) {
+        case 32: case 34: case 40: case 42: loads = true; ok = true; break;      // lwz lbz lhz lha
+        case 10: case 11: case 14: case 15: case 21: case 24: case 25: case 26: case 27: case 28: case 29: ok = true; break;
+        case 16: case 18: ok = (ins & 1U) == 0U; break;                          // branches without link
+        case 19: ok = ((ins >> 1) & 0x3FFU) == 150U; break;                       // isync
+        case 31: {
+            const u32 xo = (ins >> 1) & 0x3FFU;
+            if (xo == 23U || xo == 87U || xo == 279U || xo == 343U) { loads = true; ok = true; }
+            else ok = xo == 0U || xo == 32U || xo == 28U || xo == 60U || xo == 124U || xo == 444U || xo == 412U ||
+                      xo == 316U || xo == 598U;
+            break;
+        }
+        default: break;
+        }
+        if (!ok) return LoopKind::None;
+        if ((op == 16U || op == 18U) && (ins & 2U) == 0U) {
+            const s32 disp = op == 18U ? static_cast<s32>((ins & 0x03FFFFFCU) << 6) >> 6 : static_cast<s32>(static_cast<s16>(ins & 0xFFFCU));
+            const bool always = op == 18U || ((ins >> 21) & 0x14U) == 0x14U;
+            if (pc + 4U * n + static_cast<u32>(disp) == pc && always) {
+                if (length != nullptr) *length = n + 1U;
+                return loads ? LoopKind::ReadsMemory : LoopKind::NoMemory;
+            }
+        }
+    }
+    return LoopKind::None;
+}
+
 bool Emulator::halted_by_guest() {
-    // An unconditional branch to itself with external interrupts disabled can never
-    // be left (no decrementer, no external interrupt): the way Nintendo's SDK stops
-    // the console after a fatal error (PPCHalt, after OSPanic). Report it with the
+    // A loop that reads no memory, with external interrupts disabled, can never be
+    // left (no decrementer, no external interrupt, nothing it reads can change):
+    // the way Nintendo's SDK stops the console after a fatal error (PPCHalt:
+    // sync, then nop / li / nop / b back, after OSPanic). Report it with the
     // call chain and any text the registers point to (OSPanic's file and message).
     const auto& st = sys_->cpu().state();
     if ((st.msr & 0x8000U) != 0U) return false;
-    u32 ins = 0;
-    if (!read_guest32(st.pc, ins) || ins != 0x48000000U) return false;
+    // the PC may be anywhere inside the loop: look for its start just before
+    bool endless = false;
+    for (u32 back = 0; back < 16U && !endless; ++back) {
+        u32 length = 0;
+        endless = closed_loop(st.pc - 4U * back, nullptr, &length) == LoopKind::NoMemory && back < length;
+    }
+    if (!endless) return false;
     char b[96];
     std::snprintf(b, sizeof b, "the game stopped itself: endless loop with interrupts off at %08X", st.pc);
     error_ = b;
@@ -221,6 +267,12 @@ std::string Emulator::diagnostics() {
             std::snprintf(b, sizeof b, " %08X:%u%%", hot[i].first, hot[i].second * 100U / pc_sample_total_);
             out += b;
         }
+    }
+    if (!hot.empty()) {
+        std::string words;
+        const LoopKind k = closed_loop(hot[0].first, &words);
+        out += k == LoopKind::None ? "\ncode" : (k == LoopKind::NoMemory ? "\nloop (no reads)" : "\nloop (reads memory)");
+        out += words;
     }
     pc_samples_.clear();
     pc_sample_total_ = 0;

@@ -98,13 +98,17 @@ TEST_CASE(frontend_reports_a_game_that_halts_itself) {
     auto& bus = emu.system()->bus();
     const char msg[] = "Failed assertion in nwc24.c";
     for (u32 i = 0; i < sizeof msg; ++i) CHECK(bus.write8(0x300000U + i, static_cast<u8>(msg[i])) == mem::BusStatus::Ok);
-    CHECK(bus.write32(pc & 0x3FFFFFFFU, 0x3C608030U) == mem::BusStatus::Ok);        // lis r3, 0x8030
-    CHECK(bus.write32((pc & 0x3FFFFFFFU) + 4U, 0x48000000U) == mem::BusStatus::Ok); // b .
+    // PPCHalt's shape: sync; loop: nop; li r4,0; nop; b loop
+    const u32 p0 = pc & 0x3FFFFFFFU;
+    const u32 code[] = {0x3C608030U /* lis r3,0x8030 */, 0x7C0004ACU /* sync */, 0x60000000U, 0x38800000U, 0x60000000U,
+                        0x4BFFFFF4U /* b -12 */};
+    for (u32 i = 0; i < 6U; ++i) CHECK(bus.write32(p0 + 4U * i, code[i]) == mem::BusStatus::Ok);
     st.msr &= ~0x8000U;
     st.lr = 0x801B65ECU;
     CHECK(!emu.run_frame());
     const std::string& e = emu.error();
     CHECK(e.find("the game stopped itself") != std::string::npos);
+    CHECK(e.find("loop with interrupts off at") != std::string::npos);
     CHECK(e.find("801B65EC") != std::string::npos);
     CHECK(e.find("r3=\"Failed assertion in nwc24.c\"") != std::string::npos);
     // with interrupts on the same loop can be left (by an interrupt): not reported

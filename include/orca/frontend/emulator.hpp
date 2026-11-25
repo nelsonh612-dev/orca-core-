@@ -105,6 +105,10 @@ private:
     Frame frame_;
     std::map<u32, u32> pc_samples_;
     bool halted_by_guest();
+    enum class LoopKind { None, NoMemory, ReadsMemory };
+    // A busy loop starting at pc and closed by an unconditional branch back to it;
+    // `words` (optional) gets the instructions read.
+    LoopKind closed_loop(u32 pc, std::string* words = nullptr, u32* length = nullptr);
     bool read_guest32(u32 ea, u32& v);
     std::string guest_text(u32 ea);
     u32 pc_sample_total_{0};
