@@ -8,9 +8,9 @@ Todos los resultados son de ejecuciones reales del 2026-11-22 en este entorno, s
 
 | Configuración | Compilación | Advertencias (`-Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion -Wshadow -Werror`) | CTest |
 |---|---|---|---|
-| GCC Release (`-DORCA_WERROR=ON`), x86-64 | OK | 0 | 34/34 pasan, `real_images` *Skipped* (2026-11-24, keys.bin) |
-| Clang Release (`-DORCA_WERROR=ON`), x86-64 | OK | 0 | 34/34 pasan |
-| GCC Debug + ASan + UBSan (`-fno-sanitize-recover=all`, `-DORCA_WERROR=ON`), x86-64 | OK | 0 | 34/34 pasan |
+| GCC Release (`-DORCA_WERROR=ON`), x86-64 | OK | 0 | 36/36 pasan, `real_images` *Skipped* (2026-11-24, auditoría) |
+| Clang Release (`-DORCA_WERROR=ON`), x86-64 | OK | 0 | 36/36 pasan |
+| GCC Debug + ASan + UBSan (`-fno-sanitize-recover=all`, `-DORCA_WERROR=ON`), x86-64 | OK | 0 | 36/36 pasan |
 | ARM64 real (GitHub `ubuntu-24.04-arm`): GCC, Clang, ASan+UBSan | Ver "Integración final" (resultado por commit en GitHub Actions) | 0 | — |
 | Android NDK arm64-v8a (núcleo y app) | GitHub Actions | 0 | — |
 | Clang + ASan/UBSan en x86-64 | **NO EJECUTADO**: falta `compiler-rt` en el entorno | — | — |
@@ -64,6 +64,27 @@ Todos los resultados son de ejecuciones reales del 2026-11-22 en este entorno, s
 - **Mutaciones del JIT en ARM64** (`tools/jit_mutations.py`, rama `orca-core-0.1-mutations`): 22 mutaciones. Primera ejecución: 15 detectadas (dos colgaban la prueba: se añadió un tiempo límite). Las 7 restantes llevaron a cinco pruebas dirigidas (segundo slot de paired singles, división de números diminutos, almacenamiento en un bloque enlazado, página de datos que pasa a ser código, enlaces desde una página igual en dos contextos); dos son equivalentes (documentado en el script). Segunda ejecución: 19 de 22, quedando las dos equivalentes y la división, cuya prueba se reforzó con operandos desnormales (el modelo del algoritmo sin esa comprobación da 777 diferencias en esa distribución).
 - **Tercera y cuarta ejecución de mutaciones:** en 2725008 añadí una comprobación (camino lento < mitad de las instrucciones) que era incorrecta: con dividendos menores que 2^-767 el camino lento es el esperado, así que esa ejecución "detectó" las 22 mutaciones por una prueba rota (la validación de ese commit se canceló y no lo mostró). La causa real de la supervivencia de la división: `fdivs` se ejecutaba después de `fdiv` y su segundo redondeo pone FI por sí solo, ocultando el FI/FR de `fdiv`. Corregido en 7b0de24 (`fdiv` al final, comprobación eliminada). Ejecución de 7b0de24: **20 de 22 detectadas**; sobreviven solo las dos equivalentes.
 - **Error en mis expectativas:** en la prueba de DTK esperé que, tras pedir "parar al final de la pista", sonara la pista encolada; la orden para al terminar la pista actual.
+
+### Auditoría frente a Dolphin: registros, IOS, instrucciones, GPU y ramas (2026-11-24)
+
+Origen: errores reales de Resident Evil 0 (Wii) en el teléfono y comparación sistemática con el código de Dolphin (solo como información). Cada corrección tiene prueba de regresión que falla sin ella.
+
+- **Correcciones encontradas con el juego real** (commits anteriores): `rfi` en 0x300/0x800/0xC00 antes del apploader; puerto EXI vacío (lee 0); DICFG (0x24); DMA del EXI ignora los bits 30-31.
+- **Registros de hardware** (nueva prueba `mmio_coverage`: 490 lecturas de todos los registros que Dolphin atiende, a todos los anchos que acepta): antes Orca rechazaba 147; ahora 2, a propósito (contador de reloj de copia EFB, sin modelo de tiempo).
+  - Espejo 0x0D800000 de todo Hollywood y de la página DI/SI/EXI/AI.
+  - PI: lecturas de 16 bits; PI_ERROR_CAUSE/ADDRESS, PI_RESET_CODE, PI_UNKNOWN, PI_FLIPPER_REV (0x246500B1), fuerza del bus; PI_FIFO_RESET y el reinicio de la unidad en GameCube paran nombrándolo.
+  - MI: contadores 0x32-0x5A guardan lo escrito sin contar (igual que Dolphin); lecturas/escrituras de 32 bits sobre PROT_TYPE y PROT_ADDR_HI.
+  - VI: lecturas de 8 bits.
+  - Hollywood: AHBPROT, PPCSPEED, GPIO de Starlet (0xE0-0xE8, mismos pines, dueño = IOS), 0x180/0x1CC/0x1D0 (leen 0).
+  - SI: SICnINBUF admite escrituras; AI: AISCNT admite escrituras.
+  - DSP: el DMA de ARAM en Wii va a MEM2 (como el `wii_mode` de Dolphin).
+- **IOS**:
+  - abrir un `/dev/` que IOS no tiene responde IPC_ENOENT (-6) en 3700 ticks; uno que esa versión de IOS sí tiene pero Orca no emula para y lo nombra (tabla por versión como `VersionInfo` de Dolphin);
+  - `/dev/sdio/slot0` con la ranura vacía (estado, OCR, registros del controlador, evento de inserción pendiente, de retirada inmediato, cancelación);
+  - ES: ID de consola (0x07) y versión de boot2 (0x2E) desde el keys.bin del usuario, títulos instalados/propios (0x0C-0x0F), TMD guardado (0x34/0x35), comprobación coreana (0x45).
+- **CPU** (nueva prueba `opcode_coverage`): 233 de 237 formas de instrucción de las tablas de Dolphin se decodifican; las 4 restantes no aplican (dcba no es de Gekko; SPR/TBR 0 no existe). Añadidos ECID_U/M/L (solo lectura, 0).
+- **GPU**: todos los registros BP con efectos de Dolphin están cubiertos. Siguen parando a propósito: formatos EFB 4-7 (YUV), RGBA8 con mipmaps en TMEM.
+- **Ramas**: `main`, `m026`-`m054` y `orca-low-end-optimization` no comparten historia con `orca-core-0.1` (código anterior en `orca_core/`); no son fusionables. `orca-core-0.2` (7 commits del 24-11) acepta un keys.bin sin clave común; aquí se mantiene el rechazo, porque toda consola tiene esa clave en la OTP.
 
 ### keys.bin de BootMii: analizador propio, claves de consola y prioridades
 
