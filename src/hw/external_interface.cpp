@@ -1,8 +1,27 @@
 #include "orca/hw/external_interface.hpp"
 
+#include <algorithm>
 #include <cstdio>
 
 namespace orca::hw {
+
+namespace {
+// A chip select with nothing attached (an empty memory card slot, an empty serial
+// port such as SP1 on EXI0 CS2): nothing drives the data line, so a read gives
+// zeros and a write goes nowhere; the transfer itself completes normally. This is
+// how the SDK finds a slot empty (EXIGetID reads ID 0), and how Dolphin's
+// EXIDeviceType::None behaves (IEXIDevice: reads 0, writes ignored, not present).
+class EmptyPort final : public ExiDevice {
+public:
+    const char* exi_name() const noexcept override { return "empty port"; }
+    bool write(std::span<const u8>, std::string&) override { return true; }
+    bool read(std::span<u8> bytes, std::string&) override {
+        std::fill(bytes.begin(), bytes.end(), u8{0});
+        return true;
+    }
+};
+EmptyPort g_empty_port;
+} // namespace
 
 namespace {
 unsigned popcount3(u32 v) noexcept { return (v & 1U) + ((v >> 1) & 1U) + ((v >> 2) & 1U); }
@@ -146,10 +165,7 @@ bool ExternalInterface::start(u32 channel) {
         return fail(buf);
     }
     ExiDevice* dev = c.devices[cs_index(cs)];
-    if (dev == nullptr) {
-        std::snprintf(buf, sizeof buf, "EXI%u: transfer to CS%u, where no device is attached", channel, cs_index(cs));
-        return fail(buf);
-    }
+    if (dev == nullptr) dev = &g_empty_port; // nothing attached: an empty port answers zeros
     const u32 rw = (c.cr & exi::CR_RW_MASK) >> 2;
     const bool dma = (c.cr & exi::CR_DMA) != 0U;
     if (rw == exi::RW_READWRITE) {

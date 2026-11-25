@@ -241,10 +241,19 @@ TEST_CASE(exi_transfer_errors_are_reported_not_invented) {
     CHECK(t.exi.mmio_error().find("no device selected") != std::string::npos);
     CHECK_EQ(t.r(0x0C), 0x34U); // TSTART not left set
     CHECK(!t.exi.busy(0));
-    // CS with nothing attached (channel 0 CS0 = empty memory card slot)
+    // CS with nothing attached (channel 0 CS0 = empty memory card slot): an empty
+    // port, as on hardware (and in Dolphin): the transfer completes, a read gives 0
     CHECK(t.w(0x00, 0x080U));
-    CHECK(!t.w(0x0C, 0x35U));
-    CHECK(t.exi.mmio_error().find("no device is attached") != std::string::npos);
+    CHECK(t.w(0x10, 0xFFFFFFFFU));
+    CHECK(t.w(0x0C, 0x35U));        // immediate write, 4 bytes: goes nowhere
+    CHECK(t.exi.busy(0));
+    CHECK(t.finish() > 0U);
+    CHECK(t.w(0x10, 0xFFFFFFFFU));
+    CHECK(t.w(0x0C, 0x31U));        // immediate read, 4 bytes
+    (void)t.finish();
+    CHECK_EQ(t.r(0x10), 0U);        // nothing drives the line
+    CHECK_EQ(t.r(0x00) & exi::CSR_EXT, 0U); // EXT: no external device
+    CHECK(t.w(0x00, 0x000U));
     // read+write and undefined RW
     CHECK(t.w(0x00, kSelIpl8));
     CHECK(!t.w(0x0C, 0x39U));
