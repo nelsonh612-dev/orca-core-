@@ -207,22 +207,20 @@ Emulator::LoopKind Emulator::closed_loop(u32 pc, std::string* words, u32* length
 }
 
 bool Emulator::halted_by_guest() {
-    // A loop that reads no memory, with external interrupts disabled, can never be
-    // left (no decrementer, no external interrupt, nothing it reads can change):
+    // A loop proven not to change anything, reading no memory, with external
+    // interrupts disabled, can never be left (no decrementer, no external
+    // interrupt, nothing it reads can change):
     // the way Nintendo's SDK stops the console after a fatal error (PPCHalt:
     // sync, then nop / li / nop / b back, after OSPanic). Report it with the
     // call chain and any text the registers point to (OSPanic's file and message).
     const auto& st = sys_->cpu().state();
     if ((st.msr & 0x8000U) != 0U) return false;
-    // the PC may be anywhere inside the loop: look for its start just before
-    bool endless = false;
-    for (u32 back = 0; back < 16U && !endless; ++back) {
-        u32 length = 0;
-        endless = closed_loop(st.pc - 4U * back, nullptr, &length) == LoopKind::NoMemory && back < length;
-    }
-    if (!endless) return false;
+    // proven by the system's idle-loop check (one iteration changed nothing),
+    // not by the loop's shape alone: a delay loop that counts down looks alike
+    const u32 loop_pc = sys_->endless_loop_pc();
+    if (loop_pc == 0U || st.pc < loop_pc || st.pc >= loop_pc + 4U * sys_->endless_loop_length()) return false;
     char b[96];
-    std::snprintf(b, sizeof b, "the game stopped itself: endless loop with interrupts off at %08X", st.pc);
+    std::snprintf(b, sizeof b, "the game stopped itself: endless loop with interrupts off at %08X", loop_pc);
     error_ = b;
     error_ += " (how Nintendo's SDK halts after a fatal error, e.g. OSPanic). Calls:";
     std::snprintf(b, sizeof b, " %08X", st.lr);
@@ -241,12 +239,22 @@ bool Emulator::halted_by_guest() {
         const std::string t = guest_text(st.gpr[rnum]);
         if (!t.empty()) texts += " r" + std::to_string(rnum) + "=\"" + t + "\"";
     }
-    // OSPanic's arguments may also be in its stack frame: strings pointed to there
-    for (u32 off = 8; off < 0x60U && texts.size() < 300U; off += 4) {
-        u32 v = 0;
-        if (!read_guest32(st.gpr[1] + off, v)) break;
-        const std::string t = guest_text(v);
-        if (!t.empty() && texts.find(t) == std::string::npos) texts += " \"" + t + "\"";
+    // OSPanic is variadic: its frame keeps copies of r3-r10 (file, line, format and
+    // the format's arguments). Strings pointed to from the first three stack frames.
+    {
+        u32 frame = st.gpr[1], end = st.gpr[1];
+        for (int i = 0; i < 3; ++i) {
+            u32 next = 0;
+            if (!read_guest32(end, next) || next <= end || next - end > 0x400U) break;
+            end = next;
+        }
+        if (end == frame) end = frame + 0x100U;
+        for (u32 a = frame; a < end && texts.size() < 400U; a += 4) {
+            u32 v = 0;
+            if (!read_guest32(a, v)) break;
+            const std::string t = guest_text(v);
+            if (!t.empty() && texts.find(t) == std::string::npos) texts += " \"" + t + "\"";
+        }
     }
     if (!texts.empty()) error_ += ". Text:" + texts;
     return true;

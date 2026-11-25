@@ -98,18 +98,35 @@ TEST_CASE(frontend_reports_a_game_that_halts_itself) {
     auto& bus = emu.system()->bus();
     const char msg[] = "Failed assertion in nwc24.c";
     for (u32 i = 0; i < sizeof msg; ++i) CHECK(bus.write8(0x300000U + i, static_cast<u8>(msg[i])) == mem::BusStatus::Ok);
-    // PPCHalt's shape: sync; loop: nop; li r4,0; nop; b loop
+    // first a delay loop with interrupts off (it ends: not a halt), then PPCHalt's
+    // shape: sync; loop: nop; li r4,0; nop; b loop
     const u32 p0 = pc & 0x3FFFFFFFU;
-    const u32 code[] = {0x3C608030U /* lis r3,0x8030 */, 0x7C0004ACU /* sync */, 0x60000000U, 0x38800000U, 0x60000000U,
-                        0x4BFFFFF4U /* b -12 */};
-    for (u32 i = 0; i < 6U; ++i) CHECK(bus.write32(p0 + 4U * i, code[i]) == mem::BusStatus::Ok);
+    const u32 code[] = {0x3C608030U /* lis r3,0x8030 */, 0x3CA00002U /* lis r5,2 */, 0x38A5FFFFU /* addi r5,r5,-1 */,
+                        0x2C050000U /* cmpwi r5,0 */, 0x4082FFF8U /* bne -8 */, 0x7C0004ACU /* sync */, 0x60000000U,
+                        0x38800000U, 0x60000000U, 0x4BFFFFF4U /* b -12 */};
+    for (u32 i = 0; i < 10U; ++i) CHECK(bus.write32(p0 + 4U * i, code[i]) == mem::BusStatus::Ok);
     st.msr &= ~0x8000U;
     st.lr = 0x801B65ECU;
-    CHECK(!emu.run_frame());
+    // OSPanic's frame further up the stack keeps a pointer to its message
+    const char panic[] = "DVD: no disc";
+    for (u32 i = 0; i < sizeof panic; ++i) CHECK(bus.write8(0x300100U + i, static_cast<u8>(panic[i])) == mem::BusStatus::Ok);
+    st.gpr[1] = 0x80380000U;
+    CHECK(bus.write32(0x380000U, 0x80380040U) == mem::BusStatus::Ok);  // back chain
+    CHECK(bus.write32(0x380040U, 0x80380100U) == mem::BusStatus::Ok);
+    CHECK(bus.write32(0x380044U, 0x801F76E0U) == mem::BusStatus::Ok);  // saved LR
+    CHECK(bus.write32(0x380070U, 0x80300100U) == mem::BusStatus::Ok);  // saved r5 (format)
+    CHECK(bus.write32(0x380100U, 0U) == mem::BusStatus::Ok);
+    int frames = 0;
+    while (emu.run_frame() && frames < 20) ++frames;
+    CHECK(frames < 20);
     const std::string& e = emu.error();
     CHECK(e.find("the game stopped itself") != std::string::npos);
-    CHECK(e.find("loop with interrupts off at") != std::string::npos);
-    CHECK(e.find("801B65EC") != std::string::npos);
+    char at[16];
+    std::snprintf(at, sizeof at, "off at %08X", pc + 24U); // the halt loop, not the delay loop
+    CHECK(e.find(at) != std::string::npos);
+    CHECK_EQ(emu.system()->cpu().state().gpr[5], 0U);       // the delay loop ran to its end
+    CHECK(e.find("801B65EC <- 801F76E0") != std::string::npos);
+    CHECK(e.find("\"DVD: no disc\"") != std::string::npos);
     CHECK(e.find("r3=\"Failed assertion in nwc24.c\"") != std::string::npos);
     // with interrupts on the same loop can be left (by an interrupt): not reported
     frontend::Emulator emu2(s);

@@ -519,6 +519,20 @@ bool System::try_idle_skip(u64 end) {
                       st.lr == before.lr && st.msr == before.msr && bus_.write_epoch() == epoch &&
                       bus_.mmio_accesses() == mmio && !cpu_->external_interrupt();
     if (!same) return true;
+    // proven endless? (no loads in the loop, interrupts off)
+    if ((st.msr & ppc::MSR_EE) == 0U) {
+        bool loads = false;
+        for (unsigned i = 0; i < length; ++i) {
+            ppc::Translation t;
+            u32 ins = 0;
+            if (!ppc::translate_without_page_table(st, pc + 4U * i, ppc::AccessType::Fetch, cpu_->config().extended_bats, t) ||
+                bus_.read32(t.physical, ins) != mem::BusStatus::Ok) { loads = true; break; }
+            const u32 op = ins >> 26, xo = (ins >> 1) & 0x3FFU;
+            if (op == 32U || op == 34U || op == 40U || op == 42U ||
+                (op == 31U && (xo == 23U || xo == 87U || xo == 279U || xo == 343U))) loads = true;
+        }
+        if (!loads) { endless_loop_pc_ = pc; endless_loop_length_ = length; }
+    }
     // whole iterations that fit before anything else can happen
     const u64 room = steps_until_next_event(end);
     const u64 iterations = room / steps;

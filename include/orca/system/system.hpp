@@ -176,6 +176,11 @@ public:
     RunResult run(u64 max_cycles);
     u64 idle_skips() const noexcept { return idle_skips_; }
     u64 idle_skipped_instructions() const noexcept { return idle_skipped_; }
+    // PC of a busy loop proven endless: one whole iteration changed no register
+    // and wrote nothing, the loop reads no memory (nothing it looks at can
+    // change) and MSR[EE] = 0 (no interrupt can take the CPU out). 0: none.
+    u32 endless_loop_pc() const noexcept { return endless_loop_pc_; }
+    u32 endless_loop_length() const noexcept { return endless_loop_length_; } // instructions
     // Like run(), but also stops (reached_stop_pc = true) when PC == stop_pc
     // before executing the instruction there.
     RunResult run_until(u32 stop_pc, u64 max_cycles);
@@ -235,6 +240,7 @@ private:
     bool idle_candidate(u32 pc, unsigned& length);
     std::array<std::pair<u32, u32>, 64> idle_rejects_{}; // pc -> first instruction word of rejected loops
     u64 idle_skips_{0}, idle_skipped_{0};
+    u32 endless_loop_pc_{0}, endless_loop_length_{0};
 
     SystemConfig config_;
     Clocks clocks_;
