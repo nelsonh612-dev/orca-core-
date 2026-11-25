@@ -307,6 +307,28 @@ bool Emulator::halted_by_guest() {
         std::snprintf(b, sizeof b, " (instruction at SRR0: %08X)", w);
         error_ += b;
     }
+    // the last fault the CPU raised, with its registers and call chain at that moment
+    if (const auto& f = sys_->cpu().last_fault()) {
+        const auto& fs = f->state;
+        const char* kind = f->kind == ppc::Exception::DSI ? "DSI" : f->kind == ppc::Exception::ISI ? "ISI"
+                         : f->kind == ppc::Exception::Alignment ? "alignment" : "program";
+        std::snprintf(b, sizeof b, ". Last %s exception at %08X: LR %08X r1 %08X", kind, fs.pc, fs.lr, fs.gpr[1]);
+        error_ += b;
+        for (unsigned rn = 3; rn <= 6; ++rn) {
+            std::snprintf(b, sizeof b, " r%u %08X", rn, fs.gpr[rn]);
+            error_ += b;
+        }
+        std::snprintf(b, sizeof b, " HID2 %08X DBAT3 %08X/%08X; calls %08X", fs.hid2, fs.dbat[3].upper, fs.dbat[3].lower, fs.lr);
+        error_ += b;
+        u32 fsp = fs.gpr[1];
+        for (int i = 0; i < 6; ++i) {
+            u32 next = 0, lr = 0;
+            if (!read_guest32(fsp, next) || next <= fsp || !read_guest32(next + 4U, lr) || lr == 0U) break;
+            std::snprintf(b, sizeof b, " <- %08X", lr);
+            error_ += b;
+            fsp = next;
+        }
+    }
     if (auto* k = sys_->ios(); k != nullptr && !k->history().empty()) error_ += ". Last IOS requests: " + k->history();
     if (const std::string di = sys_->di().recent_commands(); !di.empty()) error_ += ". Last disc commands: " + di;
     return true;

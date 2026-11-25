@@ -71,6 +71,10 @@ void Cpu::advance_timebase(u64 ticks) noexcept {
 }
 
 void Cpu::deliver(Exception e, u32 srr0, u32 srr1_bits) {
+    if (e == Exception::DSI || e == Exception::ISI || e == Exception::Alignment || e == Exception::Program) {
+        last_fault_ = Fault{e, state_};
+        last_fault_->state.pc = srr0;
+    }
     state_.srr0 = srr0;
     state_.srr1 = (state_.msr & MSR_SAVE_MASK) | srr1_bits;
     const u32 kept = state_.msr & (MSR_IP | MSR_ME | MSR_ILE);

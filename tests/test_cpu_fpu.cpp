@@ -511,6 +511,37 @@ TEST_CASE(locked_cache_dcbz_l_and_access) {
     CHECK_EQ(m.s().gpr[7], 0U);
     m.s().pc = 0x1000;
     CHECK(m.exec(A::lwz(8, 0x40, 3)) == StepResult::MemoryFault); // not allocated, no RAM behind it
+    // without the BAT the store raises a DSI; the CPU keeps the state at the fault
+    m.s().dbat[3] = {};
+    m.s().pc = 0x1000;
+    m.s().lr = 0x80123456U;
+    CHECK(m.exec(A::stw(5, 0, 3)) == StepResult::ExceptionTaken);
+    CHECK(m.cpu->last_fault().has_value());
+    CHECK(m.cpu->last_fault()->kind == Exception::DSI);
+    CHECK_EQ(m.cpu->last_fault()->state.pc, 0x1000U);
+    CHECK_EQ(m.cpu->last_fault()->state.lr, 0x80123456U);
+    CHECK_EQ(m.cpu->last_fault()->state.gpr[3], 0xE0000000U);
+}
+
+TEST_CASE(locked_cache_enabled_the_sdk_way) {
+    // __LCEnable of Nintendo's SDK: HID2 |= 0x100F0000, DBAT3L = 0xE0000002,
+    // DBAT3U = 0xE00001FE, isync, dcbz_l over 512 lines; then the game stores there
+    FpMachine m;
+    m.s().msr |= MSR_DR | MSR_IR;
+    m.s().ibat[0] = {0x00001FFFU, 0x00000002U};
+    m.s().dbat[0] = {0x00001FFFU, 0x00000002U};
+    m.s().gpr[0] = 0xCAFEF00DU;
+    m.code(0x1000, {A::mfspr(4, 920), A::oris(4, 4, 0x100F), A::mtspr(920, 4),
+                    A::addis(3, 0, 0xE000), A::ori(3, 3, 0x0002), A::mtspr(543, 3), A::ori(3, 3, 0x01FE), A::mtspr(542, 3),
+                    A::isync(), A::addis(3, 0, 0xE000), A::addi(6, 0, 512), A::mtspr(9, 6), A::addi(6, 0, 0),
+                    A::dcbz_l(6, 3), A::addi(3, 3, 32), A::bc(16, 0, -8),
+                    A::addis(4, 0, 0xE000), A::stw(0, 0, 4), A::lwz(5, 0, 4), A::lwz(7, 0x3FFC, 4)});
+    const auto r = m.cpu->run(13 + 3 * 512 + 4);
+    if (r != StepResult::Executed) std::printf("    stopped at %08X: %s\n", m.s().pc, m.cpu->last_stop().reason.c_str());
+    CHECK(r == StepResult::Executed);
+    CHECK_EQ(m.cpu->locked_cache_lines(), 512U);
+    CHECK_EQ(m.s().gpr[5], 0xCAFEF00DU);
+    CHECK_EQ(m.s().gpr[7], 0U);
 }
 
 TEST_CASE(locked_cache_dma_round_trip) {

@@ -19,6 +19,7 @@
 
 #include <array>
 #include <functional>
+#include <optional>
 #include <string>
 #include <unordered_map>
 
@@ -92,6 +93,10 @@ public:
     bool locked_cache_line(u32 physical, std::array<u8, 32>& out) const;
 
     Exception last_exception() const noexcept { return last_exception_; }
+    // The state just before the last DSI, ISI, alignment or program exception
+    // (diagnostics: where a game faulted when its handler does not return).
+    struct Fault { Exception kind{Exception::None}; CpuState state; };
+    const std::optional<Fault>& last_fault() const noexcept { return last_fault_; }
     const StopInfo& last_stop() const noexcept { return last_stop_; }
     u64 instructions_retired() const noexcept { return retired_; }
     // Counts instructions the system skipped as exact repeats (System's idle-loop skip).
@@ -171,6 +176,7 @@ private:
     u32 next_pc_{0};
     bool external_line_{false};
     Exception last_exception_{Exception::None};
+    std::optional<Fault> last_fault_;
     StopInfo last_stop_{};
     u64 retired_{0};
     std::size_t observer_id_{0};
