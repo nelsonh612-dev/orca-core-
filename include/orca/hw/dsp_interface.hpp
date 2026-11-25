@@ -91,6 +91,8 @@ public:
     u64 aid_block_cycles() const;
     std::vector<u8>& aram() noexcept override { return aram_; } // also hle::Host
     bool aram_busy() const noexcept { return (csr_ & dsp::CSR_DMABUSY) != 0U; }
+    // ARAM DMAs that went to the empty expansion (HSP) port (AR address >= 16 MiB).
+    u64 hsp_empty_transfers() const noexcept { return hsp_empty_transfers_; }
     u16 csr() const noexcept { return csr_; }
     ::orca::dsp::DspCore& core() noexcept override { return core_; } // also hle::Host
     // High-level emulation instead of the DSP core (orca/dsp/hle.hpp): mailboxes and
@@ -141,6 +143,7 @@ private:
     ProcessorInterface& pi_;
     std::vector<u8> aram_;
     u64 aram_cycles_per_unit_{246};
+    u64 hsp_empty_transfers_{0};
     u64 cpu_hz_;
     bool wii_;
     std::function<bool()> aid_32khz_;

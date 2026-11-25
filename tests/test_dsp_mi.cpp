@@ -236,10 +236,7 @@ TEST_CASE(aram_dma_alignment_timing_and_errors) {
     CHECK(!t.dw(hw::dsp::CNT_L, 0x001F));
     CHECK(t.dsp.mmio_error().find("length 0") != std::string::npos);
     CHECK(!t.dsp.aram_busy());
-    // outside ARAM / outside RAM
-    CHECK(t.dw32(hw::dsp::ARADDR_H, 0x00FFFFE0U));
-    CHECK(!t.dw(hw::dsp::CNT_L, 0x40));
-    CHECK(t.dsp.mmio_error().find("outside the 16 MiB ARAM") != std::string::npos);
+    // outside RAM
     CHECK(t.dw32(hw::dsp::ARADDR_H, 0));
     CHECK(t.dw32(hw::dsp::MMADDR_H, 0x017FFFE0U));
     CHECK(!t.dw(hw::dsp::CNT_L, 0x40));
@@ -284,6 +281,49 @@ TEST_CASE(aram_dma_alignment_timing_and_errors) {
     s2.advance_to(s2.now() + 1000000U);
     CHECK(bus2.read32(0x3020, got) == mem::BusStatus::Ok);
     CHECK_EQ(got, 0xA0B0C020U);
+}
+
+// The SDK's ARCheckSize probes AR addresses past 16 MiB: they reach the empty
+// expansion (HSP) port, so nothing is stored and a read leaves main memory as it
+// was; a transfer that starts inside ARAM and runs past its end wraps within it.
+TEST_CASE(aram_dma_past_16_mib_reaches_the_empty_expansion_port) {
+    Rig t;
+    for (u32 i = 0; i < 0x40; i += 4) CHECK(t.bus.write32(0x1000 + i, 0x11000000U + i) == mem::BusStatus::Ok);
+    for (u32 i = 0; i < 0x40; i += 4) CHECK(t.bus.write32(0x2000 + i, 0xDEADBEEFU) == mem::BusStatus::Ok);
+    // main -> AR 0x01000000 (the probe that stopped a game): accepted, completes, ARINT
+    CHECK(t.dw32(hw::dsp::MMADDR_H, 0x1000U));
+    CHECK(t.dw32(hw::dsp::ARADDR_H, 0x01000000U));
+    CHECK(t.dw32(hw::dsp::CNT_H, 0x00000020U));
+    t.settle();
+    CHECK(!t.dsp.aram_busy());
+    CHECK_EQ(t.dr(hw::dsp::CSR) & hw::dsp::CSR_ARINT, hw::dsp::CSR_ARINT);
+    CHECK_EQ(t.dsp.hsp_empty_transfers(), 1U);
+    CHECK_EQ(t.dsp.aram()[0], 0U); // not mirrored into ARAM
+    CHECK_EQ(t.dr(hw::dsp::ARADDR_H), 0x0100U);
+    CHECK_EQ(t.dr(hw::dsp::ARADDR_L), 0x0020U);
+    // AR 0x01000000 -> main: no data driven, the destination keeps its contents
+    CHECK(t.dw32(hw::dsp::MMADDR_H, 0x2000U));
+    CHECK(t.dw32(hw::dsp::ARADDR_H, 0x01000000U));
+    CHECK(t.dw32(hw::dsp::CNT_H, 0x80000020U));
+    t.settle();
+    u32 w = 0;
+    CHECK(t.bus.read32(0x2000, w) == mem::BusStatus::Ok);
+    CHECK_EQ(w, 0xDEADBEEFU);
+    CHECK_EQ(t.dsp.hsp_empty_transfers(), 2U);
+    // the highest AR address (26 bits) is accepted too
+    CHECK(t.dw32(hw::dsp::ARADDR_H, 0x03FFFFE0U));
+    CHECK(t.dw32(hw::dsp::CNT_H, 0x80000020U));
+    t.settle();
+    CHECK_EQ(t.dsp.hsp_empty_transfers(), 3U);
+    // starts 0x20 below the end of ARAM: the second half wraps to ARAM 0
+    CHECK(t.dw32(hw::dsp::MMADDR_H, 0x1000U));
+    CHECK(t.dw32(hw::dsp::ARADDR_H, 0x00FFFFE0U));
+    CHECK(t.dw32(hw::dsp::CNT_H, 0x00000040U));
+    t.settle();
+    CHECK_EQ(t.dsp.aram()[0xFFFFE0], 0x11U);
+    CHECK_EQ(t.dsp.aram()[0x000000], 0x11U);
+    CHECK_EQ(t.dsp.aram()[0x000003], 0x20U); // word 0x11000020
+    CHECK_EQ(t.dsp.hsp_empty_transfers(), 3U);
 }
 
 TEST_CASE(aram_register_masks_reset_values_and_timing) {

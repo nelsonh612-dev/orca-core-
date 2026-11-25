@@ -229,10 +229,12 @@ bool DspInterface::start_aram_dma() {
             std::snprintf(buf, sizeof buf, "DSP: ARAM DMA range %08X+%X is outside MEM2 (Wii)", araddr_, len);
             return fail(buf);
         }
-    } else if (static_cast<u64>(araddr_) + len > aram_.size()) {
-        std::snprintf(buf, sizeof buf, "DSP: ARAM DMA range %08X+%X is outside the 16 MiB ARAM", araddr_, len);
-        return fail(buf);
     }
+    // GameCube: an AR address at or above the 16 MiB of ARAM goes to the high-speed
+    // port (HSP) under the console, where nothing is attached here; one that starts
+    // inside ARAM and runs past its end wraps within it (Dolphin DSP.cpp: the AR
+    // address is mirrored every 64 MiB, ARAM is indexed with its size mask, and an
+    // address past the ARAM size goes to the HSP device, the null one by default).
     if (!bus_.is_ram(mmaddr_, len)) {
         std::snprintf(buf, sizeof buf, "DSP: ARAM DMA main-memory range %08X+%X is not RAM", mmaddr_, len);
         return fail(buf);
@@ -254,21 +256,30 @@ void DspInterface::complete_aram_dma() {
             for (u32 off = 0; off < len; off += 32U)
                 if (araddr_ + off < 0x400000U)
                     (void)bus_.dma_write(ar + off + 0x400000U, std::span<const u8>(data.data() + off, 32U));
-    } else if ((cnt_ & dsp::kCntToMain) != 0U)
-        (void)bus_.dma_write(mmaddr_, std::span<const u8>(aram_.data() + araddr_, len));
-    else {
-        (void)bus_.dma_read(mmaddr_, std::span<u8>(aram_.data() + araddr_, len));
+    } else if (araddr_ >= aram_.size()) {
+        // Expansion (HSP) port with no device: a write is not stored anywhere and a
+        // read drives no data, so main memory keeps what it held (Dolphin's null HSP
+        // device). The SDK's ARAM size check (ARCheckSize) probes here.
+        ++hsp_empty_transfers_;
+    } else if ((cnt_ & dsp::kCntToMain) != 0U) {
+        std::vector<u8> data(len);
+        for (u32 i = 0; i < len; ++i) data[i] = aram_[(araddr_ + i) & (dsp::kAramSize - 1U)];
+        (void)bus_.dma_write(mmaddr_, data);
+    } else {
+        std::vector<u8> data(len);
+        (void)bus_.dma_read(mmaddr_, data);
+        for (u32 i = 0; i < len; ++i) aram_[(araddr_ + i) & (dsp::kAramSize - 1U)] = data[i];
         // (AR_SIZE & 0xF) == 4: writes below 4 MiB also land 4 MiB higher (Dolphin DSP.cpp)
         if ((ar_size_ & 0xFU) == 4U) {
             for (u32 off = 0; off < len; off += 32U) {
                 const u32 a = araddr_ + off;
                 if (a < 0x400000U)
-                    for (u32 i = 0; i < 32U; ++i) aram_[(a + 0x400000U + i) & (dsp::kAramSize - 1U)] = aram_[a + i];
+                    for (u32 i = 0; i < 32U; ++i) aram_[(a + 0x400000U + i) & (dsp::kAramSize - 1U)] = data[off + i];
             }
         }
     }
     mmaddr_ += len;
-    araddr_ += len;
+    araddr_ = (araddr_ + len) & 0x03FFFFFFU; // the register holds 26 bits
     cnt_ &= dsp::kCntToMain; // count reaches 0; the direction bit is kept (model)
     csr_ = static_cast<u16>((csr_ & ~dsp::CSR_DMABUSY) | dsp::CSR_ARINT);
     update_interrupt();
