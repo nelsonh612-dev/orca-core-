@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <fstream>
 #include <iterator>
+#include <optional>
 #include <cstdio>
 
 namespace orca::frontend {
@@ -129,8 +130,79 @@ bool Emulator::run_frame() {
             return false;
         }
         if (r.cycles == 0U) { error_ = "no progress"; return false; }
+        if (halted_by_guest()) return false;
     }
     if (field_seen_) (void)capture_frame();
+    return true;
+}
+
+namespace {
+// Physical address of an effective address in the usual BAT layout games use
+// (0x8/0x9 cached, 0xC/0xD uncached).
+std::optional<u32> bat_physical(u32 ea) {
+    if (ea < 0x80000000U) return std::nullopt;
+    return ea & 0x3FFFFFFFU;
+}
+} // namespace
+
+bool Emulator::read_guest32(u32 ea, u32& v) {
+    const auto pa = bat_physical(ea);
+    return pa && sys_->bus().read32(*pa, v) == mem::BusStatus::Ok;
+}
+
+std::string Emulator::guest_text(u32 ea) {
+    // a NUL-terminated printable string of at least 4 characters, cut at 80
+    const auto pa = bat_physical(ea);
+    if (!pa) return {};
+    std::string out;
+    for (u32 i = 0; i < 80U; ++i) {
+        u8 c = 0;
+        if (sys_->bus().read8(*pa + i, c) != mem::BusStatus::Ok) return {};
+        if (c == 0U) break;
+        if (c == '\n') { out += "\\n"; continue; }
+        if (c < 0x20U || c > 0x7EU) return {};
+        out += static_cast<char>(c);
+    }
+    return out.size() >= 4U ? out : std::string();
+}
+
+bool Emulator::halted_by_guest() {
+    // An unconditional branch to itself with external interrupts disabled can never
+    // be left (no decrementer, no external interrupt): the way Nintendo's SDK stops
+    // the console after a fatal error (PPCHalt, after OSPanic). Report it with the
+    // call chain and any text the registers point to (OSPanic's file and message).
+    const auto& st = sys_->cpu().state();
+    if ((st.msr & 0x8000U) != 0U) return false;
+    u32 ins = 0;
+    if (!read_guest32(st.pc, ins) || ins != 0x48000000U) return false;
+    char b[96];
+    std::snprintf(b, sizeof b, "the game stopped itself: endless loop with interrupts off at %08X", st.pc);
+    error_ = b;
+    error_ += " (how Nintendo's SDK halts after a fatal error, e.g. OSPanic). Calls:";
+    std::snprintf(b, sizeof b, " %08X", st.lr);
+    error_ += b;
+    u32 sp = st.gpr[1];
+    for (int i = 0; i < 8; ++i) {
+        u32 next = 0, lr = 0;
+        if (!read_guest32(sp, next) || next == 0U || next == 0xFFFFFFFFU || next <= sp) break;
+        if (!read_guest32(next + 4U, lr) || lr == 0U) break;
+        std::snprintf(b, sizeof b, " <- %08X", lr);
+        error_ += b;
+        sp = next;
+    }
+    std::string texts;
+    for (unsigned rnum = 3; rnum <= 10; ++rnum) {
+        const std::string t = guest_text(st.gpr[rnum]);
+        if (!t.empty()) texts += " r" + std::to_string(rnum) + "=\"" + t + "\"";
+    }
+    // OSPanic's arguments may also be in its stack frame: strings pointed to there
+    for (u32 off = 8; off < 0x60U && texts.size() < 300U; off += 4) {
+        u32 v = 0;
+        if (!read_guest32(st.gpr[1] + off, v)) break;
+        const std::string t = guest_text(v);
+        if (!t.empty() && texts.find(t) == std::string::npos) texts += " \"" + t + "\"";
+    }
+    if (!texts.empty()) error_ += ". Text:" + texts;
     return true;
 }
 

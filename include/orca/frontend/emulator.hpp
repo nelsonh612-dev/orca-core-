@@ -104,6 +104,9 @@ private:
     disc::ImageFormat format_{disc::ImageFormat::Raw};
     Frame frame_;
     std::map<u32, u32> pc_samples_;
+    bool halted_by_guest();
+    bool read_guest32(u32 ea, u32& v);
+    std::string guest_text(u32 ea);
     u32 pc_sample_total_{0};
     bool field_seen_{false};
     u64 cycles_{0};

@@ -86,6 +86,39 @@ TEST_CASE(frontend_runs_gpu_draw_and_shows_its_frame) {
     CHECK_EQ(emu.take_audio(audio), 0U); // the program plays no sound
 }
 
+TEST_CASE(frontend_reports_a_game_that_halts_itself) {
+    // what Nintendo's SDK does after OSPanic: interrupts off, branch to itself
+    frontend::Settings s;
+    s.jit = false;
+    frontend::Emulator emu(s);
+    std::string error;
+    CHECK(emu.load_executable(read_file(ORCA_PROGRAMS_DIR "/gpu_draw.dol"), false, error));
+    auto& st = emu.system()->cpu().state();
+    const u32 pc = st.pc;
+    auto& bus = emu.system()->bus();
+    const char msg[] = "Failed assertion in nwc24.c";
+    for (u32 i = 0; i < sizeof msg; ++i) CHECK(bus.write8(0x300000U + i, static_cast<u8>(msg[i])) == mem::BusStatus::Ok);
+    CHECK(bus.write32(pc & 0x3FFFFFFFU, 0x3C608030U) == mem::BusStatus::Ok);        // lis r3, 0x8030
+    CHECK(bus.write32((pc & 0x3FFFFFFFU) + 4U, 0x48000000U) == mem::BusStatus::Ok); // b .
+    st.msr &= ~0x8000U;
+    st.lr = 0x801B65ECU;
+    CHECK(!emu.run_frame());
+    const std::string& e = emu.error();
+    CHECK(e.find("the game stopped itself") != std::string::npos);
+    CHECK(e.find("801B65EC") != std::string::npos);
+    CHECK(e.find("r3=\"Failed assertion in nwc24.c\"") != std::string::npos);
+    // with interrupts on the same loop can be left (by an interrupt): not reported
+    frontend::Emulator emu2(s);
+    CHECK(emu2.load_executable(read_file(ORCA_PROGRAMS_DIR "/gpu_draw.dol"), false, error));
+    auto& st2 = emu2.system()->cpu().state();
+    CHECK(emu2.system()->bus().write32(st2.pc & 0x3FFFFFFFU, 0x48000000U) == mem::BusStatus::Ok);
+    st2.msr |= 0x8000U;
+    for (const u32 v : {0x500U, 0x900U}) CHECK(emu2.system()->bus().write32(v, 0x4C000064U) == mem::BusStatus::Ok); // rfi
+    const bool ran = emu2.run_frame();
+    if (!ran) std::printf("    %s\n", emu2.error().c_str());
+    CHECK(ran);
+}
+
 TEST_CASE(frontend_diagnostics_show_where_the_game_runs) {
     frontend::Settings s;
     s.jit = false;
