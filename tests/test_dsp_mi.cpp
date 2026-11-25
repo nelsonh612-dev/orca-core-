@@ -161,6 +161,9 @@ TEST_CASE(dsp_hle_boot_rom_and_init_protocol) {
     CHECK(r.dw(0x00, 0x1234)); CHECK(r.dw(0x02, 0x5678));
     CHECK_EQ(r.dr(0x00) & 0x8000U, 0U);               // taken at once by the HLE DSP
     CHECK_EQ(r.dr(0x04), 0xFEEEU); CHECK_EQ(r.dr(0x06), 0x5678U);
+    // diagnostics keep the last mails each way
+    CHECK(r.dsp.hle_dsp()->mails_from_cpu() == std::deque<u32>({0x12345678U}));
+    CHECK(r.dsp.hle_dsp()->mails_to_cpu() == std::deque<u32>({0x8071FEEDU, 0xFEEE5678U}));
     // upload of a ucode Orca does not know: clear stop with its hash
     std::vector<u8> code(64);
     for (std::size_t i = 0; i < code.size(); ++i) code[i] = static_cast<u8>(i * 7U);

@@ -112,6 +112,8 @@ void Dsp::cpu_write_low(u16 v) {
     cpu_mail_ = (cpu_mail_ & 0xFFFF0000U) | v;
     const u32 m = cpu_mail_;
     cpu_mail_ &= 0x7FFFFFFFU; // taken by the DSP at once
+    from_cpu_.push_back(m);
+    if (from_cpu_.size() > 4U) from_cpu_.pop_front();
     retired_.clear();         // no ucode code is running here
     if (ucode_ && !failed()) ucode_->mail(m);
 }
@@ -126,6 +128,8 @@ u16 Dsp::cpu_mailbox_low() {
         last_mail_ = mails_.front().first;
         const bool irq = mails_.front().second;
         mails_.pop_front();
+        to_cpu_.push_back(last_mail_);
+        if (to_cpu_.size() > 4U) to_cpu_.pop_front();
         if (irq) host_.interrupt_cpu(0);
     }
     const auto low = static_cast<u16>(last_mail_);

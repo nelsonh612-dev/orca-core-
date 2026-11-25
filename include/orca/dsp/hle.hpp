@@ -105,6 +105,10 @@ public:
     void warn(std::string w);        // approximations in use (each reported once)
     const std::vector<std::string>& warnings() const noexcept { return warnings_; }
     bool has_pending_mail() const noexcept { return !mails_.empty(); }
+    std::size_t pending_mails() const noexcept { return mails_.size(); }
+    // Diagnostics: the last mails each way (oldest first).
+    const std::deque<u32>& mails_from_cpu() const noexcept { return from_cpu_; }
+    const std::deque<u32>& mails_to_cpu() const noexcept { return to_cpu_; }
 
 private:
     Host& host_;
@@ -113,6 +117,7 @@ private:
     u32 cpu_mail_{0};
     std::deque<std::pair<u32, bool>> mails_; // mail, raise an interrupt when the next becomes first
     u32 last_mail_{0};
+    std::deque<u32> from_cpu_, to_cpu_;
     std::unique_ptr<Ucode> ucode_;
     std::unique_ptr<Ucode> last_;             // the ucode left by a task switch
     std::vector<std::unique_ptr<Ucode>> retired_; // kept alive while their code may still run
