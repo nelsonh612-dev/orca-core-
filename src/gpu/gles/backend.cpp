@@ -157,6 +157,10 @@ struct TexRange {
 
 struct Backend::Impl {
     GLuint prog{0}, vao{0}, vbo{0}, fbo{0}, efb[2]{0, 0}, dummy{0}, tri_buf{0}, tri_tex{0};
+    // EFB readback through an RGBA8 target (see download): 0 = not set up yet
+    GLuint pack_prog{0}, pack_fbo{0}, pack_tex{0}, pack_vao{0};
+    GLint u_pack_src{-1}, u_pack_org{-1};
+    int pack_state{0}; // 0 untried, 1 ready, -1 unavailable (plain integer reads)
     std::array<GLuint, 8> tex{};
     std::array<u64, 8> tex_key{};   // parameters + palette + texels of the uploaded texture
     std::array<u64, 8> tex_pkey{};  // parameters + palette only
@@ -186,6 +190,56 @@ struct Backend::Impl {
         if (tri_buf != 0) glDeleteBuffers(1, &tri_buf);
         if (stats_buf != 0) glDeleteBuffers(1, &stats_buf);
         if (quad_ids != 0) glDeleteTextures(1, &quad_ids);
+        if (pack_prog != 0) glDeleteProgram(pack_prog);
+        if (pack_fbo != 0) glDeleteFramebuffers(1, &pack_fbo);
+        if (pack_tex != 0) glDeleteTextures(1, &pack_tex);
+        if (pack_vao != 0) glDeleteVertexArrays(1, &pack_vao);
+    }
+
+    // The EFB planes are 32-bit integer textures holding 24-bit values. Reading
+    // them back as RGBA_INTEGER moves 16 bytes per pixel through a path GL ES
+    // implementations do not optimise; packing the 24 bits into an RGBA8 target
+    // first moves 4 bytes per pixel through the standard RGBA / UNSIGNED_BYTE
+    // read. Exact: each byte b becomes b / 255 and converts back to b.
+    bool setup_pack() {
+        static const char* vs = "#version 320 es\nvoid main() {\n"
+                                "  vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));\n"
+                                "  gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);\n}\n";
+        static const char* fs = "#version 320 es\nprecision highp float;\nprecision highp int;\n"
+                                "uniform highp usampler2D u_src;\nuniform ivec2 u_org;\nout vec4 o;\n"
+                                "void main() {\n  uint v = texelFetch(u_src, ivec2(gl_FragCoord.xy) + u_org, 0).r;\n"
+                                "  o = vec4(float(v & 255u), float((v >> 8u) & 255u), float((v >> 16u) & 255u), 255.0) / 255.0;\n}\n";
+        std::string e;
+        const GLuint v = compile(GL_VERTEX_SHADER, vs, e);
+        if (v == 0) return false;
+        const GLuint f = compile(GL_FRAGMENT_SHADER, fs, e);
+        if (f == 0) { glDeleteShader(v); return false; }
+        pack_prog = glCreateProgram();
+        glAttachShader(pack_prog, v);
+        glAttachShader(pack_prog, f);
+        glLinkProgram(pack_prog);
+        glDeleteShader(v);
+        glDeleteShader(f);
+        GLint ok = 0;
+        glGetProgramiv(pack_prog, GL_LINK_STATUS, &ok);
+        if (ok == 0) return false;
+        u_pack_src = glGetUniformLocation(pack_prog, "u_src");
+        u_pack_org = glGetUniformLocation(pack_prog, "u_org");
+        glGenTextures(1, &pack_tex);
+        glBindTexture(GL_TEXTURE_2D, pack_tex);
+        glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, kW, kH);
+        glGenFramebuffers(1, &pack_fbo);
+        glBindFramebuffer(GL_FRAMEBUFFER, pack_fbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, pack_tex, 0);
+        const bool complete = glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+        glGenVertexArrays(1, &pack_vao);
+        // integer textures must not use linear filtering to be sampled
+        for (GLuint t : efb) {
+            glBindTexture(GL_TEXTURE_2D, t);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        }
+        return complete && glGetError() == GL_NO_ERROR;
     }
 
     // Decodes the mip levels a map can use into an RGBA8 atlas (levels stacked vertically).
@@ -581,6 +635,51 @@ void Backend::download(sw::Efb& efb, const sw::EfbRect& area, bool color, bool d
     const int x0 = static_cast<int>(area.x0), y0 = static_cast<int>(area.y0);
     const int w = static_cast<int>(area.x1) - x0, h = static_cast<int>(area.y1) - y0;
     if (w <= 0 || h <= 0) return;
+    if (g.pack_state == 0) {
+        GLint unit = 0;
+        glGetIntegerv(GL_ACTIVE_TEXTURE, &unit);
+        g.pack_state = g.setup_pack() ? 1 : -1;
+        glActiveTexture(static_cast<GLenum>(unit));
+        while (glGetError() != GL_NO_ERROR) {}
+    }
+    if (g.pack_state == 1) {
+        GLint unit = 0;
+        glGetIntegerv(GL_ACTIVE_TEXTURE, &unit);
+        const GLboolean dither = glIsEnabled(GL_DITHER);
+        glDisable(GL_DITHER);
+        glDisable(GL_SCISSOR_TEST);
+        glBindFramebuffer(GL_FRAMEBUFFER, g.pack_fbo);
+        glViewport(0, 0, w, h);
+        glUseProgram(g.pack_prog);
+        glBindVertexArray(g.pack_vao);
+        glActiveTexture(GL_TEXTURE9);
+        glUniform1i(g.u_pack_src, 9);
+        glUniform2i(g.u_pack_org, x0, y0);
+        std::vector<u8> px(static_cast<std::size_t>(w) * static_cast<std::size_t>(h) * 4U);
+        glPixelStorei(GL_PACK_ALIGNMENT, 4);
+        for (int a = 0; a < 2; ++a) {
+            if ((a == 0 && !color) || (a == 1 && !depth)) continue;
+            glBindTexture(GL_TEXTURE_2D, g.efb[a]);
+            glDrawArrays(GL_TRIANGLES, 0, 3);
+            glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+            for (int y = 0; y < h; ++y)
+                for (int x = 0; x < w; ++x) {
+                    const std::size_t i = (static_cast<std::size_t>(y) * static_cast<std::size_t>(w) + static_cast<std::size_t>(x)) * 4U;
+                    const u32 v = u32{px[i]} | u32{px[i + 1]} << 8 | u32{px[i + 2]} << 16;
+                    const auto ex = static_cast<u32>(x0 + x), ey = static_cast<u32>(y0 + y);
+                    if (a == 0) efb.set_color24(ex, ey, v);
+                    else efb.set_depth24(ex, ey, v);
+                }
+        }
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glActiveTexture(static_cast<GLenum>(unit));
+        if (dither == GL_TRUE) glEnable(GL_DITHER);
+        glBindFramebuffer(GL_FRAMEBUFFER, g.fbo);
+        glViewport(0, 0, kW, kH);
+        glUseProgram(g.prog);
+        glBindVertexArray(g.vao);
+        return;
+    }
     glBindFramebuffer(GL_FRAMEBUFFER, g.fbo);
     for (int a = 0; a < 2; ++a) {
         if ((a == 0 && !color) || (a == 1 && !depth)) continue;
@@ -604,6 +703,8 @@ void Backend::download(sw::Efb& efb, const sw::EfbRect& area, bool color, bool d
             }
     }
 }
+
+bool Backend::packed_readback() const noexcept { return impl_->pack_state == 1; }
 
 void Backend::upload(const sw::Efb& efb, const sw::EfbRect& area) {
     Impl& g = *impl_;

@@ -86,6 +86,9 @@ public:
     // a copy that also clears needs both, since the clear is written back whole).
     void download(sw::Efb& efb, const sw::EfbRect& area = {0, 0, sw::kEfbWidth, sw::kEfbHeight}, bool color = true,
                   bool depth = true);
+    // True once download() reads through the packed RGBA8 target (false: not
+    // tried yet, or the implementation could not set it up: integer reads).
+    bool packed_readback() const noexcept;
     void upload(const sw::Efb& efb, const sw::EfbRect& area = {0, 0, sw::kEfbWidth, sw::kEfbHeight});
 
     u64 draws() const noexcept { return draws_; }

@@ -390,6 +390,7 @@ TEST_CASE(gles_perspective_indirect_misc) {
         CHECK_EQ(z.depth24(410, 410), g.depth24(410, 410));
         CHECK_EQ(z.color24(410, 410), 0x654321U);
     }
+    CHECK(t.gl.be->packed_readback()); // the reads above went through the RGBA8 target
     unsigned ortho = 0;
     auto cmp = [&](u32 x0, u32 y0, u32 x1, u32 y1) {
         unsigned n = 0;
