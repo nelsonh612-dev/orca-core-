@@ -299,6 +299,14 @@ bool Emulator::halted_by_guest() {
         }
     }
     if (!texts.empty()) error_ += ". Text (from the stack; may include earlier calls):" + texts;
+    // an exception taken on the way (the SDK's unhandled-exception handler also
+    // ends in PPCHalt): where it happened
+    std::snprintf(b, sizeof b, ". SRR0 %08X SRR1 %08X DAR %08X DSISR %08X", st.srr0, st.srr1, st.dar, st.dsisr);
+    error_ += b;
+    if (u32 w = 0; read_guest32(st.srr0, w)) {
+        std::snprintf(b, sizeof b, " (instruction at SRR0: %08X)", w);
+        error_ += b;
+    }
     if (auto* k = sys_->ios(); k != nullptr && !k->history().empty()) error_ += ". Last IOS requests: " + k->history();
     if (const std::string di = sys_->di().recent_commands(); !di.empty()) error_ += ". Last disc commands: " + di;
     return true;

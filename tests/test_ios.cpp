@@ -1301,6 +1301,10 @@ TEST_CASE(wii_disc_boot_runs_the_integer_suite) {
     sys.bus().read32(0xCC, x); CHECK_EQ(x, 0U);           // NTSC region letter 'E'
     sys.bus().read32(0xF8, x); CHECK_EQ(x, 243000000U);
     sys.bus().read32(0x28, x); CHECK_EQ(x, 0x01800000U);
+    // the system menu's boot program flag: RVL boot program (0x80; OSInit's
+    // CheckTargets panics on 0x81)
+    u8 flag = 0;
+    sys.bus().read8(0x30FF, flag); CHECK_EQ(flag, 0x80U); // as the apploader saw it
     CHECK((sys.cpu().state().hid4 & ppc::HID4_SBE) != 0U);
     CHECK_EQ(sys.cpu().state().dbat[5].upper, 0xD0001FFFU);
     CHECK(sys.ios()->ppc_credentials().has_value());

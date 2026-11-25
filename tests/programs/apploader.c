@@ -56,5 +56,8 @@ __attribute__((section(".text.start"))) void apploader_entry(void (**init)(repor
     /* Retail apploaders issue a system call while the IPL runs them; the IPL leaves
      * an rfi at the system call vector (0xC00), so it simply returns. */
     __asm__ volatile("sc" ::: "memory");
+    /* What the IPL / system menu left at 0x315C (boot program flag), kept where the
+     * tests can read it after the game has been loaded over 0x80003100. */
+    *(volatile unsigned char*)0x800030FFu = *(volatile unsigned char*)0x8000315Cu;
     *init = app_init; *main_fn = app_main; *close = app_close;
 }

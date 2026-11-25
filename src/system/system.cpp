@@ -329,6 +329,11 @@ bool System::boot_wii_disc(std::string& error) {
     (void)bus_.write32(0x3194, game->type);         // partition type and offset (>> 2)
     (void)bus_.write32(0x3198, static_cast<u32>(game->offset >> 2));
     (void)bus_.write16(0x315E, 0x0113U);            // devkit boot program version (system menu)
+    // the system menu's boot program marks itself as one for RVL (0x80): the SDK's
+    // OSInit (CheckTargets) stops with "boot program is not for RVL target" on
+    // 0x81, and the value IOS leaves (0xDE) is not what the menu passes on
+    (void)bus_.write8(0x315C, 0x80U);
+    (void)bus_.write16(0x30E0, 0x0000U);            // PADInit not done yet (as the menu leaves it)
     // setting.txt (encrypted, 0x100 bytes) from the system menu's data directory.
     // A console runs only discs of its own region, and games read the region from
     // this file: it is made to match the disc (region field at 0x4E000), with a
