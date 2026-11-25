@@ -990,8 +990,16 @@ Cpu::Outcome Cpu::op_cache_x(u32 ins, unsigned xo, bool& handled) {
     }
     case 470: { // dcbi (supervisor; treated as a store for protection)
         if (problem_state()) return Outcome::privileged();
-        // Without a data-cache model there are no modified lines to discard.
-        return translate_data(ea & ~31U, 32, true, lo, hi, split, wimg);
+        // Without a data-cache model there are no modified lines to discard. An
+        // address with no translation (no BAT, no page) is not reported: there is
+        // no line to invalidate. Retail games rely on it (DCInvalidateRange over the
+        // locked-cache area 0xE0000000 before LCEnable maps it; Resident Evil 0 over
+        // 0x004D8AC0); Dolphin's dcbi ignores a page fault the same way, while
+        // dcbst/dcbf still raise a DSI (there and here). A protection violation is
+        // still a DSI.
+        Outcome o = translate_data(ea & ~31U, 32, true, lo, hi, split, wimg);
+        if (o.kind == Outcome::Kind::Exception && o.exc == Exception::DSI && (o.dsisr & DSISR_NOT_FOUND) != 0U) return Outcome::done();
+        return o;
     }
     case 982: { // icbi
         Outcome o = translate_data(ea & ~31U, 32, false, lo, hi, split, wimg);

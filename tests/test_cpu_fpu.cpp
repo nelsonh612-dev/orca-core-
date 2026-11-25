@@ -544,6 +544,29 @@ TEST_CASE(locked_cache_enabled_the_sdk_way) {
     CHECK_EQ(m.s().gpr[7], 0U);
 }
 
+TEST_CASE(dcbi_on_an_untranslated_address_does_nothing) {
+    // A game invalidates the locked-cache area before mapping it (DCInvalidateRange
+    // over 0xE0000000, then LCEnable): no line, no exception (as Dolphin's dcbi)
+    FpMachine m;
+    m.s().msr |= MSR_DR;
+    m.s().gpr[3] = 0xE0000000U;
+    CHECK(m.exec(A::dcbi(0, 3)) == StepResult::Executed);
+    CHECK_EQ(m.s().pc, 0x1004U);
+    // dcbf and dcbst still raise a DSI there (as in Dolphin)
+    m.s().pc = 0x1000;
+    CHECK(m.exec(A::dcbf(0, 3)) == StepResult::ExceptionTaken);
+    CHECK(m.cpu->last_exception() == Exception::DSI);
+    m.s().msr |= MSR_DR;
+    m.s().pc = 0x1000;
+    CHECK(m.exec(A::dcbst(0, 3)) == StepResult::ExceptionTaken);
+    // a protection violation is still reported for dcbi (BAT with no access)
+    m.s().msr |= MSR_DR;
+    m.s().dbat[3] = {0xE0000002U, 0xE0000000U}; // PP = 00: no access
+    m.s().pc = 0x1000;
+    CHECK(m.exec(A::dcbi(0, 3)) == StepResult::ExceptionTaken);
+    CHECK(m.cpu->last_exception() == Exception::DSI);
+}
+
 TEST_CASE(locked_cache_dma_round_trip) {
     FpMachine m;
     m.s().hid2 |= HID2_LCE;
