@@ -49,6 +49,7 @@ inline constexpr u32 FIFO_ADDR_MASK = 0x03FFFFE0U;
 } // namespace pi
 
 class ProcessorInterface final : public mem::MmioDevice {
+    std::array<u64, 32> raised_{};
 public:
     // `line` is called whenever the CPU external-interrupt line changes level.
     explicit ProcessorInterface(mem::Bus& bus, std::function<void(bool)> line);
@@ -56,6 +57,8 @@ public:
     void raise(u32 cause);
     void lower(u32 cause);
     u32 causes() const noexcept { return causes_; }
+    // How many times each cause bit went from clear to set (diagnostics).
+    u64 raised(unsigned bit) const noexcept { return bit < 32U ? raised_[bit] : 0U; }
     u32 mask() const noexcept { return mask_; }
     bool line() const noexcept { return line_level_; }
 

@@ -356,6 +356,7 @@ std::string Emulator::diagnostics() {
         out += k == LoopKind::None ? "\ncode" : (k == LoopKind::NoMemory ? "\nloop (no reads)" : "\nloop (reads memory)");
         out += words;
     }
+    if (!hot.empty()) out += polling_loop(hot[0].first);
     pc_samples_.clear();
     pc_sample_total_ = 0;
     const hw::XfbField f = sys_->vi().xfb_field(false);
@@ -365,7 +366,77 @@ std::string Emulator::diagnostics() {
     std::snprintf(b, sizeof b, "\nVI %ux%u xfb %08X DCR %04X | PI cause %08X mask %08X", f.width, f.height, f.address,
                   dcr, sys_->pi().causes(), sys_->pi().mask());
     out += b;
+    // interrupts raised so far, by source (a game waiting on a flag that an
+    // interrupt handler sets shows which source never came)
+    static constexpr const char* kNames[] = {"ERR", "RSW", "DI", "SI", "EXI", "AI", "DSP", "MEM",
+                                             "VI", "PETOKEN", "PEFINISH", "CP", "DEBUG", "HSP", "IPC"};
+    std::string irq;
+    for (unsigned i = 0; i < std::size(kNames); ++i)
+        if (const u64 n = sys_->pi().raised(i); n != 0U) {
+            std::snprintf(b, sizeof b, " %s:%llu", kNames[i], static_cast<unsigned long long>(n));
+            irq += b;
+        }
+    out += "\nirq" + (irq.empty() ? std::string(" none") : irq);
     if (auto* k = sys_->ios()) out += "\n" + k->activity();
+    return out;
+}
+
+// A loop that waits for memory to change (a branch back over a few instructions
+// that read memory): name the words it reads, with their current values, and the
+// callers, so the report says what the game is waiting for.
+std::string Emulator::polling_loop(u32 hot) {
+    const auto& st = sys_->cpu().state();
+    u32 start = 0, end = 0;
+    for (u32 n = 0; n < 16U && end == 0U; ++n) {
+        u32 ins = 0;
+        const u32 at = hot + 4U * n;
+        if (!read_guest32(at, ins)) return {};
+        if ((ins >> 26) == 16U && (ins & 3U) == 0U) {
+            const u32 target = at + static_cast<u32>(static_cast<s32>(static_cast<s16>(ins & 0xFFFCU)));
+            if (target <= hot && hot - target <= 64U) { start = target; end = at; }
+        } else if ((ins >> 26) == 18U && (ins & 3U) == 0U) {
+            const u32 target = at + static_cast<u32>(static_cast<s32>((ins & 0x03FFFFFCU) << 6) >> 6);
+            if (target <= hot && hot - target <= 64U) { start = target; end = at; }
+            else return {};
+        }
+    }
+    if (end == 0U) return {};
+    std::string out;
+    char b[96];
+    for (u32 at = start; at <= end; at += 4U) {
+        u32 ins = 0;
+        if (!read_guest32(at, ins)) return {};
+        const u32 op = ins >> 26;
+        unsigned size = 0;
+        if (op == 32U || op == 33U) size = 4;
+        else if (op == 40U || op == 41U || op == 42U || op == 43U) size = 2;
+        else if (op == 34U || op == 35U) size = 1;
+        if (size == 0U) continue;
+        const u32 ra = (ins >> 16) & 31U;
+        const u32 ea = (ra == 0U ? 0U : st.gpr[ra]) + static_cast<u32>(static_cast<s32>(static_cast<s16>(ins & 0xFFFFU)));
+        u32 word = 0;
+        if (!read_guest32(ea & ~3U, word)) {
+            std::snprintf(b, sizeof b, " [%08X]=?", ea);
+        } else {
+            const u32 shift = (4U - size - (ea & 3U)) * 8U;
+            const u32 v = size == 4U ? word : (word >> shift) & (size == 2U ? 0xFFFFU : 0xFFU);
+            std::snprintf(b, sizeof b, " [%08X]=%0*X", ea, static_cast<int>(size * 2U), v);
+        }
+        out += b;
+    }
+    if (out.empty()) return {};
+    std::snprintf(b, sizeof b, "\nwaits %08X-%08X on", start, end);
+    out = b + out;
+    std::snprintf(b, sizeof b, "; calls %08X", st.lr);
+    out += b;
+    u32 sp = st.gpr[1];
+    for (int i = 0; i < 5; ++i) {
+        u32 next = 0, lr = 0;
+        if (!read_guest32(sp, next) || next <= sp || !read_guest32(next + 4U, lr) || lr == 0U) break;
+        std::snprintf(b, sizeof b, " <- %08X", lr);
+        out += b;
+        sp = next;
+    }
     return out;
 }
 

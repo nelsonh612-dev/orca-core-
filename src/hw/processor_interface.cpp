@@ -17,7 +17,12 @@ void ProcessorInterface::update_line() {
     }
 }
 
-void ProcessorInterface::raise(u32 cause) { causes_ |= cause; update_line(); }
+void ProcessorInterface::raise(u32 cause) {
+    for (unsigned b = 0; b < 32U; ++b)
+        if ((cause >> b & 1U) != 0U && (causes_ >> b & 1U) == 0U) ++raised_[b];
+    causes_ |= cause;
+    update_line();
+}
 void ProcessorInterface::lower(u32 cause) { causes_ &= ~cause; update_line(); }
 
 namespace {

@@ -167,6 +167,29 @@ TEST_CASE(frontend_diagnostics_show_where_the_game_runs) {
     CHECK(d.find("PI cause") != std::string::npos);
     CHECK(emu.diagnostics().find(" hot") == std::string::npos); // samples were reset
 }
+
+// A game spinning on a flag that an interrupt handler should set (lwz r0,
+// -0x7020(r13); cmplwi r0,0; beq back): the report names the word and its value.
+TEST_CASE(frontend_diagnostics_name_the_word_a_polling_loop_waits_on) {
+    frontend::Settings s;
+    s.jit = false;
+    frontend::Emulator emu(s);
+    std::string error;
+    CHECK(emu.load_executable(read_file(ORCA_PROGRAMS_DIR "/gpu_draw.dol"), false, error));
+    auto& st = emu.system()->cpu().state();
+    const u32 pc = st.pc & 0x3FFFFFFFU, pc0 = st.pc;
+    const u32 loop[] = {0x800D8FE0U, 0x28000000U, 0x4182FFF8U};
+    for (u32 i = 0; i < 3U; ++i) CHECK(emu.system()->bus().write32(pc + 4U * i, loop[i]) == mem::BusStatus::Ok);
+    st.gpr[13] = 0x80400000U;
+    CHECK(emu.system()->bus().write32(0x003F8FE0U, 0) == mem::BusStatus::Ok);
+    CHECK(emu.run_frame());
+    const std::string d = emu.diagnostics();
+    char want[64];
+    std::snprintf(want, sizeof want, "waits %08X-%08X on [803F8FE0]=00000000", pc0, pc0 + 8U);
+    if (d.find(want) == std::string::npos) std::printf("    %s\n", d.c_str());
+    CHECK(d.find(want) != std::string::npos);
+    CHECK(d.find("\nirq") != std::string::npos);
+}
 #endif
 
 int main() { return orca::test::run_all("frontend"); }
