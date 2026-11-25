@@ -62,6 +62,7 @@ add_library(orca_core
     src/ios/stm.cpp
     src/ios/sdio.cpp
     src/ios/net_kd.cpp
+    src/ios/net_kd_time.cpp
     src/ios/es.cpp
     src/ios/nand_fs.cpp
     src/ios/fs_device.cpp

@@ -31,6 +31,7 @@
 #include "orca/hw/hollywood_ipc.hpp"
 #include "orca/ios/kernel.hpp"
 #include "orca/ios/net_kd.hpp"
+#include "orca/ios/net_kd_time.hpp"
 #include "orca/ios/sdio.hpp"
 #include "orca/ios/stm.hpp"
 #include "orca/ios/es.hpp"

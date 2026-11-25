@@ -78,6 +78,12 @@ System::System(SystemConfig config) : config_(config), clocks_(clocks_for(config
         ios_->add_device(std::make_unique<ios::StmImmediate>(*hook));
         ios_->add_device(std::make_unique<ios::SdioSlot0>()); // empty SD slot
         ios_->add_device(std::make_unique<ios::NetKdRequest>()); // WiiConnect24 without network
+        ios_->add_device(std::make_unique<ios::NetKdTime>([this] {
+            // console date: RTC counter + SRAM counter bias (offset 0x0C), seconds since 2000
+            const auto& sram = ipl_->sram();
+            const auto bias = static_cast<s32>(u32{sram[0x0C]} << 24 | u32{sram[0x0D]} << 16 | u32{sram[0x0E]} << 8 | sram[0x0F]);
+            return static_cast<u64>(static_cast<s64>(ipl_->rtc()) + bias + 946684800LL);
+        }));
         ios_->add_device(std::move(hook));
         auto es = std::make_unique<ios::Es>();
         es_ = es.get();

@@ -3,6 +3,7 @@
 #include "orca/hw/hollywood_ipc.hpp"
 #include "orca/ios/kernel.hpp"
 #include "orca/ios/net_kd.hpp"
+#include "orca/ios/net_kd_time.hpp"
 #include "orca/ios/sdio.hpp"
 #include "orca/ios/stm.hpp"
 #include "orca/ios/es.hpp"
@@ -386,6 +387,46 @@ TEST_CASE(wiiconnect24_daemon_without_network) {
     r2->ticks(600);
     CHECK(r2->kernel.stopped());
     CHECK(r2->kernel.stop_reason().find("DOWNLOAD_NOW_EX needs the network") != std::string::npos);
+}
+
+TEST_CASE(wiiconnect24_clock_without_network) {
+    Rig r;
+    r.set(PPC_IRQMASK, IRQ_IPC_BROADWAY);
+    r.set(PPCCTRL, CTRL_IY1 | CTRL_IY2);
+    u64 now = 1700000000ULL; // the console clock (seconds since 1970)
+    r.kernel.add_device(std::make_unique<ios::NetKdTime>([&] { return now; }));
+    r.put_string(0x2000, "/dev/net/kd/time");
+    r.block(0x1000, 1, 0, {0x2000, 0});
+    const s32 fd = r.call(0x1000);
+    CHECK(fd >= 0);
+    const auto ioctl = [&](u32 number, u32 in, u32 in_size) {
+        r.block(0x1000, 6, static_cast<u32>(fd), {number, in, in_size, 0x3000, 0x20});
+        return r.call(0x1000);
+    };
+    const auto out64 = [&] { return u64{r.mem32(0x3004)} << 32 | r.mem32(0x3008); };
+    r.bus.write32(0x3000, 0xFFFFFFFFU);
+    CHECK_EQ(ioctl(0x14, 0, 0), 0);                    // universal time = console clock
+    CHECK_EQ(r.mem32(0x3000), 0U);
+    CHECK_EQ(out64(), now);
+    r.bus.write32(0x4000, 0);                           // set it 100 s ahead, no misc.bin update
+    r.bus.write32(0x4004, static_cast<u32>(now + 100U));
+    r.bus.write32(0x4008, 0);
+    CHECK_EQ(ioctl(0x15, 0x4000, 12), 0);
+    now += 5;                                           // the clock runs on
+    CHECK_EQ(ioctl(0x14, 0, 0), 0);
+    CHECK_EQ(out64(), now + 100U);
+    r.bus.write32(0x4000, 1000);
+    r.bus.write32(0x4004, 0);
+    CHECK_EQ(ioctl(0x17, 0x4000, 8), 0);                // RTC counter
+    CHECK_EQ(ioctl(0x18, 0, 0), 0);                     // difference
+    CHECK_EQ(out64(), now + 100U - 1000U);
+    CHECK_EQ(ioctl(0x16, 0, 0), -9);
+    r.bus.write32(0x4004, 1);                           // asks to update misc.bin: stop
+    r.block(0x1000, 6, static_cast<u32>(fd), {0x17, 0x4000, 8, 0x3000, 0x20});
+    r.send(0x1000);
+    r.ticks(600);
+    CHECK(r.kernel.stopped());
+    CHECK(r.kernel.stop_reason().find("misc.bin") != std::string::npos);
 }
 
 TEST_CASE(sd_slot_is_empty) {
