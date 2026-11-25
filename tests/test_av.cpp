@@ -60,6 +60,38 @@ TEST_CASE(vi_timing_from_documented_ntsc_and_pal_defaults) {
     CHECK_EQ(486000000ULL / kPalField, 50ULL);              // exactly 50 Hz
 }
 
+// What the IPL / system menu leaves (Dolphin VideoInterface::Preset): an enabled
+// 525-half-line interlaced timing, the format in DCR[9:8], the two display
+// interrupts the SDK expects. The SDK's VIInit keeps an enabled VI (it rewrites
+// the video mode word 0x800000CC to NTSC when it finds the VI off).
+TEST_CASE(vi_preset_is_the_state_the_ipl_leaves) {
+    Rig t;
+    t.vi.preset(false);
+    CHECK_EQ(t.r16(vi::DCR), 0x0001U);
+    CHECK_EQ(t.r32(vi::HTR0), 0x476901ADU);                 // same as the documented NTSC value
+    CHECK_EQ(t.r32(vi::HTR1), 0x02EA5140U);
+    CHECK_EQ(t.r16(vi::VTR), 0x0006U);
+    CHECK_EQ(t.r32(vi::DI0), 0x110701AEU);                 // ENB, VCT 263, HCT 430
+    CHECK_EQ(t.r32(vi::DI1), 0x10010001U);
+    CHECK_EQ(t.r16(vi::PICCONF), 0x2828U);
+    const VideoTiming n = t.vi.timing();
+    CHECK(n.valid);
+    CHECK_EQ(n.odd_half_lines, 525U);
+    CHECK_EQ(n.even_half_lines, 525U);
+    CHECK_EQ(t.vi.cycles_per_line(), 858U * 36U);          // 27 MHz clock: 59.94 Hz fields
+    Rig p;
+    p.vi.preset(true);
+    CHECK_EQ(p.r16(vi::DCR), 0x0101U);                     // format PAL
+    // the display interrupt at line 263 fires once a field
+    t.w16(vi::DCR, 0x0001);
+    while (auto e = t.sched.next_event_time()) {
+        if (*e > kNtscField + 1000U) break;
+        t.sched.advance_to(*e);
+        if ((t.r32(vi::DI0) & vi::DI_INT) != 0U) break;
+    }
+    CHECK((t.r32(vi::DI0) & vi::DI_INT) != 0U);
+}
+
 TEST_CASE(vi_position_counters) {
     Rig t;
     CHECK_EQ(t.r16(vi::DPV), 0U); // timing off

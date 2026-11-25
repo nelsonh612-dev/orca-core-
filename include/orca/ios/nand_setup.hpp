@@ -19,6 +19,8 @@
 
 #include <optional>
 #include <string>
+#include <string_view>
+#include <span>
 #include <vector>
 
 namespace orca::ios {
@@ -45,6 +47,10 @@ ios::BdAddr emulated_remote_address(unsigned index);    // HCI order
 
 // The system menu's region settings for a disc of region `r` (as the system menu
 // of a console of that region has them; codes as Dolphin uses them).
+// A byte setting (type 3) of a SYSCONF image, e.g. "IPL.E60"; nullopt when the
+// file is not SYSCONF or has no such byte entry.
+std::optional<u8> sysconf_byte(std::span<const u8> sysconf, std::string_view name);
+
 struct RegionSettings { const char* area; const char* video; const char* game; const char* code; };
 RegionSettings region_settings(WiiRegion r);
 // setting.txt (plain text) for region `r`, keeping `serial` and the model prefix.

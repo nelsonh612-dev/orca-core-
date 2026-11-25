@@ -139,6 +139,30 @@ u16 VideoInterface::read16(u32 off) const {
     return reg(off);
 }
 
+void VideoInterface::preset(bool pal) {
+    const auto w32 = [this](u32 off, u32 v) {
+        (void)write16(off, static_cast<u16>(v >> 16U));
+        (void)write16(off + 2U, static_cast<u16>(v));
+    };
+    (void)write16(vi::DCR, 0);                              // stop while reprogramming
+    (void)write16(vi::VTR, 6U);                             // EQU 6, ACV 0
+    w32(vi::HTR0, 429U | 105U << 16U | 71U << 24U);         // HLW 429, HCE 105, HCS 71
+    w32(vi::HTR1, 64U | 162U << 7U | 373U << 17U);          // HSY 64, HBE640 162, HBS640 373
+    w32(vi::VTO, 502U | 5U << 16U);                         // PRB 502, PSB 5
+    w32(vi::VTE, 503U | 4U << 16U);                         // PRB 503, PSB 4
+    w32(vi::BBOI, 12U | 520U << 5U | 12U << 16U | 520U << 21U);
+    w32(vi::BBEI, 13U | 519U << 5U | 13U << 16U | 519U << 21U);
+    w32(vi::DI0, 430U | 263U << 16U | vi::DI_ENB);          // HCT 430, VCT 263
+    w32(vi::DI1, 1U | 1U << 16U | vi::DI_ENB);
+    w32(vi::DI2, 0);
+    w32(vi::DI3, 0);
+    (void)write16(vi::PICCONF, static_cast<u16>(40U | 40U << 8U)); // STD 40, WPL 40
+    // VICLK stays at 27 MHz: Dolphin presets the 54 MHz clock for NTSC, but games
+    // set it in VIConfigure and Orca's timing model would run this interlaced
+    // preset at twice the field rate until then.
+    (void)write16(vi::DCR, static_cast<u16>(vi::DCR_ENB | (pal ? 1U << 8U : 0U)));
+}
+
 bool VideoInterface::write16(u32 off, u16 v) {
     if (off >= 0x80U) return fail("VI: register offset beyond 0x7F not implemented");
     if (off == vi::DPV || off == vi::DPH) return true; // read-only position counters: writes ignored

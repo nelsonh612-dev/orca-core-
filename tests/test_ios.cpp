@@ -924,6 +924,31 @@ TEST_CASE(es_title_store_device_id_and_boot2) {
     CHECK(r.kernel.stop_reason().find("keys.bin") != std::string::npos);
 }
 
+// SYSCONF byte settings (IPL.E60 decides the VI format a PAL Wii boots in)
+TEST_CASE(sysconf_byte_settings_are_read) {
+    TempDir t("sysconf_byte");
+    ios::NandFs nand(t.p);
+    std::string error;
+    CHECK(nand.load(error));
+    ios::NandSetup setup;
+    setup.eurgb60 = false;
+    setup.progressive = true;
+    CHECK(ios::create_nand(nand, setup, error));
+    const s32 h = nand.open(0, 0, "/shared2/sys/SYSCONF", ios::kFsRead);
+    CHECK(h >= 0);
+    u32 size = 0, pos = 0;
+    nand.status(h, size, pos);
+    std::vector<u8> sc(size);
+    CHECK_EQ(nand.read(h, sc), static_cast<s32>(size));
+    nand.close(h);
+    CHECK(ios::sysconf_byte(sc, "IPL.E60") == std::optional<u8>(0));
+    CHECK(ios::sysconf_byte(sc, "IPL.PGS") == std::optional<u8>(1));
+    CHECK(!ios::sysconf_byte(sc, "IPL.NOPE").has_value());
+    CHECK(!ios::sysconf_byte(sc, "BT.DINF").has_value()); // not a byte entry
+    sc[0] = 'X';
+    CHECK(!ios::sysconf_byte(sc, "IPL.E60").has_value());
+}
+
 TEST_CASE(setting_txt_follows_the_disc_region) {
     TempDir t("setting_region");
     ios::NandFs nand(t.p);
@@ -1380,6 +1405,12 @@ TEST_CASE(wii_disc_boot_runs_the_integer_suite) {
     sys.bus().read32(0x20, x); CHECK_EQ(x, 0x0D15EA5EU);
     sys.bus().read32(0x2C, x); CHECK_EQ(x, 0x23U);
     sys.bus().read32(0xCC, x); CHECK_EQ(x, 0U);           // NTSC region letter 'E'
+    {   // the VI as the system menu leaves it: enabled, NTSC (so VIInit keeps 0xCC)
+        u16 dcr = 0;
+        CHECK(sys.bus().read16(0x0C002002U, dcr) == mem::BusStatus::Ok);
+        CHECK_EQ(dcr, 0x0001U);
+        CHECK_EQ(sys.bus().watch_hit().count, 0U);
+    }
     sys.bus().read32(0xF8, x); CHECK_EQ(x, 243000000U);
     sys.bus().read32(0x28, x); CHECK_EQ(x, 0x01800000U);
     // the system menu's boot program flag: RVL boot program (0x80; OSInit's

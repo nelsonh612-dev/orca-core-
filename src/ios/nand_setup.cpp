@@ -203,3 +203,22 @@ bool create_nand(NandFs& nand, const NandSetup& s, std::string& error) {
 }
 
 } // namespace orca::ios
+
+namespace orca::ios {
+std::optional<u8> sysconf_byte(std::span<const u8> f, std::string_view name) {
+    if (f.size() < 8 || f[0] != 'S' || f[1] != 'C' || f[2] != 'v' || f[3] != '0') return std::nullopt;
+    const std::size_t count = static_cast<std::size_t>(f[4]) << 8 | f[5];
+    if (6U + 2U * count > f.size()) return std::nullopt;
+    for (std::size_t i = 0; i < count; ++i) {
+        const std::size_t off = static_cast<std::size_t>(f[6 + 2 * i]) << 8 | f[7 + 2 * i];
+        if (off >= f.size()) return std::nullopt;
+        const u8 desc = f[off];
+        const std::size_t name_len = (desc & 0x1FU) + 1U;
+        if (off + 1U + name_len + 1U > f.size()) return std::nullopt;
+        if (std::string_view(reinterpret_cast<const char*>(&f[off + 1]), name_len) != name) continue;
+        if ((desc >> 5) != kByte) return std::nullopt;
+        return f[off + 1U + name_len];
+    }
+    return std::nullopt;
+}
+} // namespace orca::ios

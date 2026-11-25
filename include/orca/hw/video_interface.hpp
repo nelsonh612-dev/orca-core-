@@ -69,6 +69,13 @@ class VideoInterface final : public mem::MmioDevice {
 public:
     VideoInterface(core::Scheduler& scheduler, ProcessorInterface& pi, u64 cpu_hz);
 
+    // The state the IPL / system menu leaves (Dolphin VideoInterface::Preset): an
+    // enabled interlaced 525-half-line timing, format NTSC (`pal` false) or PAL,
+    // the two display interrupts the SDK uses, and a 640-pixel picture. The SDK's
+    // VIInit keeps an enabled VI and takes the format from DCR; a disabled one it
+    // resets to NTSC, also rewriting the video mode word at 0x800000CC.
+    void preset(bool pal);
+
     VideoTiming timing() const;
     // Current beam position (VCT, HCT), both 1-based; (0, 0) when timing is off.
     std::pair<u32, u32> position() const;

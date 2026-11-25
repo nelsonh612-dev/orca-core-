@@ -236,6 +236,7 @@ private:
     void wii_boot_state();
     void write_default_exception_handlers();
     void watch_video_mode();
+    bool sysconf_eurgb60();
     // Tries the busy-wait skip at the CPU's current PC; true if time moved on.
     bool try_idle_skip(u64 end);
     bool idle_candidate(u32 pc, unsigned& length);

@@ -227,6 +227,7 @@ bool System::boot_disc(std::string& error) {
                                static_cast<u32>(bi2[0x1A]) << 8 | bi2[0x1B];
         (void)bus_.write32(0xCC, bi2_region == 2U ? 1U : 0U);
         (void)bus_.write32(0xD0, 0x01000000U); // ARAM size: the 16 MiB internal ARAM
+        vi_->preset(bi2_region == 2U);
         watch_video_mode();
     }
 
@@ -335,6 +336,10 @@ bool System::boot_wii_disc(std::string& error) {
     const bool pal = region == 'P' || region == 'D' || region == 'F' || region == 'I' || region == 'S' ||
                      region == 'H' || region == 'U' || region == 'X' || region == 'Y';
     (void)bus_.write32(0xCC, pal ? 1U : 0U);        // video mode the menu ran in
+    // and the VI as the menu leaves it: PAL discs run in PAL, or in 60 Hz (NTSC
+    // timing) when the console's EuRGB60 setting is on (Dolphin: Preset(IsNTSC ||
+    // SYSCONF PAL60)); the SDK then reads EURGB60 from these two
+    vi_->preset(pal && !sysconf_eurgb60());
     watch_video_mode();
     (void)bus_.write32(0x3184, 0x80000000U);        // game ID address
     (void)bus_.write32(0x3194, game->type);         // partition type and offset (>> 2)
@@ -380,6 +385,22 @@ bool System::boot_wii_disc(std::string& error) {
     hle_boot(*entry);
     wii_boot_state();
     return true;
+}
+
+// SYSCONF IPL.E60 (EuRGB60, "60 Hz" for PAL); on when the NAND has no SYSCONF,
+// as on a new console (ios::NandSetup).
+bool System::sysconf_eurgb60() {
+    if (!nand_) return true;
+    const s32 h = nand_->open(0, 0, "/shared2/sys/SYSCONF", ios::kFsRead);
+    if (h < 0) return true;
+    u32 size = 0, pos = 0;
+    nand_->status(h, size, pos);
+    std::vector<u8> sc(size);
+    const bool ok = nand_->read(h, sc) == static_cast<s32>(size);
+    nand_->close(h);
+    if (!ok) return true;
+    const auto v = ios::sysconf_byte(sc, "IPL.E60");
+    return !v || *v != 0U;
 }
 
 // Diagnostics: who writes the video mode word (0x800000CC) after boot.
