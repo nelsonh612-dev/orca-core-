@@ -187,8 +187,26 @@ bool Bus::unchanged_since(u32 address, u32 size, u64 epoch) const noexcept {
     return true;
 }
 
+void Bus::set_watch(u32 address, u32 size, std::function<u32()> pc_source) {
+    watch_address_ = address;
+    watch_size_ = size;
+    watch_pc_ = std::move(pc_source);
+    watch_hit_ = {};
+}
+
 void Bus::after_write(u32 address, u32 size, AccessSource src) {
     ++write_epoch_;
+    if (watch_size_ != 0U && address < watch_address_ + watch_size_ && watch_address_ < static_cast<u64>(address) + size) {
+        ++watch_hit_.count;
+        watch_hit_.source = src;
+        watch_hit_.address = address;
+        watch_hit_.size = size;
+        watch_hit_.pc = watch_pc_ ? watch_pc_() : 0U;
+        u64 v = 0;
+        if (Region* r = region_for(watch_address_); r != nullptr && r->ram && watch_size_ <= 4U)
+            for (u32 i = 0; i < watch_size_; ++i) v = (v << 8) | r->ram[watch_address_ - r->base + i];
+        watch_hit_.value = static_cast<u32>(v);
+    }
     {
         const u64 end = static_cast<u64>(address) + size - 1U;
         const u32 last = static_cast<u32>(std::min<u64>(end >> kPageShift, kEpochPages - 1U));

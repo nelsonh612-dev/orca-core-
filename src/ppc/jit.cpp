@@ -1469,7 +1469,7 @@ void Jit::tlb_fill(u32 ea, bool write) {
     if (host == nullptr) return;
     for (const auto& line : cpu_.locked_cache_)
         if ((line.first & ~0xFFFU) == pp) return;
-    if (write && (bus_.is_code_page(pp) || bus_.observes_cpu_writes())) return;
+    if (write && (bus_.is_code_page(pp) || bus_.observes_cpu_writes() || bus_.is_watched_page(pp))) return;
     TlbEntry& en = tlb_[(ea >> 12) & (kTlbEntries - 1U)];
     const u32 tag = page | 1U;
     const u64 base = static_cast<u64>(reinterpret_cast<std::uintptr_t>(host)) - page;

@@ -357,6 +357,7 @@ bool Emulator::halted_by_guest() {
     }
     if (!texts.empty()) error_ += ". Text (from the stack; may include earlier calls):" + texts;
     if (const std::string m = panic_message(st.gpr[1]); !m.empty()) error_ += ". Message: \"" + m + "\"";
+    error_ += ". " + video_mode_word();
     // an exception taken on the way (the SDK's unhandled-exception handler also
     // ends in PPCHalt): where it happened
     std::snprintf(b, sizeof b, ". SRR0 %08X SRR1 %08X DAR %08X DSISR %08X", st.srr0, st.srr1, st.dar, st.dsisr);
@@ -454,8 +455,27 @@ std::string Emulator::diagnostics() {
             out += " (low-level)";
         }
     }
+    out += "\n" + video_mode_word();
     if (auto* k = sys_->ios()) out += "\n" + k->activity();
     return out;
+}
+
+// The video mode the IPL / system menu left at 0x800000CC (0 NTSC, 1 PAL, 2 MPAL,
+// 5 EURGB60), which VIConfigure compares with the mode a game asks for, and the
+// last write to it after boot.
+std::string Emulator::video_mode_word() {
+    u32 v = 0;
+    char b[160];
+    if (sys_->bus().read32(0xCC, v) != mem::BusStatus::Ok) return "video mode word unreadable";
+    const auto& h = sys_->bus().watch_hit();
+    if (h.count == 0U) {
+        std::snprintf(b, sizeof b, "video mode word 800000CC=%u (as set at boot)", v);
+    } else {
+        std::snprintf(b, sizeof b, "video mode word 800000CC=%u, written %llu times since boot, last by %s%s%08X (%u bytes at %08X)", v,
+                      static_cast<unsigned long long>(h.count), h.source == mem::AccessSource::Dma ? "DMA" : "the CPU",
+                      h.source == mem::AccessSource::Dma ? " while the CPU was at " : " at ", h.pc, h.size, h.address);
+    }
+    return b;
 }
 
 // A loop that waits for memory to change (a branch back over a few instructions

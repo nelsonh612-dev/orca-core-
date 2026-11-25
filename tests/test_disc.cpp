@@ -549,11 +549,12 @@ TEST_CASE(cpu_stop_reason_names_the_device) {
 // ------------------------------------------------------------ HLE disc boot
 #ifdef ORCA_PROGRAMS_DIR
 namespace {
-struct BootRun { bool booted = false; std::string error; ppc::StepResult stop{}; std::vector<u32> log; u32 exit_code = 99; u32 entry = 0; disc::ImageFormat format{}; };
+struct BootRun { bool booted = false; std::string error; ppc::StepResult stop{}; std::vector<u32> log; u32 exit_code = 99; u32 entry = 0; disc::ImageFormat format{};
+                 u32 video_mode = 99, aram_size = 0; u64 watch_writes = 99; mem::Bus::WatchHit hit{}; };
 
 enum class Wrap { Raw, Ciso, Gcz };
 
-BootRun boot_and_run(const char* dol_name, Wrap wrap = Wrap::Raw) {
+BootRun boot_and_run(const char* dol_name, Wrap wrap = Wrap::Raw, u8 bi2_region = 0, bool run = true) {
     BootRun r;
     const auto app = read_file(ORCA_PROGRAMS_DIR "/apploader.bin");
     const auto dol = read_file((std::string(ORCA_PROGRAMS_DIR) + "/" + dol_name).c_str());
@@ -563,6 +564,7 @@ BootRun boot_and_run(const char* dol_name, Wrap wrap = Wrap::Raw) {
     port.cpu = &sys.cpu();
     sys.bus().map_mmio("test-port", test::TestPort::kPhysical, 0x1000, port);
     std::vector<u8> image = build_disc(app, dol);
+    image[0x440 + 0x1B] = bi2_region; // bi2: region (0 JPN, 1 USA, 2 PAL)
     if (wrap == Wrap::Ciso) image = test_images::make_ciso(image, 0x8000);
 #if defined(ORCA_HAVE_ZLIB)
     if (wrap == Wrap::Gcz) image = test_images::make_gcz(image, 0x4000);
@@ -575,6 +577,16 @@ BootRun boot_and_run(const char* dol_name, Wrap wrap = Wrap::Raw) {
     r.booted = sys.boot_disc(r.error);
     if (!r.booted) { std::fprintf(stderr, "    boot_disc: %s\n", r.error.c_str()); return r; }
     r.entry = sys.cpu().state().pc;
+    (void)sys.bus().read32(0xCC, r.video_mode);
+    (void)sys.bus().read32(0xD0, r.aram_size);
+    r.watch_writes = sys.bus().watch_hit().count;
+    if (!run) {
+        // a later write to the video mode word is recorded with its source
+        sys.cpu().state().pc = 0x80001234U;
+        (void)sys.bus().write32(0xCC, 7U);
+        r.hit = sys.bus().watch_hit();
+        return r;
+    }
     const auto res = sys.run(4000000000ULL);
     r.stop = res.stop;
     r.log = port.log;
@@ -599,6 +611,24 @@ TEST_CASE(boot_integer_suite_from_disc_via_apploader) {
     CHECK_EQ(r.exit_code, 0U);
     CHECK(r.log == host);
     std::printf("[disc] integer_suite booted from disc via apploader: %zu values %s\n", r.log.size(), r.log == host ? "identical to host" : "MISMATCH");
+}
+
+// What the IPL leaves for VIConfigure and ARInit (Dolphin Boot_BS2Emu): the video
+// mode word follows the disc region (PAL discs: 1, others: 0) and 0xD0 holds the
+// ARAM size. Later writes to the video mode word are recorded for the reports.
+TEST_CASE(gamecube_boot_leaves_the_video_mode_and_aram_size) {
+    const BootRun ntsc = boot_and_run("integer_suite.dol", Wrap::Raw, 1, false);
+    CHECK(ntsc.booted);
+    CHECK_EQ(ntsc.video_mode, 0U);
+    CHECK_EQ(ntsc.aram_size, 0x01000000U);
+    CHECK_EQ(ntsc.watch_writes, 0U); // the test apploader does not touch it
+    const BootRun pal = boot_and_run("integer_suite.dol", Wrap::Raw, 2, false);
+    CHECK(pal.booted);
+    CHECK_EQ(pal.video_mode, 1U);
+    CHECK_EQ(pal.hit.count, 1U);
+    CHECK(pal.hit.source == mem::AccessSource::Cpu);
+    CHECK_EQ(pal.hit.pc, 0x80001234U);
+    CHECK_EQ(pal.hit.value, 7U);
 }
 
 TEST_CASE(boot_dvd_suite_reads_disc_through_di) {

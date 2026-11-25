@@ -219,6 +219,16 @@ bool System::boot_disc(std::string& error) {
     if (!d->read(0x440, bi2)) { error = "boot_disc: cannot read bi2.bin"; return false; }
     (void)bus_.dma_write(loader::virtual_to_physical(kBi2Address), bi2);
     (void)bus_.write32(0xF4, kBi2Address);
+    if (gc) {
+        // What the IPL leaves (Dolphin Boot_BS2Emu: "fake the VI init of the IPL"):
+        // the video mode it ran in, PAL for PAL discs (bi2 region 2), else NTSC;
+        // VIConfigure refuses to switch between the NTSC and PAL families.
+        const u32 bi2_region = static_cast<u32>(bi2[0x18]) << 24 | static_cast<u32>(bi2[0x19]) << 16 |
+                               static_cast<u32>(bi2[0x1A]) << 8 | bi2[0x1B];
+        (void)bus_.write32(0xCC, bi2_region == 2U ? 1U : 0U);
+        (void)bus_.write32(0xD0, 0x01000000U); // ARAM size: the 16 MiB internal ARAM
+        watch_video_mode();
+    }
 
     hle_boot(0);
     write_default_exception_handlers();
@@ -325,6 +335,7 @@ bool System::boot_wii_disc(std::string& error) {
     const bool pal = region == 'P' || region == 'D' || region == 'F' || region == 'I' || region == 'S' ||
                      region == 'H' || region == 'U' || region == 'X' || region == 'Y';
     (void)bus_.write32(0xCC, pal ? 1U : 0U);        // video mode the menu ran in
+    watch_video_mode();
     (void)bus_.write32(0x3184, 0x80000000U);        // game ID address
     (void)bus_.write32(0x3194, game->type);         // partition type and offset (>> 2)
     (void)bus_.write32(0x3198, static_cast<u32>(game->offset >> 2));
@@ -369,6 +380,11 @@ bool System::boot_wii_disc(std::string& error) {
     hle_boot(*entry);
     wii_boot_state();
     return true;
+}
+
+// Diagnostics: who writes the video mode word (0x800000CC) after boot.
+void System::watch_video_mode() {
+    bus_.set_watch(0xCC, 4, [this] { return cpu_->state().pc; });
 }
 
 void System::write_default_exception_handlers() {

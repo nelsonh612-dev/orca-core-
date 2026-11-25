@@ -122,6 +122,20 @@ public:
     }
     void remove_write_observer(std::size_t id);
 
+    // Diagnostics: one watched physical range. Every write that touches it is
+    // recorded (source, the guest PC from `pc_source` and the word afterwards);
+    // the JIT leaves the page to the bus so that its stores are seen too.
+    struct WatchHit {
+        u64 count{0};
+        AccessSource source{AccessSource::Cpu};
+        u32 address{0}, size{0}, pc{0}, value{0};
+    };
+    void set_watch(u32 address, u32 size, std::function<u32()> pc_source);
+    const WatchHit& watch_hit() const noexcept { return watch_hit_; }
+    bool is_watched_page(u32 address) const noexcept {
+        return watch_size_ != 0U && (address >> kPageShift) == (watch_address_ >> kPageShift);
+    }
+
     // Code-page tracking: when a write touches a page marked as containing
     // translated code, the invalidation handler receives the written range.
     // The page stays marked until unmark_code_page() is called (normally by
@@ -155,6 +169,9 @@ private:
     const Region* region_for(u32 address) const noexcept;
     Region* region_for(u32 address) noexcept;
     void after_write(u32 address, u32 size, AccessSource src);
+    u32 watch_address_{0}, watch_size_{0};
+    std::function<u32()> watch_pc_;
+    WatchHit watch_hit_;
 
     std::vector<Region> regions_;          // index 0 unused (means unmapped)
     std::unique_ptr<u16[]> page_region_;   // kPageCount entries
