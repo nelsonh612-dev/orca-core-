@@ -1159,6 +1159,13 @@ TEST_CASE(di_device_drive_commands_partitions_and_reads) {
     CHECK_EQ(t.ioctl(0x8D, {0x20, 0x460A0000U}, 0x8300, 0x20), ios::di_res::kDriveError);
     CHECK_EQ(t.ioctl(0xE0, {}, 0x8100, 4), ios::di_res::kSuccess);
     CHECK_EQ(t.r.mem32(0x8100) & 0xFFFFFFU, 0x052100U); // block out of bounds
+    // report key (0xA4): a retail drive rejects it with "invalid command" and the
+    // DMA buffer is left alone; games use this to tell retail from a dev drive
+    t.r.bus.write32(0x8500, 0x5A5A5A5AU);
+    CHECK_EQ(t.ioctl(0xA4, {0x00000002U, 0x00ABCDEFU}, 0x8500, 0x20), ios::di_res::kDriveError);
+    CHECK_EQ(t.r.mem32(0x8500), 0x5A5A5A5AU);
+    CHECK_EQ(t.ioctl(0xE0, {}, 0x8100, 4), ios::di_res::kSuccess);
+    CHECK_EQ(t.r.mem32(0x8100) & 0xFFFFFFU, 0x052000U); // invalid command
     // inquiry, cover status, registers
     CHECK_EQ(t.ioctl(0x12, {}, 0x8400, 0x20), ios::di_res::kSuccess);
     CHECK_EQ(t.r.mem32(0x8400), 0x00000002U);

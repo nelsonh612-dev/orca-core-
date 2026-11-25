@@ -208,6 +208,8 @@ std::optional<Result> DiDevice::start(Kernel& k, const Pending& p) {
     }
     case 0x95: return write_out(reg(DISR));
     case 0x96: return write_out(reg(DICR));
+    case 0xA4: // DVDLowReportKey: byte 7 = key type, bytes 8-11 = parameter; 0x20-byte DMA
+        return via_drive(0xA4000000U | u32{sub7} << 16, p.args[1] & 0x00FFFFFFU, 0, 0x20, true);
     case 0xAB: return via_drive(0xAB000000U, p.args[0], 0, 0, false);
     case 0xE0: return via_drive(0xE0000000U, 0, 0, 0, false);
     case 0xE1: return via_drive(0xE1000000U | (u32{sub7} & 3U) << 16, p.args[2], p.args[1], 0, false);

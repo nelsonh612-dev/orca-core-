@@ -143,6 +143,10 @@ bool DiscInterface::start_command() {
     }
     case di::kCommandRead: break;
     case 0xAB: return done(true); // seek: no drive model, nothing else to do
+    case 0xA4: // report key: a retail drive rejects it (games use it to tell retail
+               // hardware from a development drive; Dolphin DVDInterface.cpp)
+        error_ = DriveError::InvalidCommand;
+        return done(false);
     case 0xE0: { // request error
         const u32 st = state_ == DriveState::Ready ? 0U : static_cast<u32>(state_) - 1U;
         diimmbuf_ = (st << 24) | static_cast<u32>(error_);
