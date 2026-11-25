@@ -53,5 +53,8 @@ static void *app_close(void) { report("close\n"); return (void *)entry_point; }
 __attribute__((section(".text.start"))) void apploader_entry(void (**init)(report_t),
                                                              int (**main_fn)(void **, uint32_t *, uint32_t *),
                                                              void *(**close)(void)) {
+    /* Retail apploaders issue a system call while the IPL runs them; the IPL leaves
+     * an rfi at the system call vector (0xC00), so it simply returns. */
+    __asm__ volatile("sc" ::: "memory");
     *init = app_init; *main_fn = app_main; *close = app_close;
 }

@@ -226,6 +226,7 @@ private:
     // shifted left by `offset_shift` (2 on Wii). Returns the game's entry point.
     std::optional<u32> run_apploader(disc::DiscReader& d, unsigned offset_shift, std::string& error);
     void wii_boot_state();
+    void write_default_exception_handlers();
     // Tries the busy-wait skip at the CPU's current PC; true if time moved on.
     bool try_idle_skip(u64 end);
     bool idle_candidate(u32 pc, unsigned& length);

@@ -200,6 +200,7 @@ bool System::boot_disc(std::string& error) {
     (void)bus_.write32(0xF4, kBi2Address);
 
     hle_boot(0);
+    write_default_exception_handlers();
     const auto entry = run_apploader(*d, 0, error);
     if (!entry) return false;
     hle_boot(*entry);
@@ -322,11 +323,21 @@ bool System::boot_wii_disc(std::string& error) {
     // CPU: the boot state plus MEM2 BATs (BATs 4-7 enabled)
     hle_boot(0);
     wii_boot_state();
+    write_default_exception_handlers();
     const auto entry = run_apploader(part, 2, error);
     if (!entry) return false;
     hle_boot(*entry);
     wii_boot_state();
     return true;
+}
+
+void System::write_default_exception_handlers() {
+    // What the IPL / system menu leaves before running an apploader: an rfi at the
+    // DSI, floating-point-unavailable and system call vectors, so that an apploader's
+    // `sc` (or such an exception) returns. Same three vectors as Dolphin's emulated
+    // BS2 (Boot_BS2Emu.cpp), for GameCube and Wii.
+    constexpr u32 kRfi = 0x4C000064U;
+    for (const u32 vector : {0x300U, 0x800U, 0xC00U}) (void)bus_.write32(vector, kRfi);
 }
 
 void System::wii_boot_state() {
