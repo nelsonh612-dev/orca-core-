@@ -227,6 +227,24 @@ RunEnd run_jit(Jit& j, u64 n) {
 
 } // namespace
 
+// What run() interprets in place after a block stops before it (any host): the
+// SDK's interrupt on/off functions (mfmsr / mtmsr) and other CPU-only reads;
+// never memory accesses or mtspr, whose effects the caller must time first.
+TEST_CASE(jit_resumes_only_after_cpu_only_instructions) {
+    CHECK(ppc::Jit::resumes_after_interpreting(0x7C6000A6U));  // mfmsr r3
+    CHECK(ppc::Jit::resumes_after_interpreting(0x7C800124U));  // mtmsr r4
+    CHECK(ppc::Jit::resumes_after_interpreting(0x7C7A02A6U));  // mfspr r3, SRR0
+    CHECK(ppc::Jit::resumes_after_interpreting(0x7C6C42E6U));  // mftb r3
+    CHECK(ppc::Jit::resumes_after_interpreting(0x4C000064U));  // rfi
+    CHECK(!ppc::Jit::resumes_after_interpreting(0x7C7603A6U)); // mtspr DEC, r3
+    CHECK(!ppc::Jit::resumes_after_interpreting(0x7C6001A4U)); // mtsr 0, r3
+    CHECK(!ppc::Jit::resumes_after_interpreting(0x80630000U)); // lwz r3,0(r3) (MMIO possible)
+    CHECK(!ppc::Jit::resumes_after_interpreting(0x90830000U)); // stw
+    CHECK(!ppc::Jit::resumes_after_interpreting(0x7C63202EU)); // lwzx
+    CHECK(!ppc::Jit::resumes_after_interpreting(0x44000002U)); // sc
+    CHECK(!ppc::Jit::resumes_after_interpreting(0x4C00012CU)); // isync
+}
+
 TEST_CASE(jit_translates_blocks_on_any_host) {
     Machine m(kCode);
     m.code(kCode, {D(14, 3, 0, 5), XO(266, 4, 3, 3, false, true), M(21, 4, 5, 3, 0, 28, false),

@@ -55,6 +55,15 @@ public:
     // interpreter step when no block fits or applies. max_steps >= 1.
     Result run(u64 max_steps);
 
+    // After a block stops before an instruction it does not translate, run()
+    // interprets that one instruction and goes on with the next block when it
+    // cannot touch anything outside the CPU or the CPU's timing: MSR moves (the
+    // SDK's OSDisableInterrupts / OSRestoreInterrupts), mfspr, mftb, mfsr and
+    // rfi (not mtsr: segment registers are not part of the translation cache
+    // key). Memory accesses (MMIO) and mtspr (DEC, HID2, WPAR)
+    // go back to the caller, which accounts time and events first.
+    static bool resumes_after_interpreting(u32 ins) noexcept;
+
     // Drops every block.
     void clear();
 
@@ -74,6 +83,7 @@ public:
         u64 chained{0};      // blocks entered directly after another one inside the same run()
         u64 tlb_fills{0};    // translation-cache entries created by the load/store helpers
         u64 links{0};        // direct jumps patched between blocks
+        u64 resumed{0};      // fallbacks interpreted inside run() before the next block
     };
     const Stats& stats() const noexcept { return stats_; }
 

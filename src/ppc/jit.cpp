@@ -1649,6 +1649,20 @@ void Jit::unlink_incoming(Block* b) {
     b->incoming.clear();
 }
 
+bool Jit::resumes_after_interpreting(u32 ins) noexcept {
+    const u32 op = ins >> 26;
+    if (op == 19U) return ((ins >> 1) & 0x3FFU) == 50U; // rfi
+    if (op != 31U) return false;
+    switch ((ins >> 1) & 0x3FFU) {
+    case 83: case 146:              // mfmsr mtmsr
+    case 339: case 371:             // mfspr mftb
+    case 595: case 659:             // mfsr mfsrin
+        return true;
+    default:
+        return false;
+    }
+}
+
 Jit::Result Jit::interpret() {
     ++stats_.interpreter_steps;
     return {cpu_.step(), 1};
@@ -1693,7 +1707,33 @@ Jit::Result Jit::run(u64 max_steps) {
         stats_.block_steps += steps;
         if (total != 0U) ++stats_.chained;
         total += steps;
-        if (kind == kExitFallback) { ++stats_.fallback_exits; break; }
+        if (kind == kExitFallback) {
+            ++stats_.fallback_exits;
+            // the instruction the block stopped at: interpret it here when that is
+            // safe, instead of a round trip through the caller for every one
+            if (total >= max_steps || (s.pc & 3U) != 0U) break;
+            const Translation ft = translate(s, bus_, s.pc, AccessType::Fetch, cpu_.config_.extended_bats);
+            if (ft.status != TranslateStatus::Ok) break;
+            const u8* p = bus_.ram_pointer(ft.physical, 4);
+            if (p == nullptr) break;
+            const u32 ins = (u32{p[0]} << 24) | (u32{p[1]} << 16) | (u32{p[2]} << 8) | p[3];
+            if (!resumes_after_interpreting(ins)) break;
+            const StepResult r = cpu_.step();
+            ++stats_.interpreter_steps;
+            ++stats_.resumed;
+            ++total;
+            if (r != StepResult::Executed) return {r, total};
+            // the step may have changed MSR (mtmsr, rfi): the same entry
+            // conditions as above, else the caller takes over; the translation
+            // and link contexts follow MSR
+            if (s.halted || (s.msr & (MSR_SE | MSR_BE | MSR_LE)) != 0U) break;
+            if ((s.msr & MSR_EE) != 0U && (cpu_.external_line_ || s.dec_pending)) break;
+            if ((s.msr & MSR_POW) != 0U && (s.hid0 & 0x00E00000U) != 0U) break;
+            tlb_check_context();
+            link_check_context();
+            pending_site_ = nullptr;
+            continue;
+        }
         if (steps == 0U) break;
         pending_site_ = reinterpret_cast<const u32*>(static_cast<std::uintptr_t>(exit_.site));
     }
