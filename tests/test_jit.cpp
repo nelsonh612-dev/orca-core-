@@ -322,16 +322,23 @@ TEST_CASE(jit_translates_blocks_on_any_host) {
     // an untranslated first instruction gives no block
     m.code(kCode + 0x100U, {0x7C7603A6U}); // mtspr DEC, r3
     CHECK(!j.translate_for_test(kCode + 0x100U, words, n, err));
-    // the SDK's interrupt on/off (mfmsr, mtmsr), mftb and mfspr of another SPR stay
+    // the SDK's interrupt on/off (mfmsr, mtmsr) and mfspr of a plain SPR stay
     // inside a block (in-block interpreter; mtmsr leaves only when more than EE
-    // changed or an interrupt became deliverable)
+    // changed or an interrupt became deliverable); mftb ends it (the time base
+    // follows the retired count, brought up to date at block exits)
     {
-        const u32 sys_block[] = {0x7C6000A6U, 0x7C800124U, 0x7CAC42E6U, 0x7CDA02A6U, 0x38630001U, 0x4E800020U};
-        for (u32 k = 0; k < 6U; ++k) m.bus.write32(kCode + 0x300U + 4U * k, sys_block[k]);
+        const u32 sys_block[] = {0x7C6000A6U, 0x7C800124U, 0x7CDA02A6U, 0x38630001U, 0x4E800020U};
+        for (u32 k = 0; k < 5U; ++k) m.bus.write32(kCode + 0x300U + 4U * k, sys_block[k]);
         std::vector<u32> sw;
         u32 sn = 0;
         CHECK(j.translate_for_test(kCode + 0x300U, sw, sn, err));
-        CHECK_EQ(sn, 6U);
+        CHECK_EQ(sn, 5U);
+        m.bus.write32(kCode + 0x380U, 0x38630001U);
+        m.bus.write32(kCode + 0x384U, 0x7CAC42E6U); // mftb r5
+        std::vector<u32> tw;
+        u32 tn = 0;
+        CHECK(j.translate_for_test(kCode + 0x380U, tw, tn, err));
+        CHECK_EQ(tn, 1U);
 #ifdef ORCA_LLVM_MC
         const std::string mc2 = ORCA_LLVM_MC;
         if (!mc2.empty() && mc2.find("NOTFOUND") == std::string::npos) {
