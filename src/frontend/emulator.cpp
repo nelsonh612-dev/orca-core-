@@ -529,8 +529,9 @@ std::string Emulator::diagnostics() {
             out += b;
             {
                 const gpu::Gpu& g = sys_->gpu();
-                std::snprintf(b, sizeof b, "\nGPU display copies kept on the GPU: %llu, fields shown from the GPU: %llu, CPU path with a GPU backend: %llu%s%s",
-                              static_cast<unsigned long long>(g.gpu_xfb_copies()), static_cast<unsigned long long>(gpu_frames_),
+                std::snprintf(b, sizeof b, "\nGPU copies kept on the GPU: %llu display, %llu texture; fields shown from the GPU: %llu; CPU path with a GPU backend: %llu%s%s",
+                              static_cast<unsigned long long>(g.gpu_xfb_copies()), static_cast<unsigned long long>(g.gpu_texture_copies()),
+                              static_cast<unsigned long long>(gpu_frames_),
                               static_cast<unsigned long long>(g.cpu_fallback_copies()),
                               g.last_fallback().empty() ? "" : " (last: ", g.last_fallback().empty() ? "" : g.last_fallback().c_str());
                 out += b;

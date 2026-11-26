@@ -50,15 +50,47 @@ struct PendingXfb {
 };
 } // namespace
 
+// The rows of a copy encoded on the GPU (`handle`) become a deferred range of
+// the bus, read back from the GPU when something touches them.
+bool Gpu::defer_rows(u32 handle, u32 dest, u32 stride, u32 row, u32 lines, std::string& error) {
+    auto p = std::make_shared<PendingXfb>();
+    p->read = gpu_copies_.read_xfb;
+    p->drop = gpu_copies_.drop_xfb;
+    p->alive = gpu_copies_alive_;
+    p->handle = handle;
+    auto fill = [p, this](u8* dst) {
+        if (p->done || !*p->alive) return;
+        p->done = true;
+        const core::HostTimer t(copy_ns_.readback);
+        p->read(p->handle, dst);
+    };
+    const u64 span = static_cast<u64>(lines - 1U) * stride + row;
+    if (bus_.set_lazy(dest, static_cast<u32>(span), fill, stride == row)) return true;
+    // not inside one RAM region: the rows go through the bus now
+    std::vector<u8> bytes(static_cast<std::size_t>(span));
+    fill(bytes.data());
+    for (u32 y = 0; y < lines; ++y) {
+        const u32 addr = (dest + y * stride) & phys_mask_;
+        const auto rowspan = std::span<const u8>(bytes).subspan(static_cast<std::size_t>(y) * stride, row);
+        if (bus_.dma_write(addr, rowspan) != mem::BusStatus::Ok) {
+            char b[96];
+            std::snprintf(b, sizeof b, "EFB copy writes %u bytes at %08X outside RAM", row, addr);
+            error = b;
+            return false;
+        }
+    }
+    return true;
+}
+
 // The copy on the GPU backend, when it can do all of it: `done` false means the
-// CPU path must run (nothing was changed). Only display copies (and their
-// clear) go here; a texture copy is read by the GPU's own texture unit later
-// and keeps the CPU path for now.
+// CPU path must run (nothing was changed). Display copies, and texture copies
+// when GpuCopies has an encoder for them.
 bool Gpu::gpu_copy(u32 trigger, std::string& error, bool& done) {
     done = false;
     sw::CopyArea area;
     if (!sw::copy_area(bp_, area, error)) return false;
-    if (area.ignored || (trigger & 0x4000U) == 0U) return true;
+    if (area.ignored) return true;
+    if ((trigger & 0x4000U) == 0U && !gpu_copies_.encode_texture) return true;
     const bool clears = (trigger & 0x800U) != 0U;
     const sw::ClearPlan cp = clears ? sw::clear_plan(bp_, area) : sw::ClearPlan{};
     auto fallback = [&](std::string why) {
@@ -68,62 +100,51 @@ bool Gpu::gpu_copy(u32 trigger, std::string& error, bool& done) {
     };
     if (clears && !cp.whole) return fallback("RGBA6 clear of colour or alpha only");
     sw::CopyResult res;
+    const bool xfb = (trigger & 0x4000U) != 0U;
     if ((bp_.reg(bp::EFB_STRIDE) << 5) != 0U) {
-        sw::XfbPlan plan;
-        if (!sw::xfb_plan(trigger, bp_, area, phys_mask_, plan, error)) return false;
-        const u32 row = plan.width * 2U;
-        const u64 span = static_cast<u64>(plan.lines - 1U) * plan.stride + row;
-        if (plan.stride < row || static_cast<u64>(plan.dest) + span > static_cast<u64>(phys_mask_) + 1U)
-            return fallback("XFB rows that overlap or wrap around RAM");
+        sw::XfbPlan xp;
+        sw::TexCopyPlan tp;
+        u32 dest = 0, stride = 0, row = 0, lines = 0;
+        if (xfb) {
+            if (!sw::xfb_plan(trigger, bp_, area, phys_mask_, xp, error)) return false;
+            dest = xp.dest; stride = xp.stride; row = xp.width * 2U; lines = xp.lines;
+        } else {
+            if (!sw::texture_copy_plan(trigger, bp_, area, phys_mask_, tp, error)) return false;
+            dest = tp.dest; stride = tp.stride; row = tp.row_bytes(); lines = tp.blocks_y;
+        }
+        if (lines == 0U || row == 0U) return fallback("empty copy");
+        const u64 span = static_cast<u64>(lines - 1U) * stride + row;
+        if (stride < row || static_cast<u64>(dest) + span > static_cast<u64>(phys_mask_) + 1U)
+            return fallback("copy rows that overlap or wrap around RAM");
         u32 handle = 0;
         std::string why;
         {
             const core::HostTimer t(copy_ns_.encode);
-            if (!gpu_copies_.encode_xfb(plan, handle, why)) return fallback(why);
+            const bool ok = xfb ? gpu_copies_.encode_xfb(xp, handle, why) : gpu_copies_.encode_texture(tp, handle, why);
+            if (!ok) return fallback(why);
         }
-        auto p = std::make_shared<PendingXfb>();
-        p->read = gpu_copies_.read_xfb;
-        p->drop = gpu_copies_.drop_xfb;
-        p->alive = gpu_copies_alive_;
-        p->handle = handle;
-        const u32 stride = plan.stride;
-        const bool dense = stride == row;
-        auto fill = [p, this](u8* dst) {
-            if (p->done || !*p->alive) return;
-            p->done = true;
-            const core::HostTimer t(copy_ns_.readback);
-            p->read(p->handle, dst);
-        };
-        if (!bus_.set_lazy(plan.dest, static_cast<u32>(span), fill, dense)) {
-            // not inside one RAM region: the rows go through the bus now
-            std::vector<u8> bytes(static_cast<std::size_t>(span));
-            fill(bytes.data());
-            for (u32 y = 0; y < plan.lines; ++y) {
-                const u32 addr = (plan.dest + y * stride) & phys_mask_;
-                const auto rowspan = std::span<const u8>(bytes).subspan(static_cast<std::size_t>(y) * stride, row);
-                if (bus_.dma_write(addr, rowspan) != mem::BusStatus::Ok) {
-                    char b[96];
-                    std::snprintf(b, sizeof b, "XFB copy writes %u bytes at %08X outside RAM", row, addr);
-                    error = b;
-                    return false;
-                }
-            }
-        }
-        gpu_xfbs_[gpu_xfb_next_] = GpuXfbRecord{plan.dest, stride, plan.width, plan.lines, handle, bus_.write_epoch()};
-        gpu_xfb_next_ = (gpu_xfb_next_ + 1U) % gpu_xfbs_.size();
+        if (!defer_rows(handle, dest, stride, row, lines, error)) return false;
         res.copied = true;
-        res.xfb = true;
-        res.address = plan.dest;
+        res.xfb = xfb;
+        res.address = dest;
         res.stride = stride;
-        res.width = plan.width;
-        res.height = plan.lines;
-        res.bytes = row * plan.lines;
-        ++gpu_xfb_copies_;
+        if (xfb) {
+            gpu_xfbs_[gpu_xfb_next_] = GpuXfbRecord{dest, stride, xp.width, lines, handle, bus_.write_epoch()};
+            gpu_xfb_next_ = (gpu_xfb_next_ + 1U) % gpu_xfbs_.size();
+            res.width = xp.width;
+            res.height = lines;
+            ++gpu_xfb_copies_;
+        } else {
+            res.width = tp.blocks_x << tp.block_w_log;
+            res.height = tp.blocks_y << tp.block_h_log;
+            ++gpu_texture_copies_;
+        }
+        res.bytes = row * lines;
     }
     if (clears) {
         std::string why;
         if (!gpu_copies_.clear(area, cp, why)) {
-            error = "GPU EFB clear after a display copy failed: " + why;
+            error = "GPU EFB clear after a copy failed: " + why;
             return false;
         }
         res.cleared = true;

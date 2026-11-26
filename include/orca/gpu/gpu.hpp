@@ -94,10 +94,12 @@ public:
         std::function<void(u32, u8*)> read_xfb;
         std::function<void(u32)> drop_xfb;
         std::function<bool(const sw::CopyArea&, const sw::ClearPlan&, std::string&)> clear;
+        std::function<bool(const sw::TexCopyPlan&, u32&, std::string&)> encode_texture; // optional
     };
     void set_gpu_copies(GpuCopies copies);
     // Copies done by GpuCopies, and the ones with a GpuCopies that took the CPU path.
     u64 gpu_xfb_copies() const noexcept { return gpu_xfb_copies_; }
+    u64 gpu_texture_copies() const noexcept { return gpu_texture_copies_; }
     u64 cpu_fallback_copies() const noexcept { return cpu_fallback_copies_; }
     const std::string& last_fallback() const noexcept { return last_fallback_; }
     // The display copy on the GPU that a VI field shows, if any: the field's
@@ -168,12 +170,13 @@ private:
     GpuCopies gpu_copies_;
     // false once the GpuCopies that encoded a pending range is replaced
     std::shared_ptr<bool> gpu_copies_alive_ = std::make_shared<bool>(true);
-    u64 gpu_xfb_copies_{0}, cpu_fallback_copies_{0};
+    u64 gpu_xfb_copies_{0}, gpu_texture_copies_{0}, cpu_fallback_copies_{0};
     struct GpuXfbRecord { u32 dest{0}, stride{0}, width{0}, lines{0}, handle{0}; u64 epoch{0}; };
     std::array<GpuXfbRecord, 8> gpu_xfbs_{};
     std::size_t gpu_xfb_next_{0};
     std::string last_fallback_;
     bool gpu_copy(u32 trigger, std::string& error, bool& done);
+    bool defer_rows(u32 handle, u32 dest, u32 stride, u32 row, u32 lines, std::string& error);
     u64 cycles_{0};       // total GPU time
     u64 batch_start_{0};  // cycles_ at the start of the current feed()
     bool failed_{false};

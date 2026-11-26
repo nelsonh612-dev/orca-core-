@@ -169,6 +169,15 @@ struct Backend::Impl {
     struct SlotUse { u32 handle{0}, width{0}, lines{0}; };
     std::array<SlotUse, kXfbSlots> xfb_slot{};
     int xfb_next_slot{0};
+    // texture copies: the RAM bytes of the rows of blocks, 4 per texel
+    static constexpr int kTexSlots = 8, kTexMaxW = 2560, kTexMaxH = 132;
+    GLuint tc_prog{0};
+    std::array<GLuint, kTexSlots> tc_fbo{}, tc_tex{};
+    struct TexSlotUse { u32 handle{0}; };
+    std::array<TexSlotUse, kTexSlots> tc_slot{};
+    int tc_next_slot{0};
+    GLint u_tc_efb{-1}, u_tc_aux{-1}, u_tc_rect{-1}, u_tc_w{-1}, u_tc_mode{-1}, u_tc_flags{-1};
+    int tc_state{0};
     // presentation: YUYV texture -> RGBA (show_prog) and RGBA frames from the CPU (rgba_prog)
     GLuint show_prog{0}, rgba_prog{0}, rgba_tex{0};
     GLint u_show_tex{-1}, u_show_geo{-1}, u_rgba_tex{-1}, u_rgba_geo{-1};
@@ -226,6 +235,9 @@ struct Backend::Impl {
         if (xfb_prog != 0) glDeleteProgram(xfb_prog);
         glDeleteFramebuffers(kXfbSlots, xfb_fbo.data());
         glDeleteTextures(kXfbSlots, xfb_tex.data());
+        if (tc_prog != 0) glDeleteProgram(tc_prog);
+        glDeleteFramebuffers(kTexSlots, tc_fbo.data());
+        glDeleteTextures(kTexSlots, tc_tex.data());
         if (show_prog != 0) glDeleteProgram(show_prog);
         if (rgba_prog != 0) glDeleteProgram(rgba_prog);
         if (rgba_tex != 0) glDeleteTextures(1, &rgba_tex);
@@ -489,6 +501,155 @@ void main() {
         glViewport(0, 0, kW, kH);
         glUseProgram(prog);
         glBindVertexArray(vao);
+    }
+
+    // The texture copy encoder: each output texel is 4 consecutive bytes of a
+    // row of blocks, computed as sw::efb_copy does (PixelReader + packing).
+    bool setup_texture_copy(std::string& e) {
+        GLint max = 0;
+        glGetIntegerv(GL_MAX_TEXTURE_SIZE, &max);
+        if (max < kTexMaxW) { e = "GL_MAX_TEXTURE_SIZE below 2560"; return false; }
+        static const char* vs = "#version 320 es\nvoid main() {\n"
+                                "  vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));\n"
+                                "  gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);\n}\n";
+        static const char* fs = R"GLSL(#version 320 es
+precision highp float;
+precision highp int;
+precision highp usampler2D;
+uniform usampler2D u_efb;
+uniform usampler2D u_aux;
+uniform ivec4 u_rect;   // left, top, clamp top, clamp bottom
+uniform uvec3 u_w;      // filter weights
+uniform ivec4 u_mode;   // format, block width log2, block height log2, block bytes
+uniform ivec4 u_flags;  // wrap, six, half, yuv
+out vec4 o;
+uvec4 raw(int x, int y) {
+    uint c = texelFetch(u_efb, ivec2(min(x, 639), min(y, 527)), 0).r;
+    if (u_flags.y != 0) return uvec4((c >> 18u) & 63u, (c >> 12u) & 63u, (c >> 6u) & 63u, c & 63u);
+    return uvec4((c >> 16u) & 255u, (c >> 8u) & 255u, c & 255u, 255u);
+}
+uvec4 sample_px(int x, int y0, int y1) {
+    if (u_flags.z == 0) {
+        uvec4 p = raw(x, y0);
+        return u_flags.y != 0 ? ((p << 2u) | (p >> 4u)) & 255u : p;
+    }
+    uvec4 s = raw(x, y0) + raw(x + 1, y0) + raw(x, y1) + raw(x + 1, y1);
+    return u_flags.y != 0 ? (s + (s >> 6u)) & 255u : s >> 2u;
+}
+int crow(int y) { return clamp(y, u_rect.z, u_rect.w); }
+uvec4 texel(int x, int y) {
+    int st = u_flags.z != 0 ? 2 : 1;
+    uvec4 cur = sample_px(x, crow(y), crow(y + 1));
+    uvec4 prev = u_w.x != 0u ? sample_px(x, crow(y - st), crow(y - 1)) : uvec4(0u);
+    uvec4 next = u_w.z != 0u ? sample_px(x, crow(y + st), crow(y + st + 1)) : uvec4(0u);
+    uvec3 v = (prev.rgb * u_w.x + cur.rgb * u_w.y + next.rgb * u_w.z) >> 6u;
+    if (u_flags.x != 0) v &= 511u;
+    v = min(v, uvec3(255u));
+    uvec4 c = uvec4(texelFetch(u_aux, ivec2(int(v.r), 1), 0).r, texelFetch(u_aux, ivec2(int(v.g), 1), 0).r,
+                    texelFetch(u_aux, ivec2(int(v.b), 1), 0).r, cur.a);
+    if (u_flags.w != 0) {
+        ivec3 i = ivec3(c.rgb);
+        ivec3 w = ivec3(66 * i.r + 129 * i.g + 25 * i.b + 4096, -38 * i.r - 74 * i.g + 112 * i.b + 32768,
+                        112 * i.r - 94 * i.g - 18 * i.b + 32768);
+        c.rgb = uvec3(((w >> 8) + ((w >> 7) & 1)) & 255);
+    }
+    return c;
+}
+// texel i (row-major inside the block) of block sb in the current row of blocks
+uvec4 block_texel(int sb, int i) {
+    int bw = 1 << u_mode.y;
+    int px = sb * bw + (i & (bw - 1)), py = int(gl_FragCoord.y) * (1 << u_mode.z) + (i >> u_mode.y);
+    int st = u_flags.z != 0 ? 2 : 1;
+    return texel(u_rect.x + px * st, u_rect.y + py * st);
+}
+uint byte_at(int k) {
+    int sb = k / u_mode.w, j = k - sb * u_mode.w, f = u_mode.x;
+    if (f == 0) { // R4: two texels per byte
+        uint hi = block_texel(sb, 2 * j).r, lo = block_texel(sb, 2 * j + 1).r;
+        return (hi & 0xF0u) | (lo >> 4u);
+    }
+    if (f == 1 || f == 8) return block_texel(sb, j).r;
+    if (f == 7) return block_texel(sb, j).a;
+    if (f == 9) return block_texel(sb, j).g;
+    if (f == 10) return block_texel(sb, j).b;
+    if (f == 2) { uvec4 c = block_texel(sb, j); return (c.a & 0xF0u) | (c.r >> 4u); }
+    if (f == 6) { // RGBA8: AR in the first 32 bytes, GB in the next 32
+        bool gb = j >= 32;
+        int jj = gb ? j - 32 : j;
+        uvec4 c = block_texel(sb, jj >> 1);
+        bool odd = (jj & 1) != 0;
+        return gb ? (odd ? c.b : c.g) : (odd ? c.r : c.a);
+    }
+    uvec4 c = block_texel(sb, j >> 1);
+    bool odd = (j & 1) != 0;
+    if (f == 3) return odd ? c.r : c.a;
+    if (f == 11) return odd ? c.r : c.g;
+    if (f == 12) return odd ? c.g : c.b;
+    uint v;
+    if (f == 4) v = ((c.r << 8u) & 0xF800u) | ((c.g << 3u) & 0x07E0u) | (c.b >> 3u);
+    else if (c.a >= 224u) v = 0x8000u | ((c.r << 7u) & 0x7C00u) | ((c.g << 2u) & 0x03E0u) | (c.b >> 3u);
+    else v = ((c.a << 7u) & 0x7000u) | ((c.r << 4u) & 0x0F00u) | (c.g & 0xF0u) | (c.b >> 4u);
+    return odd ? (v & 255u) : (v >> 8u);
+}
+void main() {
+    int k = int(gl_FragCoord.x) * 4;
+    o = vec4(float(byte_at(k)), float(byte_at(k + 1)), float(byte_at(k + 2)), float(byte_at(k + 3))) / 255.0;
+}
+)GLSL";
+        tc_prog = link(vs, fs, e);
+        if (tc_prog == 0) return false;
+        u_tc_efb = glGetUniformLocation(tc_prog, "u_efb");
+        u_tc_aux = glGetUniformLocation(tc_prog, "u_aux");
+        u_tc_rect = glGetUniformLocation(tc_prog, "u_rect");
+        u_tc_w = glGetUniformLocation(tc_prog, "u_w");
+        u_tc_mode = glGetUniformLocation(tc_prog, "u_mode");
+        u_tc_flags = glGetUniformLocation(tc_prog, "u_flags");
+        glGenTextures(kTexSlots, tc_tex.data());
+        glGenFramebuffers(kTexSlots, tc_fbo.data());
+        bool complete = true;
+        for (std::size_t k = 0; k < static_cast<std::size_t>(kTexSlots); ++k) {
+            glBindTexture(GL_TEXTURE_2D, tc_tex[k]);
+            glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, kTexMaxW, kTexMaxH);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+            glBindFramebuffer(GL_FRAMEBUFFER, tc_fbo[k]);
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tc_tex[k], 0);
+            complete = complete && glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+        }
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        return complete && glGetError() == GL_NO_ERROR;
+    }
+
+    // Starts the asynchronous read-back of a w x h RGBA8 area of the bound
+    // read framebuffer; returns its handle (0 on a GL error, `error` set).
+    u32 start_readback(int w, int h, u32 row_bytes, u32 lines, u32 stride, std::string& error) {
+        PendingXfb x;
+        x.row_bytes = row_bytes;
+        x.lines = lines;
+        x.stride = stride;
+        const auto bytes = static_cast<GLsizeiptr>(w) * h * 4;
+        if (!pbo_pool.empty()) { x.pbo = pbo_pool.back(); pbo_pool.pop_back(); }
+        else glGenBuffers(1, &x.pbo);
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, x.pbo);
+        glBufferData(GL_PIXEL_PACK_BUFFER, bytes, nullptr, GL_STREAM_READ);
+        glPixelStorei(GL_PACK_ALIGNMENT, 4);
+        glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+        x.fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+        glFlush();
+        const GLenum e = glGetError();
+        if (e != GL_NO_ERROR || x.fence == nullptr) {
+            if (x.fence != nullptr) glDeleteSync(x.fence);
+            pbo_pool.push_back(x.pbo);
+            char b[64];
+            std::snprintf(b, sizeof b, "GL error 0x%X in an EFB copy", e);
+            error = b;
+            return 0;
+        }
+        const u32 handle = xfb_next++;
+        xfb_pending.emplace(handle, x);
+        return handle;
     }
 
     bool ensure_show(std::string& e) {
@@ -1080,6 +1241,73 @@ void Backend::drop_xfb(u32 handle) {
     glDeleteSync(it->second.fence);
     g.pbo_pool.push_back(it->second.pbo);
     g.xfb_pending.erase(it);
+}
+
+bool Backend::encode_texture_copy(const sw::TexCopyPlan& plan, u32& handle, std::string& error) {
+    Impl& g = *impl_;
+    const u32 row = plan.row_bytes();
+    const int w = static_cast<int>(row / 4U), h = static_cast<int>(plan.blocks_y);
+    if (w <= 0 || h <= 0 || w > Impl::kTexMaxW || h > Impl::kTexMaxH || (row & 3U) != 0U) {
+        error = "texture copy size not handled on the GPU";
+        return false;
+    }
+    if (g.xfb_state == 0) {
+        g.xfb_state = g.setup_xfb() ? 1 : -1;
+        while (glGetError() != GL_NO_ERROR) {}
+    }
+    if (g.tc_state == 0) {
+        std::string e;
+        g.tc_state = g.xfb_state == 1 && g.setup_texture_copy(e) ? 1 : -1;
+        if (g.tc_state != 1) std::fprintf(stderr, "texture copy encoder: %s\n", e.c_str());
+        while (glGetError() != GL_NO_ERROR) {}
+    }
+    if (g.tc_state != 1) { error = "the GPU texture copy encoder is not available"; return false; }
+    GLint unit = 0;
+    glGetIntegerv(GL_ACTIVE_TEXTURE, &unit);
+    std::array<GLuint, 256> gam{};
+    for (std::size_t k = 0; k < 256; ++k) gam[k] = plan.gamma[k];
+    glActiveTexture(GL_TEXTURE10);
+    glBindTexture(GL_TEXTURE_2D, g.xfb_aux);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 1, 256, 1, GL_RED_INTEGER, GL_UNSIGNED_INT, gam.data());
+    glActiveTexture(GL_TEXTURE9);
+    glBindTexture(GL_TEXTURE_2D, g.efb[plan.depth ? 1 : 0]);
+    const GLboolean dither = glIsEnabled(GL_DITHER), scissor = glIsEnabled(GL_SCISSOR_TEST);
+    glDisable(GL_DITHER);
+    glDisable(GL_SCISSOR_TEST);
+    const int slot = g.tc_next_slot;
+    g.tc_next_slot = (slot + 1) % Impl::kTexSlots;
+    glBindFramebuffer(GL_FRAMEBUFFER, g.tc_fbo[static_cast<std::size_t>(slot)]);
+    glViewport(0, 0, w, h);
+    glUseProgram(g.tc_prog);
+    glBindVertexArray(g.xfb_vao);
+    glUniform1i(g.u_tc_efb, 9);
+    glUniform1i(g.u_tc_aux, 10);
+    glUniform4i(g.u_tc_rect, static_cast<GLint>(plan.left), static_cast<GLint>(plan.top),
+                static_cast<GLint>(plan.clamp_top), static_cast<GLint>(plan.clamp_bottom));
+    glUniform3ui(g.u_tc_w, plan.weights[0], plan.weights[1], plan.weights[2]);
+    glUniform4i(g.u_tc_mode, static_cast<GLint>(plan.format), static_cast<GLint>(plan.block_w_log),
+                static_cast<GLint>(plan.block_h_log), static_cast<GLint>(plan.block_bytes));
+    glUniform4i(g.u_tc_flags, plan.wrap ? 1 : 0, plan.six ? 1 : 0, plan.half ? 1 : 0, plan.yuv ? 1 : 0);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    handle = g.start_readback(w, h, row, plan.blocks_y, plan.stride, error);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glActiveTexture(GL_TEXTURE10);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glActiveTexture(static_cast<GLenum>(unit));
+    if (dither == GL_TRUE) glEnable(GL_DITHER);
+    if (scissor == GL_TRUE) glEnable(GL_SCISSOR_TEST);
+    glBindFramebuffer(GL_FRAMEBUFFER, g.fbo);
+    glViewport(0, 0, kW, kH);
+    glUseProgram(g.prog);
+    glBindVertexArray(g.vao);
+    if (handle == 0U) {
+        g.tc_slot[static_cast<std::size_t>(slot)] = {};
+        return false;
+    }
+    g.tc_slot[static_cast<std::size_t>(slot)] = Impl::TexSlotUse{handle};
+    ++texture_copy_encodes_;
+    return true;
 }
 
 bool Backend::xfb_on_gpu(u32 handle) const noexcept {

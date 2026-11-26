@@ -597,6 +597,63 @@ TEST_CASE(gles_xfb_copies_on_the_gpu) {
     }
 }
 
+// Texture copies encoded on the GPU: the RAM bytes must be exactly the software
+// encoder's for every copy format, from every EFB pixel format (depth too),
+// with half scale, intensity (YUV), gamma, the copy filter and clamps.
+TEST_CASE(gles_texture_copies_on_the_gpu) {
+    struct Flags { const char* name; u32 bits, f0, f1; };
+    const Flags flags[] = {
+        {"plain", 0, (21U << 12) | (22U << 18), 21U},
+        {"half", 0x200U, (21U << 12) | (22U << 18), 21U},
+        {"intensity", 0x18000U, (21U << 12) | (22U << 18), 21U},
+        {"gamma 2.2 + filter + clamps", (2U << 7) | 3U, 8U | (8U << 6) | (10U << 12) | (12U << 18), 10U | (8U << 6) | (8U << 12)},
+        {"half + intensity + wrap", 0x18200U, 63U | (63U << 6) | (63U << 12), 0U},
+    };
+    unsigned total = 0, bad = 0;
+    for (u32 pf = 0; pf < 4; ++pf) {
+        Twin t(true);
+        t.scene();
+        t.bpw(bp::ZCOMPARE, pf);
+        t.bpw(bp::ZMODE, 0x1F); // depth test always passes, depth written
+        t.prim(0x80, {{0, 0, -0.2f, 0xFF2010C0U}, {640, 0, -0.5f, 0x10F04020U}, {640, 528, -0.9f, 0x2040FF80U}, {0, 528, -0.6f, 0xF0F0F0FFU}});
+        t.quad(30, 20, 20, 12, -0.4f, 0x00FF8040U);
+        u32 k = 0;
+        for (u32 cf = 0; cf < 13; ++cf)
+            for (const Flags& f : flags) {
+                const u32 tf = cf < 8U ? cf * 2U : (cf - 8U) * 2U + 1U;
+                t.bpw(bp::COPY_FILTER0, f.f0);
+                t.bpw(bp::COPY_FILTER1, f.f1);
+                t.bpw(bp::EFB_TL, 10U | (6U << 10)); t.bpw(bp::EFB_WH, 63U | (39U << 10));
+                t.bpw(bp::EFB_ADDR, (0x10000U + k * 0x4000U) >> 5); t.bpw(bp::EFB_STRIDE, 1024U >> 5);
+                t.bpw(bp::TRIGGER_EFB_COPY, (tf << 3) | f.bits);
+                ++k;
+            }
+        CHECK(t.run());
+        CHECK_EQ(t.gl.gpu.gpu_texture_copies(), static_cast<u64>(k));
+        if (t.gl.gpu.cpu_fallback_copies() != 0U) std::printf("    CPU path: %s\n", t.gl.gpu.last_fallback().c_str());
+        k = 0;
+        for (u32 cf = 0; cf < 13; ++cf)
+            for (const Flags& f : flags) {
+                std::vector<u8> a(0x4000), b(0x4000);
+                CHECK(t.sw.bus.dma_read(0x10000U + k * 0x4000U, a) == mem::BusStatus::Ok);
+                CHECK(t.gl.bus.dma_read(0x10000U + k * 0x4000U, b) == mem::BusStatus::Ok);
+                unsigned d = 0, used = 0;
+                for (std::size_t i = 0; i < a.size(); ++i) { d += a[i] != b[i] ? 1U : 0U; used += a[i] != 0U ? 1U : 0U; }
+                if (used <= 64U) std::printf("    empty: pixel format %u, copy format %u, %s\n", pf, cf, f.name);
+                CHECK(used > 64U); // the copy wrote real content
+                if (d != 0U) {
+                    ++bad;
+                    std::printf("    pixel format %u, copy format %u, %s: %u bytes differ\n", pf, cf, f.name, d);
+                }
+                ++total;
+                ++k;
+            }
+        CHECK(t.gl.bus.lazy_ranges() == 0U);
+    }
+    std::printf("    %u texture copies compared, %u differ\n", total, bad);
+    CHECK_EQ(bad, 0U);
+}
+
 // Presentation from the GPU: a display copy kept on the GPU, shown for a VI
 // field (whole frame or one interlaced field), gives exactly the pixels of
 // video::decode_xfb over the software XFB; a write to the copy's RAM makes the
