@@ -320,8 +320,36 @@ TEST_CASE(jit_translates_blocks_on_any_host) {
 #endif
     }
     // an untranslated first instruction gives no block
-    m.code(kCode + 0x100U, {31U << 26 | 3U << 21 | SPR(268) << 11 | 371U << 1}); // mftb
+    m.code(kCode + 0x100U, {0x7C7603A6U}); // mtspr DEC, r3
     CHECK(!j.translate_for_test(kCode + 0x100U, words, n, err));
+    // the SDK's interrupt on/off (mfmsr, mtmsr), mftb and mfspr of another SPR stay
+    // inside a block (in-block interpreter; mtmsr leaves only when more than EE
+    // changed or an interrupt became deliverable)
+    {
+        const u32 sys_block[] = {0x7C6000A6U, 0x7C800124U, 0x7CAC42E6U, 0x7CDA02A6U, 0x38630001U, 0x4E800020U};
+        for (u32 k = 0; k < 6U; ++k) m.bus.write32(kCode + 0x300U + 4U * k, sys_block[k]);
+        std::vector<u32> sw;
+        u32 sn = 0;
+        CHECK(j.translate_for_test(kCode + 0x300U, sw, sn, err));
+        CHECK_EQ(sn, 6U);
+#ifdef ORCA_LLVM_MC
+        const std::string mc2 = ORCA_LLVM_MC;
+        if (!mc2.empty() && mc2.find("NOTFOUND") == std::string::npos) {
+            {
+                std::ofstream f("/tmp/orca_jit_sys_block.txt");
+                for (u32 w : sw) f << "0x" << std::hex << (w & 0xFF) << " 0x" << ((w >> 8) & 0xFF) << " 0x" << ((w >> 16) & 0xFF) << " 0x" << (w >> 24) << "\n";
+            }
+            const std::string cmd = mc2 + " --disassemble -triple=aarch64 /tmp/orca_jit_sys_block.txt > /tmp/orca_jit_sys_block.s 2>&1";
+            CHECK(std::system(cmd.c_str()) == 0);
+            std::ifstream in("/tmp/orca_jit_sys_block.s");
+            std::string line;
+            unsigned bad = 0;
+            while (std::getline(in, line))
+                if (line.find("invalid") != std::string::npos || line.find("warning") != std::string::npos) ++bad;
+            CHECK_EQ(bad, 0U);
+        }
+#endif
+    }
 }
 
 TEST_CASE(jit_matches_interpreter_on_random_programs) {
@@ -843,6 +871,43 @@ TEST_CASE(jit_directed_data_page_that_becomes_code) {
         m.s().gpr[3] = 0x38A50002U;                               // "addi r5, r5, 2", then 3, 4, ...
     };
     CHECK(lockstep_same(init, 2000, 2000, nothing));
+}
+
+TEST_CASE(jit_directed_interrupts_off_and_on_stay_in_the_block) {
+    if (!jit::host_can_execute()) return;
+    // The SDK's OSDisableInterrupts / OSRestoreInterrupts: mfmsr, clear EE, mtmsr,
+    // ..., mtmsr back. Only EE changes and nothing is pending, so the block goes on.
+    auto init = [](Machine& m) {
+        m.code(kCode, {X31(83, 3, 0, 0),                              // mfmsr r3
+                       21U << 26 | 3U << 21 | 4U << 16 | 17U << 6 | 15U << 1, // rlwinm r4, r3, 0, 17, 15 (EE off)
+                       X31(146, 4, 0, 0),                             // mtmsr r4
+                       D(14, 5, 5, 1),                                // r5++
+                       X31(146, 3, 0, 0),                             // mtmsr r3
+                       D(14, 6, 6, 1),                                // r6++
+                       B(-0x18)});
+        m.s().pc = kCode;
+        m.s().msr |= MSR_EE;
+    };
+    Jit::Stats st{};
+    CHECK(lockstep_same(init, 7000, 1000, nothing, &st));
+    CHECK_EQ(st.recheck_exits, 0U);
+    CHECK(st.helper_steps >= 2000U);
+    // EE turned on while an interrupt is pending: the block leaves at once and the
+    // interrupt is taken where the interpreter takes it
+    auto pending = [](Machine& m) {
+        m.code(0x500, {B(0)});                                        // external interrupt handler: b .
+        m.code(kCode, {D(14, 7, 7, 1),                                // r7++
+                       X31(83, 3, 0, 0),                              // mfmsr r3
+                       D(24, 3, 3, 0x8000),                           // ori r3, r3, EE
+                       X31(146, 3, 0, 0),                             // mtmsr r3
+                       D(14, 8, 8, 1),                                // r8++ (not reached before the interrupt)
+                       B(-0x14)});
+        m.s().pc = kCode;
+        m.s().msr &= ~MSR_EE;
+        m.cpu->set_external_interrupt(true);
+    };
+    CHECK(lockstep_same(pending, 300, 100, nothing, &st));
+    CHECK(st.recheck_exits >= 1U);
 }
 
 TEST_CASE(jit_directed_links_across_contexts_with_a_shared_page) {

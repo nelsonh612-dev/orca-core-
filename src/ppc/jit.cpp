@@ -351,8 +351,14 @@ bool interp_class(u32 ins) {
     case 598: case 854:                      // sync, eieio
     case 4:                                  // tw
     case 83:                                 // mfmsr
+    case 146:                                // mtmsr (helper_exec decides whether the block may go on)
+    case 371:                                // mftb
     case 533: case 597: case 661: case 725:  // lswx lswi stswx stswi
         return true;
+    case 339: {                              // mfspr other than XER, LR, CTR (translated natively)
+        const unsigned n = ((ins >> 16) & 0x1FU) | (((ins >> 11) & 0x1FU) << 5);
+        return n != 1U && n != 8U && n != 9U;
+    }
     default:
         return false;
     }
@@ -425,8 +431,9 @@ bool fp_memory_operand(u32 ins, const CpuState& s, u32& ea, u32& size, bool& sto
     return false;
 }
 
-// Kind codes returned in w0: 0 = continue at state.pc, 1 = interpret the instruction at state.pc.
-static constexpr u32 kExitNormal = 0, kExitFallback = 1;
+// Kind codes returned in w0: 0 = continue at state.pc, 1 = interpret the instruction at state.pc,
+// 2 = continue at state.pc after re-checking the run() entry conditions (MSR changed).
+static constexpr u32 kExitNormal = 0, kExitFallback = 1, kExitRecheck = 2;
 
 void Jit::Compiler::tlb_probe(unsigned size, bool write, std::vector<Emitter::Label>& miss) {
     e.ubfx(false, 13, 1, 12, 8);                    // entry index (kTlbEntries = 256)
@@ -824,8 +831,14 @@ void Jit::Compiler::interp_call(u32 ins, u32 pc, u32 i, bool generic, bool updat
     e.bind_here(ok);
     if (generic) slot.fill(-1); // any GPR may have changed in memory
     else if (update) { const int k = find(ureg); if (k >= 0) slot[static_cast<unsigned>(k)] = -1; } // rA changed in memory
-    e.cmp_imm(false, 0, 2);
-    const auto same = e.b_cond(Cond::NE);
+    // 1: go on; 2: code was invalidated, leave; 3: MSR changed (mtmsr), leave
+    // so that run() re-checks its entry conditions
+    e.cmp_imm(false, 0, 1);
+    const auto same = e.b_cond(Cond::EQ);
+    e.cmp_imm(false, 0, 3);
+    const auto invalidated = e.b_cond(Cond::NE);
+    exit_const(pc + 4U, i + 1U, kExitRecheck);
+    e.bind_here(invalidated);
     exit_const(pc + 4U, i + 1U, kExitNormal);
     e.bind_here(same);
 }
@@ -1433,11 +1446,20 @@ u32 Jit::helper_exec(Jit* self, u32 ins, u32 pc) {
     self->running_invalidated_ = false;
     self->current_pc_ = pc;
     self->current_pc_valid_ = true;
+    const u32 msr_before = s.msr;
     const Cpu::Outcome o = c.execute_one_for_jit(ins, pc);
     self->current_pc_valid_ = false;
     if (!o.ok() || c.fp_program_pending_) return 0; // precise: nothing was changed
     ++self->stats_.helper_steps;
-    return self->running_invalidated_ ? 2U : 1U;
+    if (self->running_invalidated_) return 2U;
+    // mtmsr: the block goes on only when nothing but EE changed and no interrupt
+    // became deliverable (the SDK's OSDisableInterrupts / OSRestoreInterrupts);
+    // anything else leaves for run(), which re-checks its entry conditions
+    if (s.msr != msr_before) {
+        if (((s.msr ^ msr_before) & ~MSR_EE) != 0U) return 3U;
+        if ((s.msr & MSR_EE) != 0U && (c.external_line_ || s.dec_pending)) return 3U;
+    }
+    return 1U;
 }
 
 u32 Jit::helper_store(Jit* self, u32 ea, u32 size, u32 value, u32 pc) {
@@ -1707,6 +1729,16 @@ Jit::Result Jit::run(u64 max_steps) {
         stats_.block_steps += steps;
         if (total != 0U) ++stats_.chained;
         total += steps;
+        if (kind == kExitRecheck) {
+            ++stats_.recheck_exits;
+            if (s.halted || (s.msr & (MSR_SE | MSR_BE | MSR_LE)) != 0U) break;
+            if ((s.msr & MSR_EE) != 0U && (cpu_.external_line_ || s.dec_pending)) break;
+            if ((s.msr & MSR_POW) != 0U && (s.hid0 & 0x00E00000U) != 0U) break;
+            tlb_check_context();
+            link_check_context();
+            pending_site_ = nullptr;
+            continue;
+        }
         if (kind == kExitFallback) {
             ++stats_.fallback_exits;
             // the instruction the block stopped at: interpret it here when that is

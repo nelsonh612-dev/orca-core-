@@ -84,6 +84,7 @@ public:
         u64 tlb_fills{0};    // translation-cache entries created by the load/store helpers
         u64 links{0};        // direct jumps patched between blocks
         u64 resumed{0};      // fallbacks interpreted inside run() before the next block
+        u64 recheck_exits{0}; // blocks left after an MSR change (mtmsr) for run() to re-check
     };
     const Stats& stats() const noexcept { return stats_; }
 
