@@ -339,6 +339,31 @@ TEST_CASE(jit_translates_blocks_on_any_host) {
         u32 tn = 0;
         CHECK(j.translate_for_test(kCode + 0x380U, tw, tn, err));
         CHECK_EQ(tn, 1U);
+        // with the caller's timing known, mftb (and mfspr TBU) are translated
+        j.set_timing(2, 12);
+        m.bus.write32(kCode + 0x388U, 0x7CCD42A6U); // mfspr r6, TBU
+        m.bus.write32(kCode + 0x38CU, 0x4E800020U); // blr
+        CHECK(j.translate_for_test(kCode + 0x380U, tw, tn, err));
+        CHECK_EQ(tn, 4U);
+#ifdef ORCA_LLVM_MC
+        {
+            const std::string mc3 = ORCA_LLVM_MC;
+            if (!mc3.empty() && mc3.find("NOTFOUND") == std::string::npos) {
+                {
+                    std::ofstream f("/tmp/orca_jit_tb_block.txt");
+                    for (u32 w : tw) f << "0x" << std::hex << (w & 0xFF) << " 0x" << ((w >> 8) & 0xFF) << " 0x" << ((w >> 16) & 0xFF) << " 0x" << (w >> 24) << "\n";
+                }
+                const std::string cmd = mc3 + " --disassemble -triple=aarch64 /tmp/orca_jit_tb_block.txt > /tmp/orca_jit_tb_block.s 2>&1";
+                CHECK(std::system(cmd.c_str()) == 0);
+                std::ifstream in("/tmp/orca_jit_tb_block.s");
+                std::string line;
+                unsigned bad = 0;
+                while (std::getline(in, line))
+                    if (line.find("invalid") != std::string::npos || line.find("warning") != std::string::npos) ++bad;
+                CHECK_EQ(bad, 0U);
+            }
+        }
+#endif
 #ifdef ORCA_LLVM_MC
         const std::string mc2 = ORCA_LLVM_MC;
         if (!mc2.empty() && mc2.find("NOTFOUND") == std::string::npos) {

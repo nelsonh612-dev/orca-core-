@@ -53,7 +53,17 @@ public:
     };
     // Executes one translated block of at most max_steps instructions, or one
     // interpreter step when no block fits or applies. max_steps >= 1.
-    Result run(u64 max_steps);
+    // `timebase_remainder`: the caller's cycles not yet turned into time base ticks
+    // (used with set_timing, see Time).
+    Result run(u64 max_steps, u64 timebase_remainder = 0);
+
+    // How the caller advances the time base: after every instruction it adds
+    // `cycles_per_instruction` cycles and turns each `cycles_per_tick` of them into
+    // a tick, but only between run() calls. With this set, mftb and mfspr of TBL /
+    // TBU are translated and give the value the interpreter would read at that
+    // instruction (Dolphin's JIT reads the time base inline too, from its timer
+    // state). Without it (0) they end the block.
+    void set_timing(u64 cycles_per_instruction, u64 cycles_per_tick);
 
     // After a block stops before an instruction it does not translate, run()
     // interprets that one instruction and goes on with the next block when it
@@ -141,6 +151,13 @@ private:
     // current instruction-translation context) equals the id patched into the site.
     u32 link_context_{kNoContext};
     static constexpr u32 kNoContext = 0xFFFFU;
+    // Time base inputs read by translated code (offsets fixed: see ticks_before)
+    struct Time {
+        u64 remainder{0};        // + 0: caller's cycles not yet in the time base (run() entry)
+        u64 cpi{0};              // + 8
+        u64 cycles_per_tick{0};  // +16: 0 = time base reads not translated
+        u64 steps_before{0};     // +24: steps run() completed before the current C++ block entry
+    } time_{};
     // Dispatch table for exits whose target is only known at run time (blr, bctr):
     // translated code looks the target up here and jumps to its linked entry
     // without returning to run() (as Dolphin's ARM64 dispatcher does with its

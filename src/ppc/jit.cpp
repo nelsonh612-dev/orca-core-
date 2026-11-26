@@ -34,14 +34,14 @@ constexpr Reg kCacheFirst = 22, kCacheCount = 7;
 constexpr Reg T0 = 8, T1 = 9, T2 = 10, T3 = 11, T4 = 12;
 
 struct Offsets {
-    u32 gpr, pc, lr, ctr, cr, xer, fpr, fpscr, msr, hid2;
+    u32 gpr, pc, lr, ctr, cr, xer, fpr, fpscr, msr, hid2, tb, dec;
 };
 const Offsets& offsets() {
     static const Offsets o = [] {
         CpuState s;
         auto off = [&](const void* p) { return static_cast<u32>(reinterpret_cast<const char*>(p) - reinterpret_cast<const char*>(&s)); };
         return Offsets{off(s.gpr.data()), off(&s.pc), off(&s.lr), off(&s.ctr), off(&s.cr), off(&s.xer),
-                       off(s.fpr.data()), off(&s.fpscr), off(&s.msr), off(&s.hid2)};
+                       off(s.fpr.data()), off(&s.fpscr), off(&s.msr), off(&s.hid2), off(&s.tb), off(&s.dec)};
     }();
     return o;
 }
@@ -141,6 +141,25 @@ struct Jit::Compiler {
     std::vector<u32> sites; // word index of each site's MOVZ
     u32 link_ctx_off = 0;   // offset from x21 of Jit::link_context_
     u32 dispatch_off = 0;   // offset from x21 of Jit::dispatch_
+    u32 time_off = 0;       // offset from x21 of Jit::time_ (0: time base reads are not translated)
+    // Time base ticks the System would have added before instruction i of this
+    // block when interpreting (see Jit::Time) into x13:
+    //   ticks = (remainder + (steps_before_block + i) * cpi) / cycles_per_tick
+    void ticks_before(u32 i) {
+        e.ldr(8, 13, kSelf, time_off + 24U);            // steps run() completed before this C++ entry
+        e.ldr(4, 14, kExit, 0);                         // + steps of the linked blocks before this one
+        e.add(true, 13, 13, 14);
+        if (i != 0U) {
+            if (i < 4096U) e.add_imm(true, 13, 13, i);
+            else { e.mov_imm(true, 14, i); e.add(true, 13, 13, 14); }
+        }
+        e.ldr(8, 14, kSelf, time_off + 8U);             // cycles per instruction
+        e.mul(true, 13, 13, 14);
+        e.ldr(8, 14, kSelf, time_off);                  // timebase remainder at run() entry
+        e.add(true, 13, 13, 14);
+        e.ldr(8, 14, kSelf, time_off + 16U);            // cycles per timebase tick
+        e.udiv(true, 13, 13, 14);
+    }
     // Exit to the guest address in `pc` (blr, bctr): look it up in Jit::dispatch_
     // and jump to the block's linked entry when the entry matches the address and
     // the current context; otherwise return to run(), which finds or compiles the
@@ -677,7 +696,21 @@ bool Jit::Compiler::op31(u32 ins, u32 pc, u32 i, bool& ends) {
         st(T0, o.cr);
         return true;
     }
-    case 339: case 467: { // mfspr / mtspr: only XER, LR, CTR
+    case 371: case 339: { // mftb and mfspr of TBL / TBU: computed as the interpreter sees them
+        const unsigned n = ((ins >> 16) & 0x1FU) | (((ins >> 11) & 0x1FU) << 5);
+        // (DEC stays with the interpreter: reading it is privileged in problem state)
+        if (time_off != 0U && (n == 268U || n == 269U)) {
+            ticks_before(i);
+            e.ldr(8, 14, kState, o.tb);
+            e.add(true, 13, 13, 14);
+            if (n == 269U) e.lsr_imm(true, 13, 13, 32);
+            e.mov(false, def(rt), 13);
+            return true;
+        }
+        if (xo10 == 371U) return false;
+        [[fallthrough]];
+    }
+    case 467: { // mfspr / mtspr: only XER, LR, CTR
         const unsigned n = ((ins >> 16) & 0x1FU) | (((ins >> 11) & 0x1FU) << 5);
         u32 off;
         if (n == 1U) off = o.xer; else if (n == 8U) off = o.lr; else if (n == 9U) off = o.ctr; else return false;
@@ -1576,10 +1609,12 @@ bool Jit::compile(u32 pc, u32 pa, std::vector<u32>& words, u32& count, std::stri
     c.tlb_off = static_cast<u32>(reinterpret_cast<const char*>(tlb_.data()) - reinterpret_cast<const char*>(this));
     c.epoch_off = static_cast<u32>(reinterpret_cast<const char*>(&bus_write_epoch_) - reinterpret_cast<const char*>(this));
     c.dispatch_off = static_cast<u32>(reinterpret_cast<const char*>(dispatch_.data()) - reinterpret_cast<const char*>(this));
+    if (time_.cycles_per_tick != 0U)
+        c.time_off = static_cast<u32>(reinterpret_cast<const char*>(&time_) - reinterpret_cast<const char*>(this));
     // both must be reachable with scaled LDR offsets from x21 (they are the first members)
     if (c.tlb_off + 24U >= 16384U || c.epoch_off >= 32768U || (c.tlb_off & 7U) != 0U || (c.epoch_off & 7U) != 0U ||
         c.link_ctx_off >= 16384U || (c.link_ctx_off & 3U) != 0U || c.dispatch_off + 8U >= 16384U ||
-        (c.dispatch_off & 7U) != 0U) {
+        (c.dispatch_off & 7U) != 0U || c.time_off + 24U >= 32768U || (c.time_off & 7U) != 0U) {
         error = "Jit layout: translation cache out of reach";
         return false;
     }
@@ -1695,6 +1730,12 @@ void Jit::dispatch_fill(Block* b) {
     ++stats_.dispatch_fills;
 }
 
+void Jit::set_timing(u64 cycles_per_instruction, u64 cycles_per_tick) {
+    if (time_.cycles_per_tick != cycles_per_tick || time_.cpi != cycles_per_instruction) clear(); // blocks embed whether TB reads are translated
+    time_.cpi = cycles_per_instruction;
+    time_.cycles_per_tick = cycles_per_tick;
+}
+
 void Jit::dispatch_drop(const Block* b) noexcept {
     DispatchEntry& d = dispatch_[(b->ea >> 2) & (kDispatchEntries - 1U)];
     if (d.entry != nullptr && d.entry == b->code + b->linked_offset) d = DispatchEntry{};
@@ -1749,7 +1790,8 @@ Jit::Result Jit::interpret() {
     return {cpu_.step(), 1};
 }
 
-Jit::Result Jit::run(u64 max_steps) {
+Jit::Result Jit::run(u64 max_steps, u64 timebase_remainder) {
+    time_.remainder = timebase_remainder;
     if (!can_execute() || max_steps == 0U) return interpret();
     CpuState& s = cpu_.state_;
     u64 total = 0;
@@ -1779,6 +1821,7 @@ Jit::Result Jit::run(u64 max_steps) {
         if (!code_->make_executable()) break;
         running_ = b;
         running_invalidated_ = false;
+        time_.steps_before = total;
         exit_ = {};
         exit_.limit = static_cast<u32>(std::min<u64>(max_steps - total, 0xFFFFFFFFULL));
         const u32 kind = reinterpret_cast<Fn>(reinterpret_cast<std::uintptr_t>(b->code))(&s, &exit_, this);

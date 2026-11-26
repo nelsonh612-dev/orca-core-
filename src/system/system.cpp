@@ -33,6 +33,7 @@ System::System(SystemConfig config) : config_(config), clocks_(clocks_for(config
     if (config_.use_jit && jit::host_can_execute()) {
         jit_ = std::make_unique<ppc::Jit>(*cpu_, bus_);
         if (!jit_->can_execute()) jit_.reset();
+        if (jit_) jit_->set_timing(config_.cycles_per_instruction, clocks_.cpu_cycles_per_timebase_tick);
     }
     bus_.map_mmio("EFB", gpu::kEfbPhysicalBase, gpu::kEfbPhysicalSize, *efb_access_);
     pi_->set_burst_listener([this](u32) { cp_->on_gather_burst(); });
@@ -460,7 +461,7 @@ RunResult System::run(u64 max_cycles) {
         ++run_slices_;
         const u32 pc_before = cpu_->state().pc;
         if (jit_ && !stop_pc_) {
-            const ppc::Jit::Result jr = jit_->run(steps_until_next_event(end));
+            const ppc::Jit::Result jr = jit_->run(steps_until_next_event(end), timebase_remainder_);
             s = jr.result;
             steps = jr.steps;
         } else {
