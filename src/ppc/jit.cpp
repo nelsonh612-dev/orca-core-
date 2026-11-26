@@ -371,7 +371,7 @@ bool interp_class(u32 ins) {
     case 146:                                // mtmsr (helper_exec decides whether the block may go on)
     case 533: case 597: case 661: case 725:  // lswx lswi stswx stswi
         return true;
-    case 339: return plain_spr_read(ins); // mfspr of an SPR that holds plain state
+
     default:
         return false;
     }
