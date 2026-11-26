@@ -101,6 +101,25 @@ struct XfbPlan {
 };
 bool xfb_plan(u32 trigger, const BpMemory& bp, const CopyArea& area, u32 phys_mask, XfbPlan& plan, std::string& error);
 
+// The same for a texture copy (BP 0x52 bit 14 clear): format (0..12 as the
+// copy unit numbers them: R4, R8, RA4, RA8, RGB565, RGB5A3, RGBA8, A8, R8, G8,
+// B8, RG8, GB8), block size, the texel grid (half scale: 2x2 box), the copy
+// filter, gamma, YUV (intensity), depth. Rows of blocks are
+// dest + row * stride, blocks_x * block_bytes bytes each, blocks_y rows.
+struct TexCopyPlan {
+    u32 format{0}, block_w_log{2}, block_h_log{2}, block_bytes{32};
+    u32 left{0}, top{0}, blocks_x{0}, blocks_y{0};
+    u32 dest{0}, stride{0};
+    bool half{false}, yuv{false}, depth{false}, six{false};
+    std::array<u32, 3> weights{};
+    bool wrap{false};
+    u32 clamp_top{0}, clamp_bottom{0};
+    std::array<u8, 256> gamma{};
+    u32 row_bytes() const noexcept { return blocks_x * block_bytes; }
+};
+bool texture_copy_plan(u32 trigger, const BpMemory& bp, const CopyArea& area, u32 phys_mask, TexCopyPlan& plan,
+                       std::string& error);
+
 // A clear (BP 0x52 bit 11) as whole-value writes: the 24-bit colour and/or depth
 // written to every pixel of the area. `whole` is false when only part of a
 // pixel changes (RGBA6 with only colour or only alpha enabled).

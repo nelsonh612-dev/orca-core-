@@ -125,25 +125,16 @@ Px yuv_of(const Px& c) {
 bool texture_copy(u32 trigger, const BpMemory& bp, const Efb& efb, mem::Bus& bus, u32 phys_mask, const Rect& r,
                   u32 fmt, CopyResult& res, std::string& error) {
     char b[128];
-    const u32 tf = bits(trigger, 3, 4);
-    const u32 cf = tf / 2U + (tf & 1U) * 8U;
-    const bool depth = fmt == 3U;
-    const bool half = (trigger & 0x200U) != 0U;
-    const bool yuv = (trigger & 0x8000U) != 0U && (trigger & 0x10000U) != 0U;
-    if (cf > GB8) {
-        std::snprintf(b, sizeof b, "EFB copy format %u from %s is not a valid copy", cf, depth ? "depth" : "colour");
-        error = b;
-        return false;
-    }
-    u32 bw_log = 2, bh_log = 2;
-    if (cf == R4) { bw_log = 3; bh_log = 3; }
-    else if (cf == R8_1 || cf == R8 || cf == RA4 || cf == A8 || cf == G8 || cf == B8) bw_log = 3;
+    TexCopyPlan plan;
+    const CopyArea area{r.left, r.top, r.right, r.bottom, fmt, false};
+    if (!texture_copy_plan(trigger, bp, area, phys_mask, plan, error)) return false;
+    const u32 cf = plan.format;
+    const bool depth = plan.depth, half = plan.half, yuv = plan.yuv;
+    const u32 bw_log = plan.block_w_log, bh_log = plan.block_h_log;
     const u32 bw = 1U << bw_log, bh = 1U << bh_log;
-    const u32 block_bytes = cf == RGBA8 ? 64U : 32U;
-    // size in texels and whole blocks (TextureCacheBase.cpp ResolveFramebufferCopyData)
-    const u32 tw = (r.right - r.left) >> (half ? 1U : 0U), th = (r.bottom - r.top) >> (half ? 1U : 0U);
-    const u32 bx = (tw + bw - 1U) >> bw_log, by = (th + bh - 1U) >> bh_log;
-    const u32 dest = (bp.reg(bp::EFB_ADDR) << 5) & phys_mask, stride = bp.reg(bp::EFB_STRIDE) << 5;
+    const u32 block_bytes = plan.block_bytes;
+    const u32 bx = plan.blocks_x, by = plan.blocks_y;
+    const u32 dest = plan.dest, stride = plan.stride;
     const u32 step = half ? 2U : 1U;
     const PixelReader rd(efb, fmt, depth, r, trigger, bp);
 
@@ -304,6 +295,44 @@ bool copy_area(const BpMemory& bp, CopyArea& a, std::string& error) {
         error = b;
         return false;
     }
+    return true;
+}
+
+bool texture_copy_plan(u32 trigger, const BpMemory& bp, const CopyArea& a, u32 phys_mask, TexCopyPlan& p,
+                       std::string& error) {
+    p = TexCopyPlan{};
+    const u32 tf = bits(trigger, 3, 4);
+    const u32 cf = tf / 2U + (tf & 1U) * 8U;
+    p.depth = a.fmt == 3U;
+    if (cf > GB8) {
+        char b[128];
+        std::snprintf(b, sizeof b, "EFB copy format %u from %s is not a valid copy", cf, p.depth ? "depth" : "colour");
+        error = b;
+        return false;
+    }
+    p.format = cf;
+    p.half = (trigger & 0x200U) != 0U;
+    p.yuv = (trigger & 0x8000U) != 0U && (trigger & 0x10000U) != 0U;
+    p.six = a.fmt == 1U && !p.depth;
+    if (cf == R4) { p.block_w_log = 3; p.block_h_log = 3; }
+    else if (cf == R8_1 || cf == R8 || cf == RA4 || cf == A8 || cf == G8 || cf == B8) p.block_w_log = 3;
+    p.block_bytes = cf == RGBA8 ? 64U : 32U;
+    // size in texels and whole blocks (TextureCacheBase.cpp ResolveFramebufferCopyData)
+    const u32 tw = (a.right - a.left) >> (p.half ? 1U : 0U), th = (a.bottom - a.top) >> (p.half ? 1U : 0U);
+    p.blocks_x = (tw + (1U << p.block_w_log) - 1U) >> p.block_w_log;
+    p.blocks_y = (th + (1U << p.block_h_log) - 1U) >> p.block_h_log;
+    p.left = a.left;
+    p.top = a.top;
+    p.dest = (bp.reg(bp::EFB_ADDR) << 5) & phys_mask;
+    p.stride = bp.reg(bp::EFB_STRIDE) << 5;
+    p.weights = filter_rows(bp);
+    p.wrap = p.weights[0] + p.weights[1] + p.weights[2] >= 128U;
+    p.clamp_top = (trigger & 1U) != 0U ? a.top : 0U;
+    p.clamp_bottom = ((trigger & 2U) != 0U ? a.bottom : kEfbHeight) - 1U;
+    const bool gamma = bits(trigger, 7, 2) != 0U;
+    const float rcp = 1.0f / gamma_of(trigger);
+    for (u32 v = 0; v < 256U; ++v)
+        p.gamma[v] = static_cast<u8>(gamma ? static_cast<u32>(std::round(std::pow(static_cast<float>(v) / 255.0f, rcp) * 255.0f)) : v);
     return true;
 }
 
