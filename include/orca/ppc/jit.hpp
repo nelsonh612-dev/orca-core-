@@ -86,6 +86,7 @@ public:
         u64 links{0};        // direct jumps patched between blocks
         u64 resumed{0};      // fallbacks interpreted inside run() before the next block
         u64 recheck_exits{0}; // blocks left after an MSR change (mtmsr) for run() to re-check
+        u64 dispatch_fills{0}; // dispatch-table entries written (see dispatch_)
     };
     const Stats& stats() const noexcept { return stats_; }
 
@@ -140,6 +141,19 @@ private:
     // current instruction-translation context) equals the id patched into the site.
     u32 link_context_{kNoContext};
     static constexpr u32 kNoContext = 0xFFFFU;
+    // Dispatch table for exits whose target is only known at run time (blr, bctr):
+    // translated code looks the target up here and jumps to its linked entry
+    // without returning to run() (as Dolphin's ARM64 dispatcher does with its
+    // fast block map). Direct-mapped by (EA >> 2); an entry is used only while
+    // link_context_ equals its context, under the same rule as a link.
+    struct DispatchEntry {
+        u32 ea{0}, context{kNoContext};
+        const u32* entry{nullptr};
+    };
+    static constexpr u32 kDispatchEntries = 1024;
+    std::array<DispatchEntry, kDispatchEntries> dispatch_{};
+    void dispatch_fill(Block* b);
+    void dispatch_drop(const Block* b) noexcept;
     struct FetchContext {
         u32 msr{0}, hid4{0};
         std::array<BatPair, 8> ibat{};

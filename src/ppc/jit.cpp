@@ -134,19 +134,37 @@ struct Jit::Compiler {
         e.mov_imm(false, 0, kind);
         to_epilogue.push_back(e.b());
     }
-    void exit_reg(Reg pc, u32 steps, u32 kind) {
-        flush_dirty();
-        st(pc, o.pc);
-        add_steps(steps);
-        e.mov_imm(false, 0, kind);
-        to_epilogue.push_back(e.b());
-    }
     // Normal exit to a constant guest address, linkable: the site
     //   movz w10, #context ; cmp w9 (current context), w10 ; b.ne stub ; b stub
     // gets the context id and the target block's linked entry patched in (Jit::link).
     // The stub returns to the dispatcher with the site's address in JitExit::site.
     std::vector<u32> sites; // word index of each site's MOVZ
     u32 link_ctx_off = 0;   // offset from x21 of Jit::link_context_
+    u32 dispatch_off = 0;   // offset from x21 of Jit::dispatch_
+    // Exit to the guest address in `pc` (blr, bctr): look it up in Jit::dispatch_
+    // and jump to the block's linked entry when the entry matches the address and
+    // the current context; otherwise return to run(), which finds or compiles the
+    // block and fills the entry. The linked entry checks the step budget.
+    void exit_dispatch(Reg pc, u32 steps) {
+        flush_dirty();
+        st(pc, o.pc);
+        add_steps(steps);
+        e.ubfx(false, 13, pc, 2, 10);                   // index (kDispatchEntries = 1024)
+        e.add(true, 14, kSelf, 13, Shift::LSL, 4);      // 16-byte entries
+        e.ldr(4, 15, 14, dispatch_off);                 // entry EA
+        e.cmp(false, 15, pc);
+        const auto miss_ea = e.b_cond(Cond::NE);
+        e.ldr(4, 15, 14, dispatch_off + 4U);            // entry context
+        e.ldr(4, 13, kSelf, link_ctx_off);
+        e.cmp(false, 15, 13);
+        const auto miss_ctx = e.b_cond(Cond::NE);
+        e.ldr(8, 15, 14, dispatch_off + 8U);            // linked entry of the block
+        e.br(15);
+        e.bind_here(miss_ea);
+        e.bind_here(miss_ctx);
+        e.movz(false, 0, 0);
+        to_epilogue.push_back(e.b());
+    }
     void exit_link(u32 target, u32 steps) {
         flush_dirty();
         add_steps(steps);
@@ -595,7 +613,7 @@ bool Jit::Compiler::branch(u32 ins, u32 pc, u32 i, unsigned kind, bool& ends) {
     e.mov_imm(false, T3, pc + 4U);
     e.cmp_imm(false, T2, 0);
     e.csel(false, T1, T1, T3, Cond::NE);
-    exit_reg(T1, i + 1U, kExitNormal);
+    exit_dispatch(T1, i + 1U);
     return true;
 }
 
@@ -1388,6 +1406,7 @@ bool Jit::can_execute() const noexcept { return code_ != nullptr && code_->ok();
 
 void Jit::clear() {
     tlb_flush();
+    dispatch_.fill(DispatchEntry{});
     sites_.clear();
     pending_site_ = nullptr;
     for (auto& [page, list] : page_blocks_) bus_.unmark_code_page(page << 12);
@@ -1408,6 +1427,7 @@ void Jit::invalidate(u32 address, u32 size) {
             const u32 bend = b->pa + b->count * 4U;
             if (static_cast<u64>(address) + size <= b->pa || address >= bend) continue;
             b->valid = false;
+            dispatch_drop(b);
             ++stats_.invalidations;
             if (b == running_ || (current_pc_valid_ && current_pc_ - b->ea < b->count * 4U)) running_invalidated_ = true;
             unlink_incoming(b);
@@ -1465,12 +1485,15 @@ u32 Jit::helper_exec(Jit* self, u32 ins, u32 pc) {
     if (!o.ok() || c.fp_program_pending_) return 0; // precise: nothing was changed
     ++self->stats_.helper_steps;
     if (self->running_invalidated_) return 2U;
-    // mtmsr: the block goes on only when it turned interrupts off and changed
-    // nothing else (the SDK's OSDisableInterrupts, or OSRestoreInterrupts keeping
-    // them off). Turning them on, or any other change, leaves for run(), which
+    // mtmsr (as Dolphin's JitArm64::mtmsr, which checks for pending exceptions
+    // after it): the block goes on when only MSR[EE] changed and no interrupt
+    // became deliverable (the SDK's OSDisableInterrupts / OSRestoreInterrupts).
+    // Any other change, or an interrupt to take, leaves for run(), which
     // re-checks its entry conditions before the next block.
-    if (s.msr != msr_before && (s.msr ^ msr_before) != MSR_EE) return 3U;
-    if ((s.msr & MSR_EE) != 0U && (msr_before & MSR_EE) == 0U) return 3U;
+    if (s.msr != msr_before) {
+        if ((s.msr ^ msr_before) != MSR_EE) return 3U;
+        if ((s.msr & MSR_EE) != 0U && (c.external_line_ || s.dec_pending)) return 3U;
+    }
     return 1U;
 }
 
@@ -1552,9 +1575,11 @@ bool Jit::compile(u32 pc, u32 pa, std::vector<u32>& words, u32& count, std::stri
     c.native_fp = native_fp_;
     c.tlb_off = static_cast<u32>(reinterpret_cast<const char*>(tlb_.data()) - reinterpret_cast<const char*>(this));
     c.epoch_off = static_cast<u32>(reinterpret_cast<const char*>(&bus_write_epoch_) - reinterpret_cast<const char*>(this));
+    c.dispatch_off = static_cast<u32>(reinterpret_cast<const char*>(dispatch_.data()) - reinterpret_cast<const char*>(this));
     // both must be reachable with scaled LDR offsets from x21 (they are the first members)
     if (c.tlb_off + 24U >= 16384U || c.epoch_off >= 32768U || (c.tlb_off & 7U) != 0U || (c.epoch_off & 7U) != 0U ||
-        c.link_ctx_off >= 16384U || (c.link_ctx_off & 3U) != 0U) {
+        c.link_ctx_off >= 16384U || (c.link_ctx_off & 3U) != 0U || c.dispatch_off + 8U >= 16384U ||
+        (c.dispatch_off & 7U) != 0U) {
         error = "Jit layout: translation cache out of reach";
         return false;
     }
@@ -1612,6 +1637,7 @@ Jit::Block* Jit::lookup_or_compile(u32 pc, u32 pa, std::string& error) {
     auto it = blocks_.find(pc);
     if (it != blocks_.end()) {
         if (it->second->valid && it->second->pa == pa) return it->second.get();
+        dispatch_drop(it->second.get());
         retired_blocks_.push_back(std::move(it->second));
         blocks_.erase(it);
     }
@@ -1652,6 +1678,26 @@ void Jit::link_check_context() {
     if (contexts_.size() >= kNoContext) { link_context_ = kNoContext; return; } // no more ids: no new links
     contexts_.push_back(now);
     link_context_ = static_cast<u32>(contexts_.size() - 1U);
+}
+
+// Makes `b` reachable from dispatch exits in the current context, under the same
+// rule as link(): its fetch translation must not use the page table.
+void Jit::dispatch_fill(Block* b) {
+    if (link_context_ == kNoContext || !b->valid) return;
+    DispatchEntry& d = dispatch_[(b->ea >> 2) & (kDispatchEntries - 1U)];
+    const u32* entry = b->code + b->linked_offset;
+    if (d.ea == b->ea && d.context == link_context_ && d.entry == entry) return;
+    Translation t;
+    if (!translate_without_page_table(cpu_.state_, b->ea, AccessType::Fetch, cpu_.config_.extended_bats, t) ||
+        t.status != TranslateStatus::Ok || t.physical != b->pa)
+        return;
+    d = DispatchEntry{b->ea, link_context_, entry};
+    ++stats_.dispatch_fills;
+}
+
+void Jit::dispatch_drop(const Block* b) noexcept {
+    DispatchEntry& d = dispatch_[(b->ea >> 2) & (kDispatchEntries - 1U)];
+    if (d.entry != nullptr && d.entry == b->code + b->linked_offset) d = DispatchEntry{};
 }
 
 // Patches `site` (in a valid block) to jump straight to `target` while the current
@@ -1728,6 +1774,7 @@ Jit::Result Jit::run(u64 max_steps) {
         Block* b = lookup_or_compile(pc, t.physical, error);
         if (b == nullptr) break;
         if (pending_site_ != nullptr) { link(pending_site_, b); pending_site_ = nullptr; }
+        dispatch_fill(b);
         if (b->count > max_steps - total) break;
         if (!code_->make_executable()) break;
         running_ = b;

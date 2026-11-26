@@ -883,8 +883,8 @@ TEST_CASE(jit_directed_data_page_that_becomes_code) {
 TEST_CASE(jit_directed_interrupts_off_and_on_stay_in_the_block) {
     if (!jit::host_can_execute()) return;
     // The SDK's OSDisableInterrupts / OSRestoreInterrupts: mfmsr, clear EE, mtmsr,
-    // ..., mtmsr back. Turning EE off stays in the block; turning it back on
-    // leaves it so that run() re-checks for a pending interrupt.
+    // ..., mtmsr back. Only EE changes and nothing is pending, so the block goes
+    // on (Dolphin's JIT checks for pending exceptions after mtmsr the same way).
     auto init = [](Machine& m) {
         m.code(kCode, {X31(83, 3, 0, 0),                              // mfmsr r3
                        21U << 26 | 3U << 21 | 4U << 16 | 17U << 6 | 15U << 1, // rlwinm r4, r3, 0, 17, 15 (EE off)
@@ -899,7 +899,7 @@ TEST_CASE(jit_directed_interrupts_off_and_on_stay_in_the_block) {
     Jit::Stats st{};
     CHECK(lockstep_same(init, 7000, 1000, nothing, &st));
     CHECK(st.helper_steps >= 2000U);
-    CHECK(st.recheck_exits >= 900U); // turning interrupts back on leaves the block
+    CHECK_EQ(st.recheck_exits, 0U); // nothing pending: interrupts on and off stay in the block
     // EE turned on while an interrupt is pending: the block leaves at once and the
     // interrupt is taken where the interpreter takes it
     auto pending = [](Machine& m) {
@@ -916,6 +916,57 @@ TEST_CASE(jit_directed_interrupts_off_and_on_stay_in_the_block) {
     };
     CHECK(lockstep_same(pending, 300, 100, nothing, &st));
     CHECK(st.recheck_exits >= 1U);
+}
+
+TEST_CASE(jit_directed_returns_go_through_the_dispatch_table) {
+    if (!jit::host_can_execute()) return;
+    // A loop that calls a function (bl / blr) and one that calls through CTR
+    // (bctrl): the returns and indirect calls jump block to block through the
+    // dispatch table instead of returning to run() each time.
+    constexpr u32 F = kCode + 0x400U;
+    auto init = [](Machine& m) {
+        m.code(kCode, {D(14, 5, 5, 1),                                   // r5++
+                       B(static_cast<s32>(F - (kCode + 4U))) | 1U,       // bl F
+                       0x4E800421U,                                      // bctrl (CTR = F)
+                       B(-0xC)});
+        m.code(F, {D(14, 6, 6, 1), 0x4E800020U});                       // r6++ ; blr
+        m.s().pc = kCode;
+        m.s().ctr = F;
+    };
+    Jit::Stats st{};
+    CHECK(lockstep_same(init, 20000, 20000, nothing, &st));
+    CHECK(st.dispatch_fills >= 1U);
+    CHECK(st.block_runs < 100U); // without the table: one run per block, about 5000
+
+    // the table follows the translation context: kCode holds different code with
+    // and without instruction translation (IBAT0 maps it to 0x44000); a blr from a
+    // block mapped the same in both must not reach the other context's block
+    auto ctx = [](Machine& m) {
+        m.code(0x80000, {D(14, 4, 4, 1), 0x4E800020U});                 // r4++ ; blr (LR = kCode)
+        m.code(kCode, {D(14, 3, 3, 1), B(0x80000 - static_cast<s32>(kCode))});
+        m.code(0x40000 + kCode, {D(14, 3, 3, 1000), B(0x80000 - static_cast<s32>(kCode))});
+        m.s().pc = 0x80000;
+        m.s().lr = kCode;
+        m.s().ibat[0] = BatPair{0x00000003U, 0x00040002U};
+        m.s().ibat[1] = BatPair{0x00080003U, 0x00080002U};
+    };
+    auto flip = [](Machine& m) { m.s().msr ^= MSR_IR; };
+    CHECK(lockstep_same(ctx, 30 * 37, 37, flip, &st));
+
+    // a dispatch target rewritten by the program: its entry must not be used again
+    constexpr u32 G = kCode + 0x800U;
+    auto rewrite = [](Machine& m) {
+        m.code(kCode, {D(36, 3, 0, G),                                   // stw r3, G (new first instruction)
+                       D(14, 3, 3, 1),                                   // next one adds one more
+                       0x4E800421U,                                      // bctrl (CTR = G)
+                       B(-0xC)});
+        m.code(G, {D(14, 5, 5, 0), 0x4E800020U});                       // rewritten ; blr
+        m.s().pc = kCode;
+        m.s().ctr = G;
+        m.s().gpr[3] = 0x38A50001U;                                      // "addi r5, r5, 1", then 2, 3, ...
+    };
+    CHECK(lockstep_same(rewrite, 3000, 3000, nothing, &st));
+    CHECK(st.invalidations > 0U);
 }
 
 TEST_CASE(jit_directed_links_across_contexts_with_a_shared_page) {
