@@ -567,6 +567,29 @@ TEST_CASE(gles_xfb_copies_on_the_gpu) {
         CHECK_EQ(d.color, 0U);
         CHECK_EQ(d.depth, 0U);
     }
+    for (const u32 blend : {0x08U, 0x10U}) { // RGBA6 clears of only the colour, only the alpha
+        Twin t(true);
+        t.scene();
+        t.bpw(bp::ZCOMPARE, 1);
+        t.prim(0x80, {{0, 0, -0.5f, 0xFF2010C0U}, {640, 0, -0.5f, 0x10F04020U}, {640, 528, -0.5f, 0x2040FF80U}, {0, 528, -0.5f, 0xF0F0F0FFU}});
+        t.bpw(bp::EFB_TL, 8U | (4U << 10)); t.bpw(bp::EFB_WH, 199U | (99U << 10));
+        t.bpw(bp::EFB_ADDR, 0x100000U >> 5); t.bpw(bp::EFB_STRIDE, 416U >> 5);
+        t.bpw(bp::COPY_YSCALE, 256);
+        t.bpw(bp::CLEAR_AR, 0x5577); t.bpw(bp::CLEAR_GB, 0x99BB); t.bpw(bp::CLEAR_Z, 0x123456);
+        t.bpw(bp::BLENDMODE, blend);
+        t.bpw(bp::TRIGGER_EFB_COPY, 0x4000U | 0x800U);
+        CHECK(t.run());
+        CHECK_EQ(t.gl.gpu.gpu_xfb_copies(), 1U);
+        CHECK_EQ(t.gl.gpu.cpu_fallback_copies(), 0U);
+        std::vector<u8> a(416U * 100U), b(416U * 100U);
+        CHECK(t.sw.bus.dma_read(0x100000, a) == mem::BusStatus::Ok);
+        CHECK(t.gl.bus.dma_read(0x100000, b) == mem::BusStatus::Ok);
+        CHECK(a == b);
+        const Diff d = t.diff();
+        report(blend == 0x08U ? "RGBA6 colour-only clear" : "RGBA6 alpha-only clear", d);
+        CHECK_EQ(d.color, 0U);
+        CHECK_EQ(d.depth, 0U);
+    }
     {   // a newer copy over the same rows drops the older one without reading it back
         Twin t(true);
         t.scene();

@@ -239,6 +239,10 @@ struct Backend::Impl {
         u64 epoch{0};
         bool placed{false}; // epoch known: the rows were registered in RAM then
     };
+    // RGBA6 clears of only the colour or only the alpha bits (fetch shader)
+    GLuint mclear_prog{0};
+    GLint u_mclear{-1};
+    int mclear_state{0};
     // textures sampled straight from a texture copy on the GPU (decode_prog)
     GLuint dec_prog{0}, dec_fbo{0};
     GLint u_dec_src{-1}, u_dec_geo{-1};
@@ -308,6 +312,7 @@ struct Backend::Impl {
         if (vs_shader != 0) glDeleteShader(vs_shader);
         if (tc_prog != 0) glDeleteProgram(tc_prog);
         if (dec_prog != 0) glDeleteProgram(dec_prog);
+        if (mclear_prog != 0) glDeleteProgram(mclear_prog);
         if (dec_fbo != 0) glDeleteFramebuffers(1, &dec_fbo);
         glDeleteFramebuffers(kTexSlots, tc_fbo.data());
         glDeleteTextures(kTexSlots, tc_tex.data());
@@ -1687,13 +1692,58 @@ bool Backend::present_rgba(std::span<const u8> rgba, u32 width, u32 height, u32 
 }
 
 bool Backend::clear_efb(const sw::CopyArea& a, const sw::ClearPlan& c, std::string& error) {
-    if (!c.whole) { error = "partial RGBA6 clear"; return false; }
     Impl& g = *impl_;
+    if (c.color && !c.whole && g.xfb_state == 0) { // its vertex array
+        g.xfb_state = g.setup_xfb() ? 1 : -1;
+        while (glGetError() != GL_NO_ERROR) {}
+    }
+    if (c.color && !c.whole && g.mclear_state == 0) {
+        static const char* vs = "#version 320 es\nvoid main() {\n"
+                                "  vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));\n"
+                                "  gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);\n}\n";
+        static const char* fs = "#version 320 es\n#extension GL_EXT_shader_framebuffer_fetch : require\n"
+                                "precision highp int;\n"
+                                "layout(location = 0) inout highp uvec4 o_color;\n"
+                                "uniform uvec2 u_keep_value;\n"
+                                "void main() { o_color = uvec4((o_color.x & u_keep_value.x) | u_keep_value.y, 0u, 0u, 0u); }\n";
+        std::string e;
+        g.mclear_prog = g.link(vs, fs, e);
+        g.u_mclear = g.mclear_prog != 0 ? glGetUniformLocation(g.mclear_prog, "u_keep_value") : -1;
+        g.mclear_state = g.mclear_prog != 0 ? 1 : -1;
+        if (g.mclear_state != 1) std::fprintf(stderr, "partial clear program: %s\n", e.c_str());
+        while (glGetError() != GL_NO_ERROR) {}
+    }
+    if (c.color && !c.whole && g.mclear_state != 1) { error = "the partial RGBA6 clear program is not available"; return false; }
     glBindFramebuffer(GL_FRAMEBUFFER, g.fbo);
     glEnable(GL_SCISSOR_TEST);
     glScissor(static_cast<GLint>(a.left), static_cast<GLint>(a.top), static_cast<GLsizei>(a.right - a.left),
               static_cast<GLsizei>(a.bottom - a.top));
-    if (c.color) { const GLuint v[4] = {c.color_value, 0, 0, 0}; glClearBufferuiv(GL_COLOR, 0, v); }
+    if (c.color && c.whole) { const GLuint v[4] = {c.color_value, 0, 0, 0}; glClearBufferuiv(GL_COLOR, 0, v); }
+    if (c.color && !c.whole) {
+        // only the enabled bits: new = (old & keep) | value, on attachment 0 only
+        const GLenum only0[2] = {GL_COLOR_ATTACHMENT0, GL_NONE}, both[2] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1};
+        const GLboolean blend = glIsEnabled(GL_BLEND), dither = glIsEnabled(GL_DITHER);
+        const GLboolean depth_test = glIsEnabled(GL_DEPTH_TEST), stencil = glIsEnabled(GL_STENCIL_TEST), cull = glIsEnabled(GL_CULL_FACE);
+        GLboolean mask[4];
+        glGetBooleanv(GL_COLOR_WRITEMASK, mask);
+        glDisable(GL_BLEND); glDisable(GL_DITHER); glDisable(GL_DEPTH_TEST); glDisable(GL_STENCIL_TEST); glDisable(GL_CULL_FACE);
+        glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+        glDrawBuffers(2, only0);
+        glViewport(0, 0, kW, kH);
+        glUseProgram(g.mclear_prog);
+        glBindVertexArray(g.xfb_vao);
+        glUniform2ui(g.u_mclear, c.color_keep, c.color_value);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glDrawBuffers(2, both);
+        if (blend == GL_TRUE) glEnable(GL_BLEND);
+        if (dither == GL_TRUE) glEnable(GL_DITHER);
+        if (depth_test == GL_TRUE) glEnable(GL_DEPTH_TEST);
+        if (stencil == GL_TRUE) glEnable(GL_STENCIL_TEST);
+        if (cull == GL_TRUE) glEnable(GL_CULL_FACE);
+        glColorMask(mask[0], mask[1], mask[2], mask[3]);
+        glUseProgram(g.prog);
+        glBindVertexArray(g.vao);
+    }
     if (c.depth) { const GLuint v[4] = {c.depth_value, 0, 0, 0}; glClearBufferuiv(GL_COLOR, 1, v); }
     glDisable(GL_SCISSOR_TEST);
     const GLenum e = glGetError();

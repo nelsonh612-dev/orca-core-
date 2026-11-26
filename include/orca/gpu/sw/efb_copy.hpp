@@ -126,6 +126,9 @@ bool texture_copy_plan(u32 trigger, const BpMemory& bp, const CopyArea& area, u3
 struct ClearPlan {
     bool color{false}, depth{false}, whole{true};
     u32 color_value{0}, depth_value{0};
+    // not whole (RGBA6 with only the colour or only the alpha enabled): the
+    // new colour is (old & color_keep) | color_value
+    u32 color_keep{0};
 };
 ClearPlan clear_plan(const BpMemory& bp, const CopyArea& area);
 

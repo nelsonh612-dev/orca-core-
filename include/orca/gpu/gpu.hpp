@@ -104,6 +104,17 @@ public:
     u64 gpu_texture_copies() const noexcept { return gpu_texture_copies_; }
     u64 cpu_fallback_copies() const noexcept { return cpu_fallback_copies_; }
     const std::string& last_fallback() const noexcept { return last_fallback_; }
+    // Every BP 0x52 by the path it took (cumulative).
+    struct CopyPaths {
+        u64 gpu_display{0}, gpu_texture{0};  // encoded on the GPU (deferred RAM)
+        u64 no_destination{0};               // GPU backend, no RAM written (stride 0): clear only or nothing
+        u64 ignored{0};                      // outside the EFB
+        u64 cpu_with_gpu{0};                 // GPU backend, CPU path (download / sw encode / upload)
+        u64 no_encoder{0};                   // (counted in cpu_with_gpu too) texture copy without a GPU encoder
+        u64 no_gpu_copies{0};                // GPU backend without GpuCopies: CPU path
+        u64 software{0};                     // software renderer
+    };
+    const CopyPaths& copy_paths() const noexcept { return paths_; }
     // The display copy on the GPU that a VI field shows, if any: the field's
     // rows (address + y * stride, width pixels, y < height) are lines
     // first_line + y * line_step of copy `handle`, and RAM there has not been
@@ -177,6 +188,7 @@ private:
     std::array<GpuXfbRecord, 8> gpu_xfbs_{};
     std::size_t gpu_xfb_next_{0};
     std::string last_fallback_;
+    CopyPaths paths_;
     bool gpu_copy(u32 trigger, std::string& error, bool& done);
     bool defer_rows(u32 handle, u32 dest, u32 stride, u32 row, u32 lines, std::string& error);
     u64 cycles_{0};       // total GPU time

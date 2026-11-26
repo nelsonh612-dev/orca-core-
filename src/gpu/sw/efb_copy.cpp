@@ -395,6 +395,10 @@ ClearPlan clear_plan(const BpMemory& bp, const CopyArea& a) {
         c.color = cen || aen;
         c.whole = cen == aen;
         c.color_value = ((cr >> 2) << 18) | ((cg >> 2) << 12) | ((cb >> 2) << 6) | (ca >> 2);
+        if (!c.whole) {
+            c.color_keep = cen ? 0x3FU : 0xFFFFC0U;
+            c.color_value &= ~c.color_keep & 0xFFFFFFU;
+        }
     } else {
         c.color = cen;
         c.color_value = (cr << 16) | (cg << 8) | cb;

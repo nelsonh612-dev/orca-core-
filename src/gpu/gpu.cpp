@@ -89,8 +89,14 @@ bool Gpu::gpu_copy(u32 trigger, std::string& error, bool& done) {
     done = false;
     sw::CopyArea area;
     if (!sw::copy_area(bp_, area, error)) return false;
-    if (area.ignored) return true;
-    if ((trigger & 0x4000U) == 0U && !gpu_copies_.encode_texture) return true;
+    if (area.ignored) { // outside the EFB: no copy and no clear (sw::efb_copy does nothing either)
+        ++paths_.ignored;
+        last_copy_ = sw::CopyResult{};
+        last_copy_.ignored = true;
+        done = true;
+        return true;
+    }
+    if ((trigger & 0x4000U) == 0U && !gpu_copies_.encode_texture) { ++paths_.no_encoder; return true; }
     const bool clears = (trigger & 0x800U) != 0U;
     const sw::ClearPlan cp = clears ? sw::clear_plan(bp_, area) : sw::ClearPlan{};
     auto fallback = [&](std::string why) {
@@ -98,7 +104,6 @@ bool Gpu::gpu_copy(u32 trigger, std::string& error, bool& done) {
         last_fallback_ = std::move(why);
         return true;
     };
-    if (clears && !cp.whole) return fallback("RGBA6 clear of colour or alpha only");
     sw::CopyResult res;
     const bool xfb = (trigger & 0x4000U) != 0U;
     if ((bp_.reg(bp::EFB_STRIDE) << 5) != 0U) {
@@ -124,6 +129,7 @@ bool Gpu::gpu_copy(u32 trigger, std::string& error, bool& done) {
             if (!ok) return fallback(why);
         }
         if (!defer_rows(handle, dest, stride, row, lines, error)) return false;
+        ++(xfb ? paths_.gpu_display : paths_.gpu_texture);
         if (gpu_copies_.placed) gpu_copies_.placed(handle, bus_.write_epoch());
         res.copied = true;
         res.xfb = xfb;
@@ -150,6 +156,7 @@ bool Gpu::gpu_copy(u32 trigger, std::string& error, bool& done) {
         }
         res.cleared = true;
     }
+    if ((bp_.reg(bp::EFB_STRIDE) << 5) == 0U) ++paths_.no_destination;
     last_copy_ = res;
     done = true;
     return true;
@@ -233,6 +240,8 @@ bool Gpu::on_bp(u8 reg, u32 value, std::string& error) {
     case bp::PE_TOKEN: pe_.set_token(static_cast<u16>(v & 0xFFFFU), false, into); return true;
     case bp::PE_TOKEN_INT: pe_.set_token(static_cast<u16>(v & 0xFFFFU), true, into); return true;
     case bp::TRIGGER_EFB_COPY: {
+        if (renderer_.sink() == nullptr) ++paths_.software;
+        else if (!gpu_copies_.encode_xfb) ++paths_.no_gpu_copies;
         if (gpu_copies_.encode_xfb && renderer_.sink() != nullptr) {
             bool done = false;
             if (!gpu_copy(v, error, done)) return false;
@@ -240,6 +249,7 @@ bool Gpu::on_bp(u8 reg, u32 value, std::string& error) {
                 ++copies_;
                 return true;
             }
+            ++paths_.cpu_with_gpu;
         }
         sw::CopyResult res;
         const sw::EfbRect area = sw::copy_source_area(bp_);
