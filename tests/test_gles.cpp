@@ -34,7 +34,7 @@ struct Side {
     hw::PixelEngine pe{sched, pi};
     Gpu gpu{bus, pe};
     std::unique_ptr<gles::Backend> be;
-    Side(bool gl) {
+    explicit Side(bool gl, bool gpu_copies = false) {
         CHECK(bus.map_ram("MEM1", 0, 0x200000U));
         if (gl) {
             be = std::make_unique<gles::Backend>();
@@ -42,8 +42,14 @@ struct Side {
             if (!be->init(e)) std::printf("    backend init: %s\n", e.c_str());
             gles::Backend* b = be.get();
             gpu.set_backend(b, [b](sw::Efb& f, const sw::EfbRect& r, bool c, bool d) { b->download(f, r, c, d); }, [b](const sw::Efb& f, const sw::EfbRect& r) { b->upload(f, r); });
+            if (gpu_copies) gpu.set_gpu_copies(gles::gpu_copies(*b));
         }
     }
+    ~Side() {
+        if (be) gpu.set_backend(nullptr, nullptr, nullptr); // reads pending GPU copies back first
+    }
+    Side(const Side&) = delete;
+    Side& operator=(const Side&) = delete;
 };
 
 // Diff summary between the two EFBs.
@@ -55,7 +61,8 @@ struct Diff {
 };
 
 struct Twin {
-    Side sw{false}, gl{true};
+    Side sw{false}, gl;
+    explicit Twin(bool gpu_copies = false) : gl(true, gpu_copies) {}
     std::vector<u8> cmd;
     void be32(u32 v) { for (int i = 3; i >= 0; --i) cmd.push_back(static_cast<u8>(v >> (8 * i))); }
     void xfw(u32 a, u32 v) { cmd.push_back(0x10); be32(a); be32(v); }
@@ -501,6 +508,93 @@ TEST_CASE(gles_efb_copy_and_clear) {
     CHECK_EQ(d.depth, 0U);
 }
 
+// Display copies encoded on the GPU (GpuCopies): the RAM bytes, read back only
+// when touched, must be exactly the software XFB encoder's, for every filter,
+// gamma, scale, clamp and pixel format path; the GPU clear must match too.
+TEST_CASE(gles_xfb_copies_on_the_gpu) {
+    struct Case { const char* name; u32 fmt, trigger_bits, yscale, f0, f1, top, w, h, stride; };
+    const Case cases[] = {
+        {"plain 640x480", 0, 0, 256, (21U << 12) | (22U << 18), 21U, 0, 640, 480, 1280},
+        {"filter + clamps", 0, 3U, 256, 8U | (8U << 6) | (10U << 12) | (12U << 18), 10U | (8U << 6) | (8U << 12), 10, 320, 200, 640},
+        {"wrapping filter", 0, 0, 256, 63U | (63U << 6) | (63U << 12), 0U, 0, 64, 64, 128},
+        {"gamma 1.7", 0, 1U << 7, 256, (21U << 12) | (22U << 18), 21U, 0, 200, 100, 416},
+        {"gamma 2.2", 0, 2U << 7, 256, (21U << 12) | (22U << 18), 21U, 0, 200, 100, 416},
+        {"y scale up", 0, 0, 128, (21U << 12) | (22U << 18), 21U, 0, 320, 200, 640},
+        {"y scale invert", 0, 1U << 10, 512, (21U << 12) | (22U << 18), 21U, 0, 320, 200, 640},
+        {"rows with gaps", 0, 0, 256, (21U << 12) | (22U << 18), 21U, 4, 100, 50, 1024},
+        {"RGBA6", 1, 0, 256, (21U << 12) | (22U << 18), 21U, 0, 320, 240, 640},
+        {"RGB565", 2, 0, 256, (21U << 12) | (22U << 18), 21U, 0, 320, 240, 640},
+    };
+    for (const Case& c : cases) {
+        Twin t(true);
+        t.scene();
+        t.bpw(bp::ZCOMPARE, c.fmt);
+        t.prim(0x80, {{0, 0, -0.5f, 0xFF2010FFU}, {640, 0, -0.5f, 0x10F040FFU}, {640, 528, -0.5f, 0x2040FFFFU}, {0, 528, -0.5f, 0xF0F0F0FFU}});
+        t.quad(100, 60, 50, 30, -0.4f, 0x00FF80FFU);
+        t.bpw(bp::COPY_FILTER0, c.f0);
+        t.bpw(bp::COPY_FILTER1, c.f1);
+        t.bpw(bp::COPY_YSCALE, c.yscale);
+        t.bpw(bp::EFB_TL, c.top << 10); t.bpw(bp::EFB_WH, (c.w - 1U) | ((c.h - 1U) << 10));
+        t.bpw(bp::EFB_ADDR, 0x100000U >> 5); t.bpw(bp::EFB_STRIDE, c.stride >> 5);
+        t.bpw(bp::CLEAR_AR, 0x0011); t.bpw(bp::CLEAR_GB, 0x2233); t.bpw(bp::CLEAR_Z, 0x00ABCD);
+        t.bpw(bp::ZMODE, 0x10);
+        t.bpw(bp::TRIGGER_EFB_COPY, 0x4000U | 0x800U | c.trigger_bits);
+        t.quad(4, 4, 8, 8, -0.5f, 0xFF0000FFU);
+        CHECK(t.run());
+        if (t.gl.gpu.gpu_xfb_copies() != 1U) std::printf("    %s: CPU path: %s\n", c.name, t.gl.gpu.last_fallback().c_str());
+        CHECK_EQ(t.gl.gpu.gpu_xfb_copies(), 1U);
+        CHECK(t.gl.bus.lazy_ranges() == 1U);
+        std::vector<u8> a(0x100000), b(0x100000);
+        CHECK(t.sw.bus.dma_read(0x100000, a) == mem::BusStatus::Ok);
+        CHECK(t.gl.bus.dma_read(0x100000, b) == mem::BusStatus::Ok);
+        CHECK(t.gl.bus.lazy_ranges() == 0U);
+        unsigned diffs = 0;
+        for (std::size_t i = 0; i < a.size(); ++i) diffs += a[i] != b[i] ? 1U : 0U;
+        std::printf("    %s: XFB bytes that differ %u\n", c.name, diffs);
+        CHECK_EQ(diffs, 0U);
+        const Diff d = t.diff();
+        report(c.name, d);
+        CHECK_EQ(d.color, 0U);
+        CHECK_EQ(d.depth, 0U);
+    }
+    {   // a newer copy over the same rows drops the older one without reading it back
+        Twin t(true);
+        t.scene();
+        t.quad(0, 0, 64, 32, -0.5f, 0x3366CCFFU);
+        for (int k = 0; k < 2; ++k) {
+            t.bpw(bp::COPY_YSCALE, 256);
+            t.bpw(bp::EFB_TL, 0); t.bpw(bp::EFB_WH, 63U | (31U << 10));
+            t.bpw(bp::EFB_ADDR, 0x100000U >> 5); t.bpw(bp::EFB_STRIDE, 128U >> 5);
+            t.bpw(bp::TRIGGER_EFB_COPY, 0x4000U);
+            t.quad(0, 0, 64, 32, -0.5f, 0x80FF20FFU);
+        }
+        CHECK(t.run());
+        CHECK(t.gl.bus.lazy_ranges() == 1U);
+        const u64 fills = t.gl.bus.lazy_fills();
+        std::vector<u8> a(128U * 32U), b(128U * 32U);
+        CHECK(t.sw.bus.dma_read(0x100000, a) == mem::BusStatus::Ok);
+        CHECK(t.gl.bus.dma_read(0x100000, b) == mem::BusStatus::Ok);
+        CHECK(t.gl.bus.lazy_fills() == fills + 1U);
+        CHECK(a == b);
+    }
+    {   // a CPU write inside a pending copy: the copy appears first, then the write
+        Twin t(true);
+        t.scene();
+        t.quad(0, 0, 64, 32, -0.5f, 0x3366CCFFU);
+        t.bpw(bp::COPY_YSCALE, 256);
+        t.bpw(bp::EFB_TL, 0); t.bpw(bp::EFB_WH, 63U | (31U << 10));
+        t.bpw(bp::EFB_ADDR, 0x100000U >> 5); t.bpw(bp::EFB_STRIDE, 128U >> 5);
+        t.bpw(bp::TRIGGER_EFB_COPY, 0x4000U);
+        CHECK(t.run());
+        const std::vector<u8> w{1, 2, 3, 4};
+        t.ram(0x100040, w);
+        std::vector<u8> a(128U * 32U), b(128U * 32U);
+        CHECK(t.sw.bus.dma_read(0x100000, a) == mem::BusStatus::Ok);
+        CHECK(t.gl.bus.dma_read(0x100000, b) == mem::BusStatus::Ok);
+        CHECK(a == b);
+    }
+}
+
 // Bounding box and quad counters: the GLES backend (storage buffer + quad id image)
 // must report exactly what the software renderer counts.
 TEST_CASE(gles_bounding_box_and_counters) {
@@ -746,30 +840,36 @@ TEST_CASE(gles_gpu_draw_program) {
     std::ifstream in(ORCA_PROGRAMS_DIR "/gpu_draw.dol", std::ios::binary);
     const std::vector<u8> file((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     CHECK(!file.empty());
-    std::vector<u8> xfb[2];
-    for (int side = 0; side < 2; ++side) {
+    std::vector<u8> xfb[3];
+    for (int side = 0; side < 3; ++side) {
         system::System sys({});
         test::TestPort port;
         port.cpu = &sys.cpu();
         sys.bus().map_mmio("test-port", test::TestPort::kPhysical, 0x1000, port);
         gles::Backend be;
-        if (side == 1) {
+        if (side >= 1) {
             std::string e;
             CHECK(be.init(e));
             sys.gpu().set_backend(&be, [&be](sw::Efb& f, const sw::EfbRect& r, bool c, bool d) { be.download(f, r, c, d); }, [&be](const sw::Efb& f, const sw::EfbRect& r) { be.upload(f, r); });
+            if (side == 2) sys.gpu().set_gpu_copies(gles::gpu_copies(be));
         }
         std::string err;
         CHECK(sys.load_executable(file, err));
         const auto r = sys.run(200000000ULL);
         CHECK(r.stop == ppc::StepResult::Halted);
-        if (side == 1) CHECK(be.draws() >= 2U);
+        if (side >= 1) CHECK(be.draws() >= 2U);
+        if (side == 2) CHECK(sys.gpu().gpu_xfb_copies() >= 1U);
         xfb[side].resize(1280U * 480U);
         CHECK(sys.bus().dma_read(0x00400000, xfb[side]) == mem::BusStatus::Ok);
+        if (side >= 1) sys.gpu().set_backend(nullptr, nullptr, nullptr);
     }
-    unsigned diffs = 0;
-    for (std::size_t i = 0; i < xfb[0].size(); ++i) diffs += xfb[0][i] != xfb[1][i] ? 1U : 0U;
-    std::printf("    gpu_draw XFB bytes that differ: %u of %zu\n", diffs, xfb[0].size());
-    CHECK_EQ(diffs, 0U);
+    for (int side = 1; side < 3; ++side) {
+        unsigned diffs = 0;
+        for (std::size_t i = 0; i < xfb[0].size(); ++i) diffs += xfb[0][i] != xfb[side][i] ? 1U : 0U;
+        std::printf("    gpu_draw XFB bytes that differ (%s): %u of %zu\n", side == 1 ? "CPU copies" : "GPU copies", diffs,
+                    xfb[0].size());
+        CHECK_EQ(diffs, 0U);
+    }
 }
 #endif
 

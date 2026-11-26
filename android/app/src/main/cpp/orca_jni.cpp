@@ -130,6 +130,7 @@ bool start_gles(Session& s, std::string& error) {
     s.emu.system()->gpu().set_backend(
         b, [b](orca::gpu::sw::Efb& f, const orca::gpu::sw::EfbRect& r, bool c, bool d) { b->download(f, r, c, d); },
         [b](const orca::gpu::sw::Efb& f, const orca::gpu::sw::EfbRect& r) { b->upload(f, r); });
+    s.emu.system()->gpu().set_gpu_copies(orca::gpu::gles::gpu_copies(*b));
     return true;
 }
 

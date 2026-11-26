@@ -35,6 +35,7 @@
 //  * pixels exactly on a triangle edge follow the GPU's fill rule (identical on llvmpipe).
 // Requires OpenGL ES 3.2 with GL_EXT_shader_framebuffer_fetch; init() reports otherwise.
 #pragma once
+#include "orca/gpu/gpu.hpp"
 #include "orca/gpu/sw/efb_copy.hpp"
 #include "orca/gpu/sw/renderer.hpp"
 
@@ -91,6 +92,17 @@ public:
     bool packed_readback() const noexcept;
     void upload(const sw::Efb& efb, const sw::EfbRect& area = {0, 0, sw::kEfbWidth, sw::kEfbHeight});
 
+    // Display (XFB) copy on the GPU: the same YUYV bytes sw::efb_copy writes
+    // (integer shader, exact), read back asynchronously into a pixel pack buffer
+    // instead of stalling on the EFB. read_xfb() waits for them and writes the
+    // rows at dst + y * plan.stride; drop_xfb() discards them.
+    bool encode_xfb(const sw::XfbPlan& plan, u32& handle, std::string& error);
+    void read_xfb(u32 handle, u8* dst);
+    void drop_xfb(u32 handle);
+    // Whole-value clear of the EFB area on the GPU (sw::clear_plan).
+    bool clear_efb(const sw::CopyArea& area, const sw::ClearPlan& clear, std::string& error);
+    u64 xfb_encodes() const noexcept { return xfb_encodes_; }
+
     u64 draws() const noexcept { return draws_; }
     u64 texture_uploads() const noexcept { return tex_uploads_; }
     // Texture binds that had to hash the texel bytes (their RAM pages were written since
@@ -98,6 +110,7 @@ public:
     u64 texture_hashes() const noexcept { return tex_hashes_; }
 
 private:
+    u64 xfb_encodes_{0};
     struct Impl;
     std::unique_ptr<Impl> impl_;
     std::vector<std::array<sw::ScreenVertex, 3>> tris_;
@@ -107,5 +120,16 @@ private:
     u64 tex_uploads_{0};
     u64 tex_hashes_{0};
 };
+
+// The Gpu::GpuCopies that run on `backend` (which must outlive their use:
+// Gpu::set_backend(nullptr, ...) reads pending copies back first).
+inline Gpu::GpuCopies gpu_copies(Backend& backend) {
+    Backend* b = &backend;
+    return Gpu::GpuCopies{
+        [b](const sw::XfbPlan& p, u32& h, std::string& e) { return b->encode_xfb(p, h, e); },
+        [b](u32 h, u8* dst) { b->read_xfb(h, dst); },
+        [b](u32 h) { b->drop_xfb(h); },
+        [b](const sw::CopyArea& a, const sw::ClearPlan& c, std::string& e) { return b->clear_efb(a, c, e); }};
+}
 
 } // namespace orca::gpu::gles

@@ -36,6 +36,7 @@
 #include "orca/memory/bus.hpp"
 
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -78,9 +79,27 @@ public:
             pe_.set_stats_sync([sink](bool bbox, std::string& e) { return sink->sync_stats(bbox, e); });
         else
             pe_.set_stats_sync(nullptr);
+        if (sink == nullptr) set_gpu_copies({});
         download_ = std::move(download);
         upload_ = std::move(upload);
     }
+    // EFB copies done by the GPU backend itself (Dolphin keeps them on the GPU):
+    // a display copy is encoded there and its RAM bytes become a deferred range
+    // of the bus (mem::Bus::set_lazy), read back only when something touches
+    // them; a whole-value clear runs there too. Copies these cannot do keep the
+    // download / efb_copy / upload path. Unset = always that path.
+    struct GpuCopies {
+        std::function<bool(const sw::XfbPlan&, u32&, std::string&)> encode_xfb;
+        std::function<void(u32, u8*)> read_xfb;
+        std::function<void(u32)> drop_xfb;
+        std::function<bool(const sw::CopyArea&, const sw::ClearPlan&, std::string&)> clear;
+    };
+    void set_gpu_copies(GpuCopies copies);
+    // Copies done by GpuCopies, and the ones with a GpuCopies that took the CPU path.
+    u64 gpu_xfb_copies() const noexcept { return gpu_xfb_copies_; }
+    u64 cpu_fallback_copies() const noexcept { return cpu_fallback_copies_; }
+    const std::string& last_fallback() const noexcept { return last_fallback_; }
+
     // CPU access to one EFB pixel (24-bit colour / depth values), from the software EFB
     // or the GPU backend that draws.
     bool efb_peek(u32 x, u32 y, u32& color, u32& depth, std::string& error) {
@@ -138,6 +157,12 @@ private:
     std::function<void(const sw::Efb&, const sw::EfbRect&)> upload_;
     u64 copies_{0};
     CopyTimes copy_ns_;
+    GpuCopies gpu_copies_;
+    // false once the GpuCopies that encoded a pending range is replaced
+    std::shared_ptr<bool> gpu_copies_alive_ = std::make_shared<bool>(true);
+    u64 gpu_xfb_copies_{0}, cpu_fallback_copies_{0};
+    std::string last_fallback_;
+    bool gpu_copy(u32 trigger, std::string& error, bool& done);
     u64 cycles_{0};       // total GPU time
     u64 batch_start_{0};  // cycles_ at the start of the current feed()
     bool failed_{false};

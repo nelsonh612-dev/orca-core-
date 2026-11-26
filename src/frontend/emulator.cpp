@@ -501,6 +501,15 @@ std::string Emulator::diagnostics() {
                           per(now.copies - host_mark_.copies), ms(now.readback - host_mark_.readback),
                           ms(now.encode - host_mark_.encode), ms(now.upload - host_mark_.upload));
             out += b;
+            {
+                const gpu::Gpu& g = sys_->gpu();
+                std::snprintf(b, sizeof b, "\nGPU display copies kept on the GPU: %llu, CPU path with a GPU backend: %llu%s%s",
+                              static_cast<unsigned long long>(g.gpu_xfb_copies()),
+                              static_cast<unsigned long long>(g.cpu_fallback_copies()),
+                              g.last_fallback().empty() ? "" : " (last: ", g.last_fallback().empty() ? "" : g.last_fallback().c_str());
+                out += b;
+                if (!g.last_fallback().empty()) out += ")";
+            }
             // the CPU side: how much ran as translated blocks, per emulated second
             const u64 js = now.jit_steps - host_mark_.jit_steps, ip = now.interp - host_mark_.interp;
             if (sys_->jit() != nullptr) {

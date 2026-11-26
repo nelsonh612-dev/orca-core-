@@ -4,6 +4,7 @@
 #endif
 #include "orca/gpu/gles/backend.hpp"
 #include "orca/gpu/texture_decoder.hpp"
+#include "orca/gpu/sw/efb_copy.hpp"
 #include "gles_shaders.hpp"
 
 #include <EGL/egl.h>
@@ -13,6 +14,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <unordered_map>
+#include <vector>
+#include <array>
 
 namespace orca::gpu::gles {
 namespace {
@@ -157,6 +161,19 @@ struct TexRange {
 
 struct Backend::Impl {
     GLuint prog{0}, vao{0}, vbo{0}, fbo{0}, efb[2]{0, 0}, dummy{0}, tri_buf{0}, tri_tex{0};
+    // Display (XFB) copies encoded on the GPU (see encode_xfb): 0 = not set up yet
+    GLuint xfb_prog{0}, xfb_fbo{0}, xfb_tex{0}, xfb_aux{0}, xfb_vao{0};
+    GLint u_xfb_efb{-1}, u_xfb_aux{-1}, u_xfb_rect{-1}, u_xfb_w{-1}, u_xfb_flags{-1};
+    int xfb_state{0}; // 0 untried, 1 ready, -1 unavailable
+    struct PendingXfb {
+        GLuint pbo{0};
+        GLsync fence{nullptr};
+        u32 row_bytes{0}, lines{0}, stride{0};
+    };
+    std::unordered_map<u32, PendingXfb> xfb_pending;
+    std::vector<GLuint> pbo_pool;
+    u32 xfb_next{1};
+    static constexpr int kXfbMaxLines = 1024;
     // EFB readback through an RGBA8 target (see download): 0 = not set up yet
     GLuint pack_prog{0}, pack_fbo{0}, pack_tex{0}, pack_vao{0};
     GLint u_pack_src{-1}, u_pack_org{-1};
@@ -190,6 +207,16 @@ struct Backend::Impl {
         if (tri_buf != 0) glDeleteBuffers(1, &tri_buf);
         if (stats_buf != 0) glDeleteBuffers(1, &stats_buf);
         if (quad_ids != 0) glDeleteTextures(1, &quad_ids);
+        for (auto& [h, x] : xfb_pending) {
+            if (x.fence != nullptr) glDeleteSync(x.fence);
+            if (x.pbo != 0) glDeleteBuffers(1, &x.pbo);
+        }
+        for (GLuint b : pbo_pool) glDeleteBuffers(1, &b);
+        if (xfb_prog != 0) glDeleteProgram(xfb_prog);
+        if (xfb_fbo != 0) glDeleteFramebuffers(1, &xfb_fbo);
+        if (xfb_tex != 0) glDeleteTextures(1, &xfb_tex);
+        if (xfb_aux != 0) glDeleteTextures(1, &xfb_aux);
+        if (xfb_vao != 0) glDeleteVertexArrays(1, &xfb_vao);
         if (pack_prog != 0) glDeleteProgram(pack_prog);
         if (pack_fbo != 0) glDeleteFramebuffers(1, &pack_fbo);
         if (pack_tex != 0) glDeleteTextures(1, &pack_tex);
@@ -234,6 +261,103 @@ struct Backend::Impl {
         const bool complete = glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
         glGenVertexArrays(1, &pack_vao);
         // integer textures must not use linear filtering to be sampled
+        for (GLuint t : efb) {
+            glBindTexture(GL_TEXTURE_2D, t);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        }
+        return complete && glGetError() == GL_NO_ERROR;
+    }
+
+    // The XFB encoder: one fragment per output texel (two pixels as Y0 U Y1 V),
+    // computing what sw::efb_copy computes for a display copy: the EFB pixel as the
+    // copy unit reads it (RGBA6 expanded), the vertical copy filter with clamped
+    // rows, the 9-bit wrap, min(255), gamma (table), BT.601 with rounding and the
+    // 1-2-1 chroma filter between neighbouring pixels. Integer arithmetic only, so
+    // the bytes are exact. aux row 0: source row of each output line; row 1: gamma.
+    bool setup_xfb() {
+        static const char* vs = "#version 320 es\nvoid main() {\n"
+                                "  vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));\n"
+                                "  gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);\n}\n";
+        static const char* fs = R"GLSL(#version 320 es
+precision highp float;
+precision highp int;
+precision highp usampler2D;
+uniform usampler2D u_efb;
+uniform usampler2D u_aux;
+uniform ivec4 u_rect;   // left, top, clamp top, clamp bottom
+uniform uvec3 u_w;      // filter weights: previous, current, next row
+uniform ivec2 u_flags;  // wrap, six
+out vec4 o;
+uvec3 raw(int x, int y) {
+    uint c = texelFetch(u_efb, ivec2(min(x, 639), min(y, 527)), 0).r;
+    if (u_flags.y != 0) {
+        uvec3 v = uvec3((c >> 18u) & 63u, (c >> 12u) & 63u, (c >> 6u) & 63u);
+        return ((v << 2u) | (v >> 4u)) & 255u;
+    }
+    return uvec3((c >> 16u) & 255u, (c >> 8u) & 255u, c & 255u);
+}
+int crow(int y) { return clamp(y, u_rect.z, u_rect.w); }
+uint gam(uint v) { return texelFetch(u_aux, ivec2(int(v), 1), 0).r; }
+ivec3 yuv(int x, int y) {
+    uvec3 cur = raw(x, crow(y));
+    uvec3 prev = u_w.x != 0u ? raw(x, crow(y - 1)) : uvec3(0u);
+    uvec3 next = u_w.z != 0u ? raw(x, crow(y + 1)) : uvec3(0u);
+    uvec3 v = (prev * u_w.x + cur * u_w.y + next * u_w.z) >> 6u;
+    if (u_flags.x != 0) v &= 511u;
+    v = min(v, uvec3(255u));
+    int r = int(gam(v.r)), g = int(gam(v.g)), b = int(gam(v.b));
+    int yy = (66 * r + 129 * g + 25 * b) & 0xFFFF;
+    int uu = bitfieldExtract(-38 * r - 74 * g + 112 * b, 0, 16);
+    int vv = bitfieldExtract(112 * r - 94 * g - 18 * b, 0, 16);
+    int Y = ((yy >> 8) + ((yy >> 7) & 1)) & 255;
+    int U = bitfieldExtract((uu >> 8) + ((uu >> 7) & 1), 0, 8);
+    int V = bitfieldExtract((vv >> 8) + ((vv >> 7) & 1), 0, 8);
+    return ivec3(Y, U, V);
+}
+void main() {
+    int p = int(gl_FragCoord.x), line = int(gl_FragCoord.y);
+    int y = u_rect.y + int(texelFetch(u_aux, ivec2(line, 0), 0).r);
+    int x1 = u_rect.x + 2 * p;
+    ivec3 a = yuv(p == 0 ? x1 : x1 - 1, y), b = yuv(x1, y), c = yuv(x1 + 1, y);
+    int y0 = (b.x + 16) & 255, y1 = (c.x + 16) & 255;
+    int u = (128 + ((a.y + 2 * b.y + c.y) >> 2)) & 255;
+    int v = (128 + ((a.z + 2 * b.z + c.z) >> 2)) & 255;
+    o = vec4(float(y0), float(u), float(y1), float(v)) / 255.0;
+}
+)GLSL";
+        std::string e;
+        const GLuint v = compile(GL_VERTEX_SHADER, vs, e);
+        if (v == 0) return false;
+        const GLuint f = compile(GL_FRAGMENT_SHADER, fs, e);
+        if (f == 0) { glDeleteShader(v); std::fprintf(stderr, "XFB encoder: %s\n", e.c_str()); return false; }
+        xfb_prog = glCreateProgram();
+        glAttachShader(xfb_prog, v);
+        glAttachShader(xfb_prog, f);
+        glLinkProgram(xfb_prog);
+        glDeleteShader(v);
+        glDeleteShader(f);
+        GLint ok = 0;
+        glGetProgramiv(xfb_prog, GL_LINK_STATUS, &ok);
+        if (ok == 0) return false;
+        u_xfb_efb = glGetUniformLocation(xfb_prog, "u_efb");
+        u_xfb_aux = glGetUniformLocation(xfb_prog, "u_aux");
+        u_xfb_rect = glGetUniformLocation(xfb_prog, "u_rect");
+        u_xfb_w = glGetUniformLocation(xfb_prog, "u_w");
+        u_xfb_flags = glGetUniformLocation(xfb_prog, "u_flags");
+        glGenTextures(1, &xfb_tex);
+        glBindTexture(GL_TEXTURE_2D, xfb_tex);
+        glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, kW / 2, kXfbMaxLines);
+        glGenTextures(1, &xfb_aux);
+        glBindTexture(GL_TEXTURE_2D, xfb_aux);
+        glTexStorage2D(GL_TEXTURE_2D, 1, GL_R32UI, kXfbMaxLines, 2);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glGenFramebuffers(1, &xfb_fbo);
+        glBindFramebuffer(GL_FRAMEBUFFER, xfb_fbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, xfb_tex, 0);
+        const bool complete = glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+        glGenVertexArrays(1, &xfb_vao);
         for (GLuint t : efb) {
             glBindTexture(GL_TEXTURE_2D, t);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
@@ -705,6 +829,136 @@ void Backend::download(sw::Efb& efb, const sw::EfbRect& area, bool color, bool d
 }
 
 bool Backend::packed_readback() const noexcept { return impl_->pack_state == 1; }
+
+bool Backend::encode_xfb(const sw::XfbPlan& plan, u32& handle, std::string& error) {
+    Impl& g = *impl_;
+    const int w = static_cast<int>(plan.width / 2U), h = static_cast<int>(plan.lines);
+    if (w <= 0 || h <= 0 || w > kW / 2 || h > Impl::kXfbMaxLines || plan.rows.size() != plan.lines) {
+        error = "XFB copy size not handled on the GPU";
+        return false;
+    }
+    GLint unit = 0;
+    glGetIntegerv(GL_ACTIVE_TEXTURE, &unit);
+    if (g.xfb_state == 0) {
+        g.xfb_state = g.setup_xfb() ? 1 : -1;
+        while (glGetError() != GL_NO_ERROR) {}
+    }
+    if (g.xfb_state != 1) {
+        glActiveTexture(static_cast<GLenum>(unit));
+        error = "the GPU XFB encoder is not available";
+        return false;
+    }
+    // aux: source rows and gamma
+    std::vector<GLuint> row(plan.rows.begin(), plan.rows.end());
+    std::array<GLuint, 256> gam{};
+    for (std::size_t k = 0; k < 256; ++k) gam[k] = plan.gamma[k];
+    glActiveTexture(GL_TEXTURE10);
+    glBindTexture(GL_TEXTURE_2D, g.xfb_aux);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, h, 1, GL_RED_INTEGER, GL_UNSIGNED_INT, row.data());
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 1, 256, 1, GL_RED_INTEGER, GL_UNSIGNED_INT, gam.data());
+    glActiveTexture(GL_TEXTURE9);
+    glBindTexture(GL_TEXTURE_2D, g.efb[0]);
+    const GLboolean dither = glIsEnabled(GL_DITHER);
+    glDisable(GL_DITHER);
+    glDisable(GL_SCISSOR_TEST);
+    glBindFramebuffer(GL_FRAMEBUFFER, g.xfb_fbo);
+    glViewport(0, 0, w, h);
+    glUseProgram(g.xfb_prog);
+    glBindVertexArray(g.xfb_vao);
+    glUniform1i(g.u_xfb_efb, 9);
+    glUniform1i(g.u_xfb_aux, 10);
+    glUniform4i(g.u_xfb_rect, static_cast<GLint>(plan.left), static_cast<GLint>(plan.top),
+                static_cast<GLint>(plan.clamp_top), static_cast<GLint>(plan.clamp_bottom));
+    glUniform3ui(g.u_xfb_w, plan.weights[0], plan.weights[1], plan.weights[2]);
+    glUniform2i(g.u_xfb_flags, plan.wrap ? 1 : 0, plan.six ? 1 : 0);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    // asynchronous read-back into a pixel pack buffer, waited for in read_xfb
+    Impl::PendingXfb x;
+    x.row_bytes = plan.width * 2U;
+    x.lines = plan.lines;
+    x.stride = plan.stride;
+    const auto bytes = static_cast<GLsizeiptr>(x.row_bytes) * h;
+    if (!g.pbo_pool.empty()) { x.pbo = g.pbo_pool.back(); g.pbo_pool.pop_back(); }
+    else glGenBuffers(1, &x.pbo);
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, x.pbo);
+    glBufferData(GL_PIXEL_PACK_BUFFER, bytes, nullptr, GL_STREAM_READ);
+    glPixelStorei(GL_PACK_ALIGNMENT, 4);
+    glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+    x.fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+    glFlush();
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glActiveTexture(GL_TEXTURE10);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glActiveTexture(static_cast<GLenum>(unit));
+    if (dither == GL_TRUE) glEnable(GL_DITHER);
+    glBindFramebuffer(GL_FRAMEBUFFER, g.fbo);
+    glViewport(0, 0, kW, kH);
+    glUseProgram(g.prog);
+    glBindVertexArray(g.vao);
+    const GLenum e = glGetError();
+    if (e != GL_NO_ERROR || x.fence == nullptr) {
+        if (x.fence != nullptr) glDeleteSync(x.fence);
+        g.pbo_pool.push_back(x.pbo);
+        char b[64];
+        std::snprintf(b, sizeof b, "GL error 0x%X in the XFB encoder", e);
+        error = b;
+        return false;
+    }
+    handle = g.xfb_next++;
+    g.xfb_pending.emplace(handle, x);
+    ++xfb_encodes_;
+    return true;
+}
+
+void Backend::read_xfb(u32 handle, u8* dst) {
+    Impl& g = *impl_;
+    const auto it = g.xfb_pending.find(handle);
+    if (it == g.xfb_pending.end()) return;
+    const Impl::PendingXfb x = it->second;
+    g.xfb_pending.erase(it);
+    while (glClientWaitSync(x.fence, GL_SYNC_FLUSH_COMMANDS_BIT, 100000000ULL) == GL_TIMEOUT_EXPIRED) {}
+    glDeleteSync(x.fence);
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, x.pbo);
+    const auto bytes = static_cast<GLsizeiptr>(x.row_bytes) * x.lines;
+    if (const auto* src = static_cast<const u8*>(glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, bytes, GL_MAP_READ_BIT))) {
+        for (u32 y = 0; y < x.lines; ++y)
+            std::memcpy(dst + static_cast<std::size_t>(y) * x.stride, src + static_cast<std::size_t>(y) * x.row_bytes, x.row_bytes);
+        glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
+    }
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+    g.pbo_pool.push_back(x.pbo);
+}
+
+void Backend::drop_xfb(u32 handle) {
+    Impl& g = *impl_;
+    const auto it = g.xfb_pending.find(handle);
+    if (it == g.xfb_pending.end()) return;
+    glDeleteSync(it->second.fence);
+    g.pbo_pool.push_back(it->second.pbo);
+    g.xfb_pending.erase(it);
+}
+
+bool Backend::clear_efb(const sw::CopyArea& a, const sw::ClearPlan& c, std::string& error) {
+    if (!c.whole) { error = "partial RGBA6 clear"; return false; }
+    Impl& g = *impl_;
+    glBindFramebuffer(GL_FRAMEBUFFER, g.fbo);
+    glEnable(GL_SCISSOR_TEST);
+    glScissor(static_cast<GLint>(a.left), static_cast<GLint>(a.top), static_cast<GLsizei>(a.right - a.left),
+              static_cast<GLsizei>(a.bottom - a.top));
+    if (c.color) { const GLuint v[4] = {c.color_value, 0, 0, 0}; glClearBufferuiv(GL_COLOR, 0, v); }
+    if (c.depth) { const GLuint v[4] = {c.depth_value, 0, 0, 0}; glClearBufferuiv(GL_COLOR, 1, v); }
+    glDisable(GL_SCISSOR_TEST);
+    const GLenum e = glGetError();
+    if (e != GL_NO_ERROR) {
+        char b[64];
+        std::snprintf(b, sizeof b, "GL error 0x%X while clearing the EFB", e);
+        error = b;
+        return false;
+    }
+    return true;
+}
 
 void Backend::upload(const sw::Efb& efb, const sw::EfbRect& area) {
     Impl& g = *impl_;

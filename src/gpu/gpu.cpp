@@ -4,6 +4,8 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <memory>
+#include <vector>
 
 namespace orca::gpu {
 
@@ -18,6 +20,113 @@ bool Gpu::feed(std::span<const u8> bytes) {
         error_ = "GPU: " + r.message;
         return false;
     }
+    return true;
+}
+
+void Gpu::set_gpu_copies(GpuCopies copies) {
+    // ranges encoded by the previous ones are read back while those still exist
+    bus_.materialize_all();
+    *gpu_copies_alive_ = false;
+    gpu_copies_alive_ = std::make_shared<bool>(true);
+    gpu_copies_ = std::move(copies);
+}
+
+namespace {
+// Owns one encoded XFB until it is read back; dropped unread (a newer copy
+// replaced the range) it releases the GPU buffer.
+struct PendingXfb {
+    std::function<void(u32, u8*)> read;
+    std::function<void(u32)> drop;
+    std::shared_ptr<bool> alive;
+    u32 handle{0};
+    bool done{false};
+    PendingXfb() = default;
+    PendingXfb(const PendingXfb&) = delete;
+    PendingXfb& operator=(const PendingXfb&) = delete;
+    ~PendingXfb() {
+        if (!done && *alive) drop(handle);
+    }
+};
+} // namespace
+
+// The copy on the GPU backend, when it can do all of it: `done` false means the
+// CPU path must run (nothing was changed). Only display copies (and their
+// clear) go here; a texture copy is read by the GPU's own texture unit later
+// and keeps the CPU path for now.
+bool Gpu::gpu_copy(u32 trigger, std::string& error, bool& done) {
+    done = false;
+    sw::CopyArea area;
+    if (!sw::copy_area(bp_, area, error)) return false;
+    if (area.ignored || (trigger & 0x4000U) == 0U) return true;
+    const bool clears = (trigger & 0x800U) != 0U;
+    const sw::ClearPlan cp = clears ? sw::clear_plan(bp_, area) : sw::ClearPlan{};
+    auto fallback = [&](std::string why) {
+        ++cpu_fallback_copies_;
+        last_fallback_ = std::move(why);
+        return true;
+    };
+    if (clears && !cp.whole) return fallback("RGBA6 clear of colour or alpha only");
+    sw::CopyResult res;
+    if ((bp_.reg(bp::EFB_STRIDE) << 5) != 0U) {
+        sw::XfbPlan plan;
+        if (!sw::xfb_plan(trigger, bp_, area, phys_mask_, plan, error)) return false;
+        const u32 row = plan.width * 2U;
+        const u64 span = static_cast<u64>(plan.lines - 1U) * plan.stride + row;
+        if (plan.stride < row || static_cast<u64>(plan.dest) + span > static_cast<u64>(phys_mask_) + 1U)
+            return fallback("XFB rows that overlap or wrap around RAM");
+        u32 handle = 0;
+        std::string why;
+        {
+            const core::HostTimer t(copy_ns_.encode);
+            if (!gpu_copies_.encode_xfb(plan, handle, why)) return fallback(why);
+        }
+        auto p = std::make_shared<PendingXfb>();
+        p->read = gpu_copies_.read_xfb;
+        p->drop = gpu_copies_.drop_xfb;
+        p->alive = gpu_copies_alive_;
+        p->handle = handle;
+        const u32 stride = plan.stride;
+        const bool dense = stride == row;
+        auto fill = [p, this](u8* dst) {
+            if (p->done || !*p->alive) return;
+            p->done = true;
+            const core::HostTimer t(copy_ns_.readback);
+            p->read(p->handle, dst);
+        };
+        if (!bus_.set_lazy(plan.dest, static_cast<u32>(span), fill, dense)) {
+            // not inside one RAM region: the rows go through the bus now
+            std::vector<u8> bytes(static_cast<std::size_t>(span));
+            fill(bytes.data());
+            for (u32 y = 0; y < plan.lines; ++y) {
+                const u32 addr = (plan.dest + y * stride) & phys_mask_;
+                const auto rowspan = std::span<const u8>(bytes).subspan(static_cast<std::size_t>(y) * stride, row);
+                if (bus_.dma_write(addr, rowspan) != mem::BusStatus::Ok) {
+                    char b[96];
+                    std::snprintf(b, sizeof b, "XFB copy writes %u bytes at %08X outside RAM", row, addr);
+                    error = b;
+                    return false;
+                }
+            }
+        }
+        res.copied = true;
+        res.xfb = true;
+        res.address = plan.dest;
+        res.stride = stride;
+        res.width = plan.width;
+        res.height = plan.lines;
+        res.bytes = row * plan.lines;
+        ++gpu_xfb_copies_;
+    }
+    if (clears) {
+        std::string why;
+        if (!gpu_copies_.clear(area, cp, why)) {
+            error = "GPU EFB clear after a display copy failed: " + why;
+            return false;
+        }
+        res.cleared = true;
+    }
+    last_copy_ = res;
+    done = true;
     return true;
 }
 
@@ -77,6 +186,14 @@ bool Gpu::on_bp(u8 reg, u32 value, std::string& error) {
     case bp::PE_TOKEN: pe_.set_token(static_cast<u16>(v & 0xFFFFU), false, into); return true;
     case bp::PE_TOKEN_INT: pe_.set_token(static_cast<u16>(v & 0xFFFFU), true, into); return true;
     case bp::TRIGGER_EFB_COPY: {
+        if (gpu_copies_.encode_xfb && renderer_.sink() != nullptr) {
+            bool done = false;
+            if (!gpu_copy(v, error, done)) return false;
+            if (done) {
+                ++copies_;
+                return true;
+            }
+        }
         sw::CopyResult res;
         const sw::EfbRect area = sw::copy_source_area(bp_);
         if (renderer_.sink() != nullptr && download_) {
