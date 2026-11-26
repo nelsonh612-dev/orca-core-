@@ -68,7 +68,7 @@ bool Emulator::make_system(bool wii, std::string& error) {
     wii_ = wii;
     for (unsigned p = 0; p < 4; ++p) pads_[p] = std::make_shared<hw::StandardController>();
     sys_->si().connect(0, pads_[0]); // one controller plugged in; others when they send input
-    sys_->set_field_listener([this](bool) { field_seen_ = true; });
+    sys_->set_field_listener([this](bool) { field_seen_ = true; ++fields_seen_; });
     sys_->mixer().set_sink([this](std::span<const s16> f) {
         std::lock_guard<std::mutex> lock(audio_mutex_);
         audio_.insert(audio_.end(), f.begin(), f.end());
@@ -103,7 +103,12 @@ bool Emulator::load_executable(std::vector<u8> file, bool wii, std::string& erro
 bool Emulator::capture_frame() {
     if (!sys_) return false;
     const hw::XfbField f = sys_->vi().xfb_field(sys_->vi().bottom_field());
-    if (f.width == 0U || f.height == 0U) return false;
+    char b[160];
+    if (f.width == 0U || f.height == 0U) {
+        std::snprintf(b, sizeof b, "the VI shows a %ux%u field", f.width, f.height);
+        capture_failure_ = b;
+        return false;
+    }
     if (gpu_presenter_) {
         const gpu::Gpu::GpuField g = sys_->gpu().gpu_field(f.address, f.width, f.height, f.stride);
         if (g.valid && gpu_presenter_(g.handle)) {
@@ -114,6 +119,7 @@ bool Emulator::capture_frame() {
             frame_field_ = f;
             ++frame_.number;
             ++gpu_frames_;
+            ++captured_;
             return true;
         }
     }
@@ -123,14 +129,27 @@ bool Emulator::capture_frame() {
     frame_.width = f.width;
     frame_.height = f.height;
     ++frame_.number;
+    ++captured_;
     return true;
 }
 
 bool Emulator::decode_field() {
     const hw::XfbField& f = frame_field_;
+    char b[160];
     std::vector<u8> raw(static_cast<std::size_t>(f.stride) * f.height);
-    if (sys_->bus().dma_read(f.address, raw) != mem::BusStatus::Ok) return false;
-    return video::decode_xfb(raw, f.width, f.height, f.stride, frame_.rgba);
+    if (const mem::BusStatus st = sys_->bus().dma_read(f.address, raw); st != mem::BusStatus::Ok) {
+        std::snprintf(b, sizeof b, "XFB %ux%u stride %u at %08X: bus status %d", f.width, f.height, f.stride, f.address,
+                      static_cast<int>(st));
+        capture_failure_ = b;
+        return false;
+    }
+    if (!video::decode_xfb(raw, f.width, f.height, f.stride, frame_.rgba)) {
+        std::snprintf(b, sizeof b, "XFB %ux%u stride %u at %08X: rows do not fit the stride", f.width, f.height, f.stride,
+                      f.address);
+        capture_failure_ = b;
+        return false;
+    }
+    return true;
 }
 
 bool Emulator::frame_rgba() {
@@ -513,6 +532,13 @@ std::string Emulator::diagnostics() {
             now.resumed = js.resumed;
         }
         now.by_name = sys_->scheduler().fired_by_name();
+        now.paths = sys_->gpu().copy_paths();
+        now.fields = fields_seen_;
+        now.captured = captured_;
+        if (const auto* j = sys_->jit()) {
+            now.helper_ops = j->helper_ops();
+            now.fallback_ops = j->fallback_ops();
+        }
         const u64 dc = now.cycles - host_mark_.cycles;
         if (dc != 0U && host_mark_.cycles != 0U) {
             const double es = static_cast<double>(dc) / static_cast<double>(sys_->clocks().cpu_hz);
@@ -537,6 +563,21 @@ std::string Emulator::diagnostics() {
                 out += b;
                 if (!g.last_fallback().empty()) out += ")";
             }
+            {
+                const gpu::Gpu::CopyPaths p = sys_->gpu().copy_paths(), &q = host_mark_.paths;
+                std::snprintf(b, sizeof b,
+                              "\nEFB copies per s by path: GPU display %.0f, GPU texture %.0f, no RAM written %.0f, outside EFB %.0f, "
+                              "CPU with GPU backend %.0f (no texture encoder %.0f), without GPU copies %.0f, software %.0f",
+                              per(p.gpu_display - q.gpu_display), per(p.gpu_texture - q.gpu_texture),
+                              per(p.no_destination - q.no_destination), per(p.ignored - q.ignored),
+                              per(p.cpu_with_gpu - q.cpu_with_gpu), per(p.no_encoder - q.no_encoder),
+                              per(p.no_gpu_copies - q.no_gpu_copies), per(p.software - q.software));
+                out += b;
+                std::snprintf(b, sizeof b, "\nVI fields %.0f/s, captured %.0f/s", per(fields_seen_ - host_mark_.fields),
+                              per(captured_ - host_mark_.captured));
+                out += b;
+                if (!capture_failure_.empty()) out += " (last capture failure: " + capture_failure_ + ")";
+            }
             // the CPU side: how much ran as translated blocks, per emulated second
             const u64 js = now.jit_steps - host_mark_.jit_steps, ip = now.interp - host_mark_.interp;
             if (sys_->jit() != nullptr) {
@@ -554,6 +595,26 @@ std::string Emulator::diagnostics() {
                 std::snprintf(b, sizeof b, "\nCPU interpreter only (JIT off or unavailable): %.0f slices", per(now.slices - host_mark_.slices));
             }
             out += b;
+            if (const auto* j = sys_->jit()) {
+                // which instructions the in-block interpreter ran and where blocks were left
+                auto top_ops = [&](const std::unordered_map<u32, u64>& cur, const std::unordered_map<u32, u64>& prev,
+                                   const char* title) {
+                    std::vector<std::pair<u64, u32>> v;
+                    for (const auto& [k, n] : cur) {
+                        const auto it = prev.find(k);
+                        const u64 d = n - (it == prev.end() ? 0U : it->second);
+                        if (d != 0U) v.emplace_back(d, k);
+                    }
+                    std::sort(v.begin(), v.end(), [](const auto& x, const auto& y) { return x.first > y.first; });
+                    out += title;
+                    for (std::size_t i = 0; i < v.size() && i < 6U; ++i) {
+                        std::snprintf(b, sizeof b, " %u/%u:%.0fk", v[i].second >> 16, v[i].second & 0xFFFFU, per(v[i].first) / 1e3);
+                        out += b;
+                    }
+                };
+                top_ops(j->helper_ops(), host_mark_.helper_ops, "\nin-block interpreter op/xo per s:");
+                top_ops(j->fallback_ops(), host_mark_.fallback_ops, "\nfallbacks at op/xo per s:");
+            }
             // the busiest scheduler events
             std::vector<std::pair<u64, std::string>> top;
             for (const auto& [name, n] : now.by_name) {

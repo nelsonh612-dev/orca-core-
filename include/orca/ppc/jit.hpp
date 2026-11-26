@@ -99,6 +99,12 @@ public:
         u64 dispatch_fills{0}; // dispatch-table entries written (see dispatch_)
     };
     const Stats& stats() const noexcept { return stats_; }
+    // Which instructions the in-block interpreter ran, and at which ones blocks
+    // were left (fallback exits), by opcode: key = primary opcode << 16 | extended
+    // opcode (bits 1-10 for 19 / 31 / 59 / 63, bits 1-6 for 4; 0 for the rest).
+    const std::unordered_map<u32, u64>& helper_ops() const noexcept { return helper_ops_; }
+    const std::unordered_map<u32, u64>& fallback_ops() const noexcept { return fallback_ops_; }
+    static u32 op_key(u32 ins) noexcept;
 
     // Maximum guest instructions per block.
     static constexpr u32 kMaxBlock = 64;
@@ -206,6 +212,7 @@ private:
     std::size_t lazy_listener_{0};
     JitExit exit_{};
     Stats stats_;
+    std::unordered_map<u32, u64> helper_ops_, fallback_ops_;
 };
 
 } // namespace orca::ppc

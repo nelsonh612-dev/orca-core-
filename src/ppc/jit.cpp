@@ -1522,6 +1522,7 @@ u32 Jit::helper_exec(Jit* self, u32 ins, u32 pc) {
     self->current_pc_valid_ = false;
     if (!o.ok() || c.fp_program_pending_) return 0; // precise: nothing was changed
     ++self->stats_.helper_steps;
+    ++self->helper_ops_[op_key(ins)];
     if (self->running_invalidated_) return 2U;
     // mtmsr (as Dolphin's JitArm64::mtmsr, which checks for pending exceptions
     // after it): the block goes on when only MSR[EE] changed and no interrupt
@@ -1790,6 +1791,16 @@ bool Jit::resumes_after_interpreting(u32 ins) noexcept {
     }
 }
 
+u32 Jit::op_key(u32 ins) noexcept {
+    const u32 op = ins >> 26;
+    u32 xo = 0;
+    if (op == 19U || op == 31U || op == 63U) xo = (ins >> 1) & 0x3FFU;
+    else if (op == 59U) xo = (ins >> 1) & 0x1FU;
+    else if (op == 4U) xo = (ins >> 1) & 0x3FU;
+    if (op == 63U && (xo & 0x10U) != 0U) xo &= 0x1FU; // A-form: the low five bits
+    return (op << 16) | xo;
+}
+
 Jit::Result Jit::interpret() {
     ++stats_.interpreter_steps;
     return {cpu_.step(), 1};
@@ -1857,6 +1868,7 @@ Jit::Result Jit::run(u64 max_steps, u64 timebase_remainder) {
             const u8* p = bus_.ram_pointer(ft.physical, 4);
             if (p == nullptr) break;
             const u32 ins = (u32{p[0]} << 24) | (u32{p[1]} << 16) | (u32{p[2]} << 8) | p[3];
+            ++fallback_ops_[op_key(ins)];
             if (!resumes_after_interpreting(ins)) break;
             const StepResult r = cpu_.step();
             ++stats_.interpreter_steps;

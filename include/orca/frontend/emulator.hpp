@@ -141,7 +141,13 @@ private:
         u64 copies{0}, readback{0}, encode{0}, upload{0};
         u64 jit_steps{0}, jit_runs{0}, interp{0}, compiled{0}, invalidations{0}, helper{0}, fallbacks{0}, resumed{0};
         std::unordered_map<std::string, u64> by_name;
+        gpu::Gpu::CopyPaths paths;
+        std::unordered_map<u32, u64> helper_ops, fallback_ops;
+        u64 fields{0}, captured{0};
     } host_mark_;
+    // VI fields seen by run_frame, fields captured, and why the last capture failed
+    u64 fields_seen_{0}, captured_{0};
+    std::string capture_failure_;
     std::string error_;
     std::mutex audio_mutex_;
     std::deque<s16> audio_;
