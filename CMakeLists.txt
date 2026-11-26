@@ -19,9 +19,13 @@ option(ORCA_BUILD_TESTS "Build the test suite" ON)
 if(ORCA_SANITIZE)
     set(ORCA_TEST_TIMEOUT 3600 CACHE STRING "ctest time limit per suite (s)")
     set(ORCA_GLES_TIMEOUT 5400 CACHE STRING "ctest time limit for the GLES suite (s)")
+    # the PowerPC programs (interpreter, JIT, comparisons) took 2600-3350 s on the
+    # ARM64 runners with ASan+UBSan, and 3600+ once
+    set(ORCA_PROGRAMS_TIMEOUT 5400 CACHE STRING "ctest time limit for the programs suite (s)")
 else()
     set(ORCA_TEST_TIMEOUT 300 CACHE STRING "ctest time limit per suite (s)")
     set(ORCA_GLES_TIMEOUT 600 CACHE STRING "ctest time limit for the GLES suite (s)")
+    set(ORCA_PROGRAMS_TIMEOUT 300 CACHE STRING "ctest time limit for the programs suite (s)")
 endif()
 
 set(ORCA_WARNINGS -Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion -Wshadow)
@@ -266,8 +270,10 @@ if(ORCA_BUILD_TESTS)
         # the presentation test reads its target framebuffer back with GLES calls
         target_include_directories(orca_test_gles SYSTEM PRIVATE third_party/khronos)
         add_test(NAME gles COMMAND orca_test_gles)
+        # the same suite with every pipeline configuration drawn by a specialized program
+        add_test(NAME gles_specialized COMMAND orca_test_gles specialized)
         # no GPU / no EGL display: the suite reports itself as skipped (exit code 77)
-        set_tests_properties(gles PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT ${ORCA_GLES_TIMEOUT})
+        set_tests_properties(gles gles_specialized PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT ${ORCA_GLES_TIMEOUT})
     endif()
     add_executable(orca_test_dsp_mi tests/test_dsp_mi.cpp)
     target_link_libraries(orca_test_dsp_mi PRIVATE orca_core)
@@ -358,6 +364,7 @@ if(ORCA_BUILD_TESTS)
 
     # A hang (e.g. an emulated deadlock) must fail, not block the test run.
     set_tests_properties(memory cpu_integer cpu_system mmu reference fpu_engine cpu_fpu system programs disc av exi dsp_mi dsp_core gpu gpu_sw efb_copy PROPERTIES TIMEOUT ${ORCA_TEST_TIMEOUT})
+    set_tests_properties(programs PROPERTIES TIMEOUT ${ORCA_PROGRAMS_TIMEOUT})
 
     find_program(ORCA_LLVM_MC NAMES llvm-mc llvm-mc-18 llvm-mc-17 llvm-mc-16)
     add_executable(orca_encoding_check tests/encoding_check.cpp)
