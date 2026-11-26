@@ -58,9 +58,10 @@ public:
     // After a block stops before an instruction it does not translate, run()
     // interprets that one instruction and goes on with the next block when it
     // cannot touch anything outside the CPU or the CPU's timing: MSR moves (the
-    // SDK's OSDisableInterrupts / OSRestoreInterrupts), mfspr, mftb, mfsr and
-    // rfi (not mtsr: segment registers are not part of the translation cache
-    // key). Memory accesses (MMIO) and mtspr (DEC, HID2, WPAR)
+    // SDK's OSDisableInterrupts / OSRestoreInterrupts), mfspr of plain SPRs, mfsr
+    // and rfi. Not mtsr (segment registers are not part of the translation cache
+    // key), not mftb or mfspr of the time base / DEC (the caller advances them
+    // between calls), not memory accesses (MMIO) or mtspr (DEC, HID2, WPAR): those
     // go back to the caller, which accounts time and events first.
     static bool resumes_after_interpreting(u32 ins) noexcept;
 

@@ -234,7 +234,8 @@ TEST_CASE(jit_resumes_only_after_cpu_only_instructions) {
     CHECK(ppc::Jit::resumes_after_interpreting(0x7C6000A6U));  // mfmsr r3
     CHECK(ppc::Jit::resumes_after_interpreting(0x7C800124U));  // mtmsr r4
     CHECK(ppc::Jit::resumes_after_interpreting(0x7C7A02A6U));  // mfspr r3, SRR0
-    CHECK(ppc::Jit::resumes_after_interpreting(0x7C6C42E6U));  // mftb r3
+    CHECK(!ppc::Jit::resumes_after_interpreting(0x7C6C42E6U)); // mftb r3: the caller advances the time base
+    CHECK(!ppc::Jit::resumes_after_interpreting(0x7C7602A6U)); // mfspr r3, DEC
     CHECK(ppc::Jit::resumes_after_interpreting(0x4C000064U));  // rfi
     CHECK(!ppc::Jit::resumes_after_interpreting(0x7C7603A6U)); // mtspr DEC, r3
     CHECK(!ppc::Jit::resumes_after_interpreting(0x7C6001A4U)); // mtsr 0, r3

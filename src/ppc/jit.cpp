@@ -340,6 +340,23 @@ bool fp_class(u32 ins, bool& update, unsigned& update_reg) {
 // multiple/string loads and stores, reservations, cache-block operations, barriers,
 // traps and mfmsr. None of them reads the time base or changes MSR or the MMU.
 // They may write any GPR, so the register cache is dropped after them.
+// mfspr of an SPR that holds plain state. Not the time base, DEC or the
+// performance counters: the System advances them only between run() calls, so
+// read inside run() they would lag behind the instructions run so far.
+bool plain_spr_read(u32 ins) {
+    const unsigned n = ((ins >> 16) & 0x1FU) | (((ins >> 11) & 0x1FU) << 5);
+    switch (n) {
+    case 18: case 19: case 25: case 26: case 27:            // DSISR DAR SDR1 SRR0 SRR1
+    case 272: case 273: case 274: case 275:                 // SPRG0-3
+    case 282: case 287:                                     // EAR PVR
+    case 912: case 913: case 914: case 915: case 916: case 917: case 918: case 919: // GQR0-7
+    case 920: case 1008: case 1009: case 1011: case 1017:   // HID2 HID0 HID1 HID4 L2CR
+        return true;
+    default:
+        return n >= 528U && n <= 543U;                      // IBAT/DBAT 0-3
+    }
+}
+
 bool interp_class(u32 ins) {
     const unsigned op = ins >> 26;
     if (op == 46U || op == 47U || op == 3U) return true; // lmw, stmw, twi
@@ -354,22 +371,7 @@ bool interp_class(u32 ins) {
     case 146:                                // mtmsr (helper_exec decides whether the block may go on)
     case 533: case 597: case 661: case 725:  // lswx lswi stswx stswi
         return true;
-    case 339: {
-        // mfspr of SPRs that hold plain state. Not the time base, DEC or the
-        // performance counters: they follow the retired-instruction count, which
-        // a block brings up to date only when it exits (mftb ends a block too).
-        const unsigned n = ((ins >> 16) & 0x1FU) | (((ins >> 11) & 0x1FU) << 5);
-        switch (n) {
-        case 18: case 19: case 25: case 26: case 27:            // DSISR DAR SDR1 SRR0 SRR1
-        case 272: case 273: case 274: case 275:                 // SPRG0-3
-        case 282: case 287:                                     // EAR PVR
-        case 912: case 913: case 914: case 915: case 916: case 917: case 918: case 919: // GQR0-7
-        case 920: case 1008: case 1009: case 1011: case 1017:   // HID2 HID0 HID1 HID4 L2CR
-            return true;
-        default:
-            return n >= 528U && n <= 543U;                      // IBAT/DBAT 0-3
-        }
-    }
+    case 339: return plain_spr_read(ins); // mfspr of an SPR that holds plain state
     default:
         return false;
     }
@@ -1688,9 +1690,10 @@ bool Jit::resumes_after_interpreting(u32 ins) noexcept {
     if (op != 31U) return false;
     switch ((ins >> 1) & 0x3FFU) {
     case 83: case 146:              // mfmsr mtmsr
-    case 339: case 371:             // mfspr mftb
     case 595: case 659:             // mfsr mfsrin
         return true;
+    case 339:                       // mfspr, not of the time base / DEC (see plain_spr_read)
+        return plain_spr_read(ins);
     default:
         return false;
     }
