@@ -884,7 +884,8 @@ TEST_CASE(jit_directed_data_page_that_becomes_code) {
 TEST_CASE(jit_directed_interrupts_off_and_on_stay_in_the_block) {
     if (!jit::host_can_execute()) return;
     // The SDK's OSDisableInterrupts / OSRestoreInterrupts: mfmsr, clear EE, mtmsr,
-    // ..., mtmsr back. Only EE changes and nothing is pending, so the block goes on.
+    // ..., mtmsr back. Turning EE off stays in the block; turning it back on
+    // leaves it so that run() re-checks for a pending interrupt.
     auto init = [](Machine& m) {
         m.code(kCode, {X31(83, 3, 0, 0),                              // mfmsr r3
                        21U << 26 | 3U << 21 | 4U << 16 | 17U << 6 | 15U << 1, // rlwinm r4, r3, 0, 17, 15 (EE off)
@@ -898,8 +899,8 @@ TEST_CASE(jit_directed_interrupts_off_and_on_stay_in_the_block) {
     };
     Jit::Stats st{};
     CHECK(lockstep_same(init, 7000, 1000, nothing, &st));
-    CHECK_EQ(st.recheck_exits, 0U);
     CHECK(st.helper_steps >= 2000U);
+    CHECK(st.recheck_exits >= 900U); // turning interrupts back on leaves the block
     // EE turned on while an interrupt is pending: the block leaves at once and the
     // interrupt is taken where the interpreter takes it
     auto pending = [](Machine& m) {

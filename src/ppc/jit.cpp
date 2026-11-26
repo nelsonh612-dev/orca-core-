@@ -1465,13 +1465,12 @@ u32 Jit::helper_exec(Jit* self, u32 ins, u32 pc) {
     if (!o.ok() || c.fp_program_pending_) return 0; // precise: nothing was changed
     ++self->stats_.helper_steps;
     if (self->running_invalidated_) return 2U;
-    // mtmsr: the block goes on only when nothing but EE changed and no interrupt
-    // became deliverable (the SDK's OSDisableInterrupts / OSRestoreInterrupts);
-    // anything else leaves for run(), which re-checks its entry conditions
-    if (s.msr != msr_before) {
-        if (((s.msr ^ msr_before) & ~MSR_EE) != 0U) return 3U;
-        if ((s.msr & MSR_EE) != 0U && (c.external_line_ || s.dec_pending)) return 3U;
-    }
+    // mtmsr: the block goes on only when it turned interrupts off and changed
+    // nothing else (the SDK's OSDisableInterrupts, or OSRestoreInterrupts keeping
+    // them off). Turning them on, or any other change, leaves for run(), which
+    // re-checks its entry conditions before the next block.
+    if (s.msr != msr_before && (s.msr ^ msr_before) != MSR_EE) return 3U;
+    if ((s.msr & MSR_EE) != 0U && (msr_before & MSR_EE) == 0U) return 3U;
     return 1U;
 }
 
