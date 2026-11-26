@@ -162,7 +162,18 @@ struct TexRange {
 struct Backend::Impl {
     GLuint prog{0}, vao{0}, vbo{0}, fbo{0}, efb[2]{0, 0}, dummy{0}, tri_buf{0}, tri_tex{0};
     // Display (XFB) copies encoded on the GPU (see encode_xfb): 0 = not set up yet
-    GLuint xfb_prog{0}, xfb_fbo{0}, xfb_tex{0}, xfb_aux{0}, xfb_vao{0};
+    // encoded copies stay in a ring of textures (Present shows them from there)
+    static constexpr int kXfbSlots = 4;
+    GLuint xfb_prog{0}, xfb_aux{0}, xfb_vao{0};
+    std::array<GLuint, kXfbSlots> xfb_fbo{}, xfb_tex{};
+    struct SlotUse { u32 handle{0}, width{0}, lines{0}; };
+    std::array<SlotUse, kXfbSlots> xfb_slot{};
+    int xfb_next_slot{0};
+    // presentation: YUYV texture -> RGBA (show_prog) and RGBA frames from the CPU (rgba_prog)
+    GLuint show_prog{0}, rgba_prog{0}, rgba_tex{0};
+    GLint u_show_tex{-1}, u_show_geo{-1}, u_rgba_tex{-1}, u_rgba_geo{-1};
+    u32 rgba_w{0}, rgba_h{0};
+    int show_state{0};
     GLint u_xfb_efb{-1}, u_xfb_aux{-1}, u_xfb_rect{-1}, u_xfb_w{-1}, u_xfb_flags{-1};
     int xfb_state{0}; // 0 untried, 1 ready, -1 unavailable
     struct PendingXfb {
@@ -213,8 +224,11 @@ struct Backend::Impl {
         }
         for (GLuint b : pbo_pool) glDeleteBuffers(1, &b);
         if (xfb_prog != 0) glDeleteProgram(xfb_prog);
-        if (xfb_fbo != 0) glDeleteFramebuffers(1, &xfb_fbo);
-        if (xfb_tex != 0) glDeleteTextures(1, &xfb_tex);
+        glDeleteFramebuffers(kXfbSlots, xfb_fbo.data());
+        glDeleteTextures(kXfbSlots, xfb_tex.data());
+        if (show_prog != 0) glDeleteProgram(show_prog);
+        if (rgba_prog != 0) glDeleteProgram(rgba_prog);
+        if (rgba_tex != 0) glDeleteTextures(1, &rgba_tex);
         if (xfb_aux != 0) glDeleteTextures(1, &xfb_aux);
         if (xfb_vao != 0) glDeleteVertexArrays(1, &xfb_vao);
         if (pack_prog != 0) glDeleteProgram(pack_prog);
@@ -345,18 +359,25 @@ void main() {
         u_xfb_rect = glGetUniformLocation(xfb_prog, "u_rect");
         u_xfb_w = glGetUniformLocation(xfb_prog, "u_w");
         u_xfb_flags = glGetUniformLocation(xfb_prog, "u_flags");
-        glGenTextures(1, &xfb_tex);
-        glBindTexture(GL_TEXTURE_2D, xfb_tex);
-        glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, kW / 2, kXfbMaxLines);
+        glGenTextures(kXfbSlots, xfb_tex.data());
+        for (GLuint t : xfb_tex) {
+            glBindTexture(GL_TEXTURE_2D, t);
+            glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, kW / 2, kXfbMaxLines);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        }
         glGenTextures(1, &xfb_aux);
         glBindTexture(GL_TEXTURE_2D, xfb_aux);
         glTexStorage2D(GL_TEXTURE_2D, 1, GL_R32UI, kXfbMaxLines, 2);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        glGenFramebuffers(1, &xfb_fbo);
-        glBindFramebuffer(GL_FRAMEBUFFER, xfb_fbo);
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, xfb_tex, 0);
-        const bool complete = glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+        glGenFramebuffers(kXfbSlots, xfb_fbo.data());
+        bool complete = true;
+        for (int k = 0; k < kXfbSlots; ++k) {
+            glBindFramebuffer(GL_FRAMEBUFFER, xfb_fbo[static_cast<std::size_t>(k)]);
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, xfb_tex[static_cast<std::size_t>(k)], 0);
+            complete = complete && glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+        }
         glGenVertexArrays(1, &xfb_vao);
         for (GLuint t : efb) {
             glBindTexture(GL_TEXTURE_2D, t);
@@ -364,6 +385,123 @@ void main() {
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
         }
         return complete && glGetError() == GL_NO_ERROR;
+    }
+
+    GLuint link(const char* vs, const char* fs, std::string& e) {
+        const GLuint v = compile(GL_VERTEX_SHADER, vs, e);
+        if (v == 0) return 0;
+        const GLuint f = compile(GL_FRAGMENT_SHADER, fs, e);
+        if (f == 0) { glDeleteShader(v); return 0; }
+        GLuint p = glCreateProgram();
+        glAttachShader(p, v);
+        glAttachShader(p, f);
+        glLinkProgram(p);
+        glDeleteShader(v);
+        glDeleteShader(f);
+        GLint ok = 0;
+        glGetProgramiv(p, GL_LINK_STATUS, &ok);
+        if (ok == 0) { glDeleteProgram(p); e = "presentation program does not link"; return 0; }
+        return p;
+    }
+
+    // Presentation of a frame (video::decode_xfb on the GPU, same integer
+    // arithmetic): output pixel (x, y) of a width x height frame; flip puts row 0
+    // at the top of a window (GL rows count from the bottom).
+    bool setup_show(std::string& e) {
+        static const char* vs = "#version 320 es\nvoid main() {\n"
+                                "  vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));\n"
+                                "  gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);\n}\n";
+        static const char* show_fs = R"GLSL(#version 320 es
+precision highp float;
+precision highp int;
+uniform highp sampler2D u_tex;
+uniform ivec4 u_geo; // first line, line step, frame height, flip
+out vec4 o;
+void main() {
+    int x = int(gl_FragCoord.x), r = int(gl_FragCoord.y);
+    int y = u_geo.w != 0 ? u_geo.z - 1 - r : r;
+    ivec4 t = ivec4(round(texelFetch(u_tex, ivec2(x >> 1, u_geo.x + u_geo.y * y), 0) * 255.0));
+    int yy = ((x & 1) != 0 ? t.z : t.x) - 16, u = t.y - 128, v = t.w - 128;
+    ivec3 c = clamp(ivec3(1192 * yy + 1634 * v, 1192 * yy - 401 * u - 833 * v, 1192 * yy + 2065 * u) >> 10, 0, 255);
+    o = vec4(vec3(c), 255.0) / 255.0;
+}
+)GLSL";
+        static const char* rgba_fs = R"GLSL(#version 320 es
+precision highp float;
+precision highp int;
+uniform highp sampler2D u_tex;
+uniform ivec4 u_geo; // unused, unused, frame height, flip
+out vec4 o;
+void main() {
+    int x = int(gl_FragCoord.x), r = int(gl_FragCoord.y);
+    int y = u_geo.w != 0 ? u_geo.z - 1 - r : r;
+    o = vec4(texelFetch(u_tex, ivec2(x, y), 0).rgb, 1.0);
+}
+)GLSL";
+        show_prog = link(vs, show_fs, e);
+        if (show_prog == 0) return false;
+        rgba_prog = link(vs, rgba_fs, e);
+        if (rgba_prog == 0) return false;
+        u_show_tex = glGetUniformLocation(show_prog, "u_tex");
+        u_show_geo = glGetUniformLocation(show_prog, "u_geo");
+        u_rgba_tex = glGetUniformLocation(rgba_prog, "u_tex");
+        u_rgba_geo = glGetUniformLocation(rgba_prog, "u_geo");
+        return glGetError() == GL_NO_ERROR;
+    }
+
+    // Draws with `program` into framebuffer `target` (0 = the window surface),
+    // a width x height viewport, then puts the drawing state back.
+    void draw_frame(GLuint program, GLint loc_tex, GLint loc_geo, GLuint texture, GLuint target, const std::array<GLint, 4>& geo,
+                    u32 width, u32 height) {
+        GLint unit = 0;
+        glGetIntegerv(GL_ACTIVE_TEXTURE, &unit);
+        const GLboolean dither = glIsEnabled(GL_DITHER), blend = glIsEnabled(GL_BLEND), scissor = glIsEnabled(GL_SCISSOR_TEST);
+        const GLboolean depth = glIsEnabled(GL_DEPTH_TEST), cull = glIsEnabled(GL_CULL_FACE), stencil = glIsEnabled(GL_STENCIL_TEST);
+        GLboolean mask[4];
+        glGetBooleanv(GL_COLOR_WRITEMASK, mask);
+        glDisable(GL_DITHER);
+        glDisable(GL_BLEND);
+        glDisable(GL_SCISSOR_TEST);
+        glDisable(GL_DEPTH_TEST);
+        glDisable(GL_CULL_FACE);
+        glDisable(GL_STENCIL_TEST);
+        glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+        glBindFramebuffer(GL_FRAMEBUFFER, target);
+        if (target == 0) { const GLenum back = GL_BACK; glDrawBuffers(1, &back); }
+        glViewport(0, 0, static_cast<GLsizei>(width), static_cast<GLsizei>(height));
+        glUseProgram(program);
+        glBindVertexArray(xfb_vao);
+        glActiveTexture(GL_TEXTURE9);
+        glBindTexture(GL_TEXTURE_2D, texture);
+        glUniform1i(loc_tex, 9);
+        glUniform4i(loc_geo, geo[0], geo[1], geo[2], geo[3]);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glActiveTexture(static_cast<GLenum>(unit));
+        if (dither == GL_TRUE) glEnable(GL_DITHER);
+        if (blend == GL_TRUE) glEnable(GL_BLEND);
+        if (scissor == GL_TRUE) glEnable(GL_SCISSOR_TEST);
+        if (depth == GL_TRUE) glEnable(GL_DEPTH_TEST);
+        if (cull == GL_TRUE) glEnable(GL_CULL_FACE);
+        if (stencil == GL_TRUE) glEnable(GL_STENCIL_TEST);
+        glColorMask(mask[0], mask[1], mask[2], mask[3]);
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        glViewport(0, 0, kW, kH);
+        glUseProgram(prog);
+        glBindVertexArray(vao);
+    }
+
+    bool ensure_show(std::string& e) {
+        if (show_state == 0) {
+            if (xfb_state == 0) {
+                xfb_state = setup_xfb() ? 1 : -1;
+                while (glGetError() != GL_NO_ERROR) {}
+            }
+            show_state = xfb_state == 1 && setup_show(e) ? 1 : -1;
+            while (glGetError() != GL_NO_ERROR) {}
+        }
+        if (show_state != 1 && e.empty()) e = "the GPU presentation programs are not available";
+        return show_state == 1;
     }
 
     // Decodes the mip levels a map can use into an RGBA8 atlas (levels stacked vertically).
@@ -862,7 +1000,9 @@ bool Backend::encode_xfb(const sw::XfbPlan& plan, u32& handle, std::string& erro
     const GLboolean dither = glIsEnabled(GL_DITHER);
     glDisable(GL_DITHER);
     glDisable(GL_SCISSOR_TEST);
-    glBindFramebuffer(GL_FRAMEBUFFER, g.xfb_fbo);
+    const int slot = g.xfb_next_slot;
+    g.xfb_next_slot = (slot + 1) % Impl::kXfbSlots;
+    glBindFramebuffer(GL_FRAMEBUFFER, g.xfb_fbo[static_cast<std::size_t>(slot)]);
     glViewport(0, 0, w, h);
     glUseProgram(g.xfb_prog);
     glBindVertexArray(g.xfb_vao);
@@ -899,6 +1039,7 @@ bool Backend::encode_xfb(const sw::XfbPlan& plan, u32& handle, std::string& erro
     glBindVertexArray(g.vao);
     const GLenum e = glGetError();
     if (e != GL_NO_ERROR || x.fence == nullptr) {
+        g.xfb_slot[static_cast<std::size_t>(slot)] = Impl::SlotUse{};
         if (x.fence != nullptr) glDeleteSync(x.fence);
         g.pbo_pool.push_back(x.pbo);
         char b[64];
@@ -908,6 +1049,7 @@ bool Backend::encode_xfb(const sw::XfbPlan& plan, u32& handle, std::string& erro
     }
     handle = g.xfb_next++;
     g.xfb_pending.emplace(handle, x);
+    g.xfb_slot[static_cast<std::size_t>(slot)] = Impl::SlotUse{handle, plan.width, plan.lines};
     ++xfb_encodes_;
     return true;
 }
@@ -938,6 +1080,80 @@ void Backend::drop_xfb(u32 handle) {
     glDeleteSync(it->second.fence);
     g.pbo_pool.push_back(it->second.pbo);
     g.xfb_pending.erase(it);
+}
+
+bool Backend::xfb_on_gpu(u32 handle) const noexcept {
+    if (handle == 0U) return false;
+    for (const auto& u : impl_->xfb_slot)
+        if (u.handle == handle) return true;
+    return false;
+}
+
+bool Backend::present_xfb(u32 handle, u32 first_line, u32 line_step, u32 width, u32 height, u32 target, bool flip,
+                          std::string& error) {
+    Impl& g = *impl_;
+    if (!g.ensure_show(error)) return false;
+    for (std::size_t k = 0; k < g.xfb_slot.size(); ++k) {
+        const auto& u = g.xfb_slot[k];
+        if (u.handle != handle || handle == 0U) continue;
+        if (width == 0U || height == 0U || width > u.width || (width & 1U) != 0U ||
+            first_line + static_cast<u64>(line_step) * (height - 1U) >= u.lines) {
+            error = "the field is not inside the copy on the GPU";
+            return false;
+        }
+        g.draw_frame(g.show_prog, g.u_show_tex, g.u_show_geo, g.xfb_tex[k], target,
+                     {static_cast<GLint>(first_line), static_cast<GLint>(line_step), static_cast<GLint>(height), flip ? 1 : 0},
+                     width, height);
+        const GLenum e = glGetError();
+        if (e != GL_NO_ERROR) {
+            char b[64];
+            std::snprintf(b, sizeof b, "GL error 0x%X while presenting", e);
+            error = b;
+            return false;
+        }
+        ++presented_;
+        return true;
+    }
+    error = "the copy is no longer on the GPU";
+    return false;
+}
+
+bool Backend::present_rgba(std::span<const u8> rgba, u32 width, u32 height, u32 target, bool flip, std::string& error) {
+    Impl& g = *impl_;
+    if (!g.ensure_show(error)) return false;
+    if (width == 0U || height == 0U || rgba.size() < static_cast<std::size_t>(width) * height * 4U) {
+        error = "empty frame";
+        return false;
+    }
+    GLint unit = 0;
+    glGetIntegerv(GL_ACTIVE_TEXTURE, &unit);
+    glActiveTexture(GL_TEXTURE9);
+    if (g.rgba_tex == 0 || g.rgba_w != width || g.rgba_h != height) {
+        if (g.rgba_tex != 0) glDeleteTextures(1, &g.rgba_tex);
+        glGenTextures(1, &g.rgba_tex);
+        glBindTexture(GL_TEXTURE_2D, g.rgba_tex);
+        glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, static_cast<GLsizei>(width), static_cast<GLsizei>(height));
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        g.rgba_w = width;
+        g.rgba_h = height;
+    }
+    glBindTexture(GL_TEXTURE_2D, g.rgba_tex);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, static_cast<GLsizei>(width), static_cast<GLsizei>(height), GL_RGBA,
+                    GL_UNSIGNED_BYTE, rgba.data());
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glActiveTexture(static_cast<GLenum>(unit));
+    g.draw_frame(g.rgba_prog, g.u_rgba_tex, g.u_rgba_geo, g.rgba_tex, target,
+                 {0, 1, static_cast<GLint>(height), flip ? 1 : 0}, width, height);
+    const GLenum e = glGetError();
+    if (e != GL_NO_ERROR) {
+        char b[64];
+        std::snprintf(b, sizeof b, "GL error 0x%X while presenting", e);
+        error = b;
+        return false;
+    }
+    return true;
 }
 
 bool Backend::clear_efb(const sw::CopyArea& a, const sw::ClearPlan& c, std::string& error) {

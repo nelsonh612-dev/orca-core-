@@ -10,6 +10,8 @@
 #include "test_framework.hpp"
 #include "test_port.hpp"
 
+#include <GLES3/gl32.h>
+
 #include <algorithm>
 #include <bit>
 #include <chrono>
@@ -593,6 +595,85 @@ TEST_CASE(gles_xfb_copies_on_the_gpu) {
         CHECK(t.gl.bus.dma_read(0x100000, b) == mem::BusStatus::Ok);
         CHECK(a == b);
     }
+}
+
+// Presentation from the GPU: a display copy kept on the GPU, shown for a VI
+// field (whole frame or one interlaced field), gives exactly the pixels of
+// video::decode_xfb over the software XFB; a write to the copy's RAM makes the
+// field come from RAM again.
+TEST_CASE(gles_present_xfb_from_the_gpu) {
+    Twin t(true);
+    t.scene();
+    t.prim(0x80, {{0, 0, -0.5f, 0xFF2010FFU}, {640, 0, -0.5f, 0x10F040FFU}, {640, 528, -0.5f, 0x2040FFFFU}, {0, 528, -0.5f, 0xF0F0F0FFU}});
+    t.quad(100, 60, 50, 30, -0.4f, 0x00FF80FFU);
+    t.bpw(bp::COPY_FILTER0, (21U << 12) | (22U << 18));
+    t.bpw(bp::COPY_FILTER1, 21U);
+    t.bpw(bp::COPY_YSCALE, 256);
+    t.bpw(bp::EFB_TL, 0); t.bpw(bp::EFB_WH, 639U | (479U << 10));
+    t.bpw(bp::EFB_ADDR, 0x100000U >> 5); t.bpw(bp::EFB_STRIDE, 1280U >> 5);
+    t.bpw(bp::TRIGGER_EFB_COPY, 0x4000U);
+    CHECK(t.run());
+    std::vector<u8> ram(1280U * 480U);
+    CHECK(t.sw.bus.dma_read(0x100000, ram) == mem::BusStatus::Ok);
+    GLuint tex = 0, fbo = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, 640, 480);
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+    auto shown = [&](u32 h) {
+        std::vector<u8> px(640U * h * 4U);
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
+        glPixelStorei(GL_PACK_ALIGNMENT, 4);
+        glReadPixels(0, 0, 640, static_cast<GLsizei>(h), GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+        return px;
+    };
+    auto count = [](const std::vector<u8>& a, const std::vector<u8>& b) {
+        unsigned d = 0;
+        for (std::size_t i = 0; i < std::min(a.size(), b.size()); ++i) d += a[i] != b[i] ? 1U : 0U;
+        return a.size() == b.size() ? d : 0xFFFFFFFFU;
+    };
+    std::string e;
+    {   // the whole frame (progressive): every row of the copy
+        const Gpu::GpuField f = t.gl.gpu.gpu_field(0x100000, 640, 480, 1280);
+        CHECK(f.valid);
+        CHECK_EQ(f.first_line, 0U);
+        CHECK_EQ(f.line_step, 1U);
+        CHECK(t.gl.be->xfb_on_gpu(f.handle));
+        CHECK(t.gl.be->present_xfb(f.handle, f.first_line, f.line_step, 640, 480, fbo, false, e));
+        std::vector<u8> want;
+        CHECK(video::decode_xfb(ram, 640, 480, 1280, want));
+        const unsigned d = count(shown(480), want);
+        std::printf("    frame from the GPU: pixels bytes that differ %u\n", d);
+        CHECK_EQ(d, 0U);
+        CHECK(t.gl.bus.lazy_ranges() == 1U); // shown without reading RAM back
+    }
+    {   // the bottom field of an interlaced frame: odd rows
+        const Gpu::GpuField f = t.gl.gpu.gpu_field(0x100000 + 1280, 640, 240, 2560);
+        CHECK(f.valid);
+        CHECK_EQ(f.first_line, 1U);
+        CHECK_EQ(f.line_step, 2U);
+        CHECK(t.gl.be->present_xfb(f.handle, f.first_line, f.line_step, 640, 240, fbo, false, e));
+        std::vector<u8> want;
+        CHECK(video::decode_xfb(std::span<const u8>(ram).subspan(1280), 640, 240, 2560, want));
+        CHECK_EQ(count(shown(240), want), 0U);
+    }
+    {   // a frame decoded on the CPU, shown the same way
+        std::vector<u8> want;
+        CHECK(video::decode_xfb(ram, 640, 480, 1280, want));
+        CHECK(t.gl.be->present_rgba(want, 640, 480, fbo, false, e));
+        CHECK_EQ(count(shown(480), want), 0U);
+    }
+    CHECK(!t.gl.gpu.gpu_field(0x100000 + 2, 640, 480, 1280).valid); // not on a row start
+    CHECK(!t.gl.gpu.gpu_field(0x100000, 640, 481, 1280).valid);     // past the copy
+    // a write into the copy's RAM: the field is no longer the GPU copy
+    const std::vector<u8> w{1, 2, 3, 4};
+    t.ram(0x100000 + 1280U * 100U, w);
+    CHECK(!t.gl.gpu.gpu_field(0x100000, 640, 480, 1280).valid);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteTextures(1, &tex);
 }
 
 // Bounding box and quad counters: the GLES backend (storage buffer + quad id image)

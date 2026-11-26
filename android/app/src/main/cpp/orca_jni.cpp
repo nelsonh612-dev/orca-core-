@@ -55,7 +55,11 @@ struct Session {
     EGLDisplay egl_display{EGL_NO_DISPLAY};
     EGLContext egl_context{EGL_NO_CONTEXT};
     EGLSurface egl_surface{EGL_NO_SURFACE};
+    EGLConfig egl_config{};
+    EGLSurface egl_window_surface{EGL_NO_SURFACE}; // on egl_window (its own reference)
+    ANativeWindow* egl_window{nullptr};
     std::unique_ptr<orca::gpu::gles::Backend> backend;
+    std::string present_error;
 #endif
     explicit Session(orca::frontend::Settings s) : emu(std::move(s)) {}
 };
@@ -106,15 +110,19 @@ void blit(Session& s) {
 void run_loop(Session* s);
 
 #ifdef ORCA_HAVE_GLES
-// The GPU backend draws into its own framebuffers; a 1x1 pbuffer surface is
-// enough for its context (the picture reaches the screen through the XFB).
+// The GPU backend draws into its own framebuffers; a 1x1 pbuffer surface keeps
+// its context current while there is no window. The picture reaches the window
+// through an EGL window surface (present_gles), drawn from the XFB copy on the
+// GPU when the field is one (as Dolphin presents its XFB texture).
 bool start_gles(Session& s, std::string& error) {
     s.egl_display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
     if (s.egl_display == EGL_NO_DISPLAY || !eglInitialize(s.egl_display, nullptr, nullptr)) { error = "no EGL display"; return false; }
-    const EGLint attrs[] = {EGL_RENDERABLE_TYPE, 0x40 /* EGL_OPENGL_ES3_BIT */, EGL_SURFACE_TYPE, EGL_PBUFFER_BIT, EGL_NONE};
+    const EGLint attrs[] = {EGL_RENDERABLE_TYPE, 0x40 /* EGL_OPENGL_ES3_BIT */, EGL_SURFACE_TYPE, EGL_PBUFFER_BIT | EGL_WINDOW_BIT,
+                            EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8, EGL_NONE};
     EGLConfig config{};
     EGLint n = 0;
     if (!eglChooseConfig(s.egl_display, attrs, &config, 1, &n) || n < 1) { error = "no EGL configuration for OpenGL ES 3"; return false; }
+    s.egl_config = config;
     const EGLint ctx_attrs[] = {0x3098 /* EGL_CONTEXT_MAJOR_VERSION */, 3, 0x30FB /* EGL_CONTEXT_MINOR_VERSION */, 2, EGL_NONE};
     s.egl_context = eglCreateContext(s.egl_display, config, EGL_NO_CONTEXT, ctx_attrs);
     if (s.egl_context == EGL_NO_CONTEXT) { error = "OpenGL ES 3.2 context not available"; return false; }
@@ -131,10 +139,72 @@ bool start_gles(Session& s, std::string& error) {
         b, [b](orca::gpu::sw::Efb& f, const orca::gpu::sw::EfbRect& r, bool c, bool d) { b->download(f, r, c, d); },
         [b](const orca::gpu::sw::Efb& f, const orca::gpu::sw::EfbRect& r) { b->upload(f, r); });
     s.emu.system()->gpu().set_gpu_copies(orca::gpu::gles::gpu_copies(*b));
+    s.emu.set_gpu_presenter([b](orca::u32 handle) { return b->xfb_on_gpu(handle); });
+    return true;
+}
+
+// Called with window_mutex held.
+void drop_window_surface(Session& s) {
+    if (s.egl_window_surface != EGL_NO_SURFACE) {
+        eglMakeCurrent(s.egl_display, s.egl_surface, s.egl_surface, s.egl_context);
+        eglDestroySurface(s.egl_display, s.egl_window_surface);
+        s.egl_window_surface = EGL_NO_SURFACE;
+    }
+    if (s.egl_window != nullptr) ANativeWindow_release(s.egl_window);
+    s.egl_window = nullptr;
+}
+
+// Shows frame() on the window with OpenGL ES: from the GPU copy when it is one,
+// otherwise the decoded pixels. Returns false only when GLES cannot present at all.
+bool present_gles(Session& s) {
+    const auto& f = s.emu.frame();
+    if (f.width == 0) return true;
+    std::lock_guard<std::mutex> lock(s.window_mutex);
+    if (s.window != s.egl_window) {
+        drop_window_surface(s);
+        if (s.window != nullptr) {
+            ANativeWindow_acquire(s.window);
+            s.egl_window = s.window;
+            ANativeWindow_setBuffersGeometry(s.window, static_cast<int32_t>(f.width), static_cast<int32_t>(f.height), 0);
+            s.egl_window_surface = eglCreateWindowSurface(s.egl_display, s.egl_config, s.window, nullptr);
+            if (s.egl_window_surface == EGL_NO_SURFACE) {
+                LOGI("cannot create the EGL window surface (0x%X)", eglGetError());
+                ANativeWindow_release(s.egl_window);
+                s.egl_window = nullptr;
+                return false;
+            }
+        }
+    }
+    if (s.egl_window_surface == EGL_NO_SURFACE) return true; // no window: nothing to show
+    if (!eglMakeCurrent(s.egl_display, s.egl_window_surface, s.egl_window_surface, s.egl_context)) {
+        drop_window_surface(s);
+        return true;
+    }
+    EGLint sw = 0, sh = 0;
+    eglQuerySurface(s.egl_display, s.egl_window_surface, EGL_WIDTH, &sw);
+    eglQuerySurface(s.egl_display, s.egl_window_surface, EGL_HEIGHT, &sh);
+    if (static_cast<orca::u32>(sw) != f.width || static_cast<orca::u32>(sh) != f.height)
+        ANativeWindow_setBuffersGeometry(s.egl_window, static_cast<int32_t>(f.width), static_cast<int32_t>(f.height), 0);
+    std::string error;
+    bool ok = false;
+    if (f.gpu.valid)
+        ok = s.backend->present_xfb(f.gpu.handle, f.gpu.first_line, f.gpu.line_step, f.width, f.height, 0, true, error);
+    if (!ok && s.emu.frame_rgba())
+        ok = s.backend->present_rgba(s.emu.frame().rgba, f.width, f.height, 0, true, error);
+    if (!ok && error != s.present_error) {
+        LOGI("presenting a frame failed: %s", error.c_str());
+        s.present_error = error;
+    }
+    if (!eglSwapBuffers(s.egl_display, s.egl_window_surface)) drop_window_surface(s);
     return true;
 }
 
 void stop_gles(Session& s) {
+    s.emu.set_gpu_presenter(nullptr);
+    if (s.egl_display != EGL_NO_DISPLAY) {
+        std::lock_guard<std::mutex> lock(s.window_mutex);
+        drop_window_surface(s);
+    }
     if (s.emu.system() != nullptr && s.backend) s.emu.system()->gpu().set_backend(nullptr, nullptr, nullptr);
     s.backend.reset();
     if (s.egl_display != EGL_NO_DISPLAY) {
@@ -197,7 +267,14 @@ void run_loop(Session* s) {
             s->running = false;
             break;
         }
+#ifdef ORCA_HAVE_GLES
+        if (!s->backend || !present_gles(*s)) {
+            (void)s->emu.frame_rgba();
+            blit(*s);
+        }
+#else
         blit(*s);
+#endif
         // follow the wall clock
         const double emulated = static_cast<double>(s->emu.emulated_cycles() - cycles_start) / hz;
         const double wall = std::chrono::duration<double>(clock::now() - wall_start).count();

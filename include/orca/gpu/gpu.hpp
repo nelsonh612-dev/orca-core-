@@ -35,6 +35,7 @@
 #include "orca/hw/pixel_engine.hpp"
 #include "orca/memory/bus.hpp"
 
+#include <array>
 #include <functional>
 #include <memory>
 #include <string>
@@ -99,6 +100,13 @@ public:
     u64 gpu_xfb_copies() const noexcept { return gpu_xfb_copies_; }
     u64 cpu_fallback_copies() const noexcept { return cpu_fallback_copies_; }
     const std::string& last_fallback() const noexcept { return last_fallback_; }
+    // The display copy on the GPU that a VI field shows, if any: the field's
+    // rows (address + y * stride, width pixels, y < height) are lines
+    // first_line + y * line_step of copy `handle`, and RAM there has not been
+    // written since (the copy may still be unread). A frontend presents it from
+    // the GPU instead of reading RAM back.
+    struct GpuField { bool valid{false}; u32 handle{0}, first_line{0}, line_step{1}; };
+    GpuField gpu_field(u32 address, u32 width, u32 height, u32 stride) const;
 
     // CPU access to one EFB pixel (24-bit colour / depth values), from the software EFB
     // or the GPU backend that draws.
@@ -161,6 +169,9 @@ private:
     // false once the GpuCopies that encoded a pending range is replaced
     std::shared_ptr<bool> gpu_copies_alive_ = std::make_shared<bool>(true);
     u64 gpu_xfb_copies_{0}, cpu_fallback_copies_{0};
+    struct GpuXfbRecord { u32 dest{0}, stride{0}, width{0}, lines{0}, handle{0}; u64 epoch{0}; };
+    std::array<GpuXfbRecord, 8> gpu_xfbs_{};
+    std::size_t gpu_xfb_next_{0};
     std::string last_fallback_;
     bool gpu_copy(u32 trigger, std::string& error, bool& done);
     u64 cycles_{0};       // total GPU time

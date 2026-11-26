@@ -41,6 +41,7 @@
 
 #include <array>
 #include <memory>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -103,6 +104,19 @@ public:
     bool clear_efb(const sw::CopyArea& area, const sw::ClearPlan& clear, std::string& error);
     u64 xfb_encodes() const noexcept { return xfb_encodes_; }
 
+    // Presentation from the GPU (Dolphin's Present shows the XFB texture): the
+    // last encoded copies stay as YUYV textures. present_xfb() draws the field
+    // whose rows are copy lines first_line + k * line_step (k < height) as RGBA
+    // (the integer conversion of video::decode_xfb) into framebuffer `target`
+    // (0 = the current window surface) at width x height; `flip` puts the
+    // first row at the top (a window). xfb_on_gpu(): that copy is still there.
+    // present_rgba() shows a frame decoded on the CPU the same way.
+    bool xfb_on_gpu(u32 handle) const noexcept;
+    bool present_xfb(u32 handle, u32 first_line, u32 line_step, u32 width, u32 height, u32 target, bool flip,
+                     std::string& error);
+    bool present_rgba(std::span<const u8> rgba, u32 width, u32 height, u32 target, bool flip, std::string& error);
+    u64 presented() const noexcept { return presented_; }
+
     u64 draws() const noexcept { return draws_; }
     u64 texture_uploads() const noexcept { return tex_uploads_; }
     // Texture binds that had to hash the texel bytes (their RAM pages were written since
@@ -110,7 +124,7 @@ public:
     u64 texture_hashes() const noexcept { return tex_hashes_; }
 
 private:
-    u64 xfb_encodes_{0};
+    u64 xfb_encodes_{0}, presented_{0};
     struct Impl;
     std::unique_ptr<Impl> impl_;
     std::vector<std::array<sw::ScreenVertex, 3>> tris_;

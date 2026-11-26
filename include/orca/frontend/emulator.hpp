@@ -17,6 +17,7 @@
 #pragma once
 #include "orca/disc/blob.hpp"
 #include "orca/disc/disc_image.hpp"
+#include "orca/gpu/gpu.hpp"
 #include "orca/hw/serial_interface.hpp"
 #include "orca/ios/nand_setup.hpp"
 #include "orca/system/system.hpp"
@@ -24,6 +25,7 @@
 
 #include <array>
 #include <deque>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -50,8 +52,11 @@ struct Settings {
 
 struct Frame {
     u32 width{0}, height{0};
-    std::vector<u8> rgba;
+    std::vector<u8> rgba;  // empty when the frame is on the GPU (gpu.valid)
     u64 number{0};
+    // The field is a display copy still on the GPU backend (Gpu::gpu_field):
+    // a frontend with that backend presents it from there, without reading RAM.
+    gpu::Gpu::GpuField gpu;
 };
 
 class Emulator {
@@ -78,6 +83,13 @@ public:
     const Frame& frame() const noexcept { return frame_; }
     // Decodes the field the VI shows now into frame() (run_frame does this at every field).
     bool capture_frame();
+    // With a GPU presenter (it tells whether copy `handle` is still on the GPU),
+    // capture_frame() leaves a field that is a display copy on the GPU there
+    // (frame().gpu) instead of decoding RAM. frame_rgba() decodes it from RAM
+    // when the frontend needs the pixels after all.
+    void set_gpu_presenter(std::function<bool(u32 handle)> on_gpu) { gpu_presenter_ = std::move(on_gpu); }
+    bool frame_rgba();
+    u64 gpu_frames() const noexcept { return gpu_frames_; }
     const std::string& error() const noexcept { return error_; }
     u64 emulated_cycles() const noexcept { return cycles_; }
     u64 cpu_hz() const noexcept;
@@ -96,6 +108,7 @@ public:
 
 private:
     bool make_system(bool wii, std::string& error);
+    bool decode_field();
 
     Settings settings_;
     std::unique_ptr<system::System> sys_;
@@ -104,6 +117,9 @@ private:
     std::string game_id_;
     disc::ImageFormat format_{disc::ImageFormat::Raw};
     Frame frame_;
+    hw::XfbField frame_field_;
+    std::function<bool(u32)> gpu_presenter_;
+    u64 gpu_frames_{0};
     std::map<u32, u32> pc_samples_;
     bool halted_by_guest();
     enum class LoopKind { None, NoMemory, ReadsMemory };

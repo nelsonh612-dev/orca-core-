@@ -29,6 +29,7 @@ void Gpu::set_gpu_copies(GpuCopies copies) {
     *gpu_copies_alive_ = false;
     gpu_copies_alive_ = std::make_shared<bool>(true);
     gpu_copies_ = std::move(copies);
+    gpu_xfbs_ = {};
 }
 
 namespace {
@@ -108,6 +109,8 @@ bool Gpu::gpu_copy(u32 trigger, std::string& error, bool& done) {
                 }
             }
         }
+        gpu_xfbs_[gpu_xfb_next_] = GpuXfbRecord{plan.dest, stride, plan.width, plan.lines, handle, bus_.write_epoch()};
+        gpu_xfb_next_ = (gpu_xfb_next_ + 1U) % gpu_xfbs_.size();
         res.copied = true;
         res.xfb = true;
         res.address = plan.dest;
@@ -128,6 +131,28 @@ bool Gpu::gpu_copy(u32 trigger, std::string& error, bool& done) {
     last_copy_ = res;
     done = true;
     return true;
+}
+
+Gpu::GpuField Gpu::gpu_field(u32 address, u32 width, u32 height, u32 stride) const {
+    GpuField f;
+    if (width == 0U || height == 0U || !gpu_copies_.encode_xfb) return f;
+    // newest first
+    for (std::size_t k = 0; k < gpu_xfbs_.size(); ++k) {
+        const GpuXfbRecord& r = gpu_xfbs_[(gpu_xfb_next_ + gpu_xfbs_.size() - 1U - k) % gpu_xfbs_.size()];
+        if (r.handle == 0U || r.stride == 0U || address < r.dest || width > r.width) continue;
+        const u32 off = address - r.dest;
+        if (off % r.stride != 0U || stride % r.stride != 0U || stride == 0U) continue;
+        const u32 first = off / r.stride, step = stride / r.stride;
+        if (first + static_cast<u64>(step) * (height - 1U) >= r.lines) continue;
+        const u64 span = static_cast<u64>(r.lines - 1U) * r.stride + r.width * 2U;
+        if (!bus_.unchanged_since(r.dest, static_cast<u32>(span), r.epoch)) continue;
+        f.valid = true;
+        f.handle = r.handle;
+        f.first_line = first;
+        f.line_step = step;
+        return f;
+    }
+    return f;
 }
 
 bool Gpu::on_cp(u8 reg, u32 value, std::string& error) {

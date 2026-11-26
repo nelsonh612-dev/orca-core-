@@ -104,13 +104,39 @@ bool Emulator::capture_frame() {
     if (!sys_) return false;
     const hw::XfbField f = sys_->vi().xfb_field(sys_->vi().bottom_field());
     if (f.width == 0U || f.height == 0U) return false;
-    std::vector<u8> raw(static_cast<std::size_t>(f.stride) * f.height);
-    if (sys_->bus().dma_read(f.address, raw) != mem::BusStatus::Ok) return false;
-    if (!video::decode_xfb(raw, f.width, f.height, f.stride, frame_.rgba)) return false;
+    if (gpu_presenter_) {
+        const gpu::Gpu::GpuField g = sys_->gpu().gpu_field(f.address, f.width, f.height, f.stride);
+        if (g.valid && gpu_presenter_(g.handle)) {
+            frame_.gpu = g;
+            frame_.rgba.clear();
+            frame_.width = f.width;
+            frame_.height = f.height;
+            frame_field_ = f;
+            ++frame_.number;
+            ++gpu_frames_;
+            return true;
+        }
+    }
+    frame_.gpu = {};
+    frame_field_ = f;
+    if (!decode_field()) return false;
     frame_.width = f.width;
     frame_.height = f.height;
     ++frame_.number;
     return true;
+}
+
+bool Emulator::decode_field() {
+    const hw::XfbField& f = frame_field_;
+    std::vector<u8> raw(static_cast<std::size_t>(f.stride) * f.height);
+    if (sys_->bus().dma_read(f.address, raw) != mem::BusStatus::Ok) return false;
+    return video::decode_xfb(raw, f.width, f.height, f.stride, frame_.rgba);
+}
+
+bool Emulator::frame_rgba() {
+    if (!sys_ || frame_.width == 0U) return false;
+    if (!frame_.rgba.empty()) return true;
+    return decode_field();
 }
 
 bool Emulator::run_frame() {
@@ -503,8 +529,8 @@ std::string Emulator::diagnostics() {
             out += b;
             {
                 const gpu::Gpu& g = sys_->gpu();
-                std::snprintf(b, sizeof b, "\nGPU display copies kept on the GPU: %llu, CPU path with a GPU backend: %llu%s%s",
-                              static_cast<unsigned long long>(g.gpu_xfb_copies()),
+                std::snprintf(b, sizeof b, "\nGPU display copies kept on the GPU: %llu, fields shown from the GPU: %llu, CPU path with a GPU backend: %llu%s%s",
+                              static_cast<unsigned long long>(g.gpu_xfb_copies()), static_cast<unsigned long long>(gpu_frames_),
                               static_cast<unsigned long long>(g.cpu_fallback_copies()),
                               g.last_fallback().empty() ? "" : " (last: ", g.last_fallback().empty() ? "" : g.last_fallback().c_str());
                 out += b;
