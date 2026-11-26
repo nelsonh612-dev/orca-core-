@@ -198,6 +198,9 @@ void main() {
     int z = int(clamp(zf, 0.0, 16777215.0));
     bool ztest = (zmode & 1u) != 0u, early = ztest && (zc & 0x40u) != 0u, late = ztest && !early;
     uint dz = o_depth.x;
+    // depth result: written on every exit (a program specialized with no depth
+    // write must still store the fetched value back)
+    uint depth_val = dz;
     bool zpass = true;
     bool zupd = (zmode & 0x10u) != 0u;
 
@@ -208,8 +211,8 @@ void main() {
         uint f = B(zmode, 1, 3);
         zpass = f == 1u ? zv < d : f == 2u ? zv == d : f == 3u ? zv <= d : f == 4u ? zv > d :
                 f == 5u ? zv != d : f == 6u ? zv >= d : f == 7u;
-        if (zpass && zupd) o_depth.x = zv & 0xFFFFFFu;
-        if (!zpass) { o_color = old_color; return; }
+        if (zpass && zupd) depth_val = zv & 0xFFFFFFu;
+        if (!zpass) { o_color = old_color; o_depth = uvec4(depth_val, 0u, 0u, 0u); return; }
         reach(1u, x, y);
     }
 
@@ -264,7 +267,7 @@ void main() {
             uint ind = R(0x10u + st);
             uint bt = B(ind, 0, 2), ifmt = B(ind, 2, 2), bs = B(ind, 7, 2), mi = B(ind, 9, 2), mid = B(ind, 11, 2);
             uint sw = B(ind, 13, 3), tw = B(ind, 16, 3);
-            if (mid > 2u || sw > 6u || tw > 6u) { o_color = old_color; o_depth = old_depth; return; }
+            if (mid > 2u || sw > 6u || tw > 6u) { o_color = old_color; depth_val = old_depth.x; o_depth = uvec4(depth_val, 0u, 0u, 0u); return; }
             ivec4 im = indtex[bt];   // R, G, B, A of the indirect map
             alpha_bump = bs == 0u ? 0 : im[bs == 1u ? 3 : (bs == 2u ? 2 : 1)];
             int bv = ifmt == 0u ? -128 : 1;
@@ -283,7 +286,7 @@ void main() {
                 } else if (mid == 1u) { tr.x = s_in * ic.x / 256; tr.y = t_in * ic.x / 256; }
                 else { tr.x = s_in * ic.y / 256; tr.y = t_in * ic.y / 256; }
                 tr = shift >= 0 ? tr >> shift : tr * (1 << -shift);
-            } else if (mid != 0u) { o_color = old_color; o_depth = old_depth; return; }
+            } else if (mid != 0u) { o_color = old_color; depth_val = old_depth.x; o_depth = uvec4(depth_val, 0u, 0u, 0u); return; }
             const int m[7] = int[7](0, 256, 128, 64, 32, 16, 0);
             int ws = sw == 0u ? s_in : (sw == 6u ? 0 : (s_in & ((m[sw] << 7) - 1)));
             int wt = tw == 0u ? t_in : (tw == 6u ? 0 : (t_in & ((m[tw] << 7) - 1)));
@@ -306,7 +309,7 @@ void main() {
         else if (chan == 5u) ras = ivec4(alpha_bump);
         else if (chan == 6u) ras = ivec4(alpha_bump | (alpha_bump >> 5));
         else if (chan == 7u) ras = ivec4(0);
-        else { o_color = old_color; o_depth = old_depth; return; }
+        else { o_color = old_color; depth_val = old_depth.x; o_depth = uvec4(depth_val, 0u, 0u, 0u); return; }
         // inputs a, b, c, d per channel (R, G, B, A)
         ivec4 ia, ib, icc, id;
         for (int ch = 0; ch < 3; ++ch) {
@@ -400,7 +403,7 @@ void main() {
         }
         uint op = B(at, 22, 2);
         bool pass = op == 0u ? (c0 && c1) : op == 1u ? (c0 || c1) : op == 2u ? (c0 != c1) : (c0 == c1);
-        if (!pass) { o_color = old_color; return; }
+        if (!pass) { o_color = old_color; o_depth = uvec4(depth_val, 0u, 0u, 0u); return; }
     }
     // z texture
     {
@@ -412,7 +415,7 @@ void main() {
             if (ty == 0u) zt += uint(u8(rawtex[3]));
             else if (ty == 1u) zt += (uint(u8(rawtex[3])) << 8) | uint(u8(rawtex[0]));
             else if (ty == 2u) zt += (uint(u8(rawtex[0])) << 16) | (uint(u8(rawtex[1])) << 8) | uint(u8(rawtex[2]));
-            else { o_color = old_color; o_depth = old_depth; return; }
+            else { o_color = old_color; depth_val = old_depth.x; o_depth = uvec4(depth_val, 0u, 0u, 0u); return; }
             if (op == 1u) zt += uint(z);
             z = int(zt & 0xFFFFFFu);
         }
@@ -468,8 +471,8 @@ void main() {
         uint f = B(zmode, 1, 3);
         bool pass = f == 1u ? zv < d : f == 2u ? zv == d : f == 3u ? zv <= d : f == 4u ? zv > d :
                     f == 5u ? zv != d : f == 6u ? zv >= d : f == 7u;
-        if (pass && zupd) o_depth.x = zv & 0xFFFFFFu;
-        if (!pass) { o_color = old_color; return; }
+        if (pass && zupd) depth_val = zv & 0xFFFFFFu;
+        if (!pass) { o_color = old_color; o_depth = uvec4(depth_val, 0u, 0u, 0u); return; }
         reach(3u, x, y);
     }
     reach(4u, x, y);
@@ -540,6 +543,7 @@ void main() {
         cur = (cur & 0xFFFFC0u) | uint(res[3] >> 2);
     }
     o_color = uvec4(cur, 0u, 0u, 0u);
+    o_depth = uvec4(depth_val, 0u, 0u, 0u);
 }
 )GLSL";
 

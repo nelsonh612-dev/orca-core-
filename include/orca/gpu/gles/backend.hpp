@@ -116,6 +116,18 @@ public:
     void copy_placed(u32 handle, u64 epoch) noexcept;
     u64 textures_from_copies() const noexcept { return tex_from_copies_; }
 
+    // Specialized pixel shaders (Dolphin's specialized shaders next to its
+    // ubershaders): after `threshold` draws with the same pipeline
+    // configuration, a program with that configuration as constants is built
+    // (in the background where KHR_parallel_shader_compile exists) and used
+    // once ready; until then, and for -1, the ubershader draws. Default 8.
+    void set_specialization(int threshold) noexcept;
+    // The threshold of backends initialized from now on; `background` false
+    // builds each program at once (its first use draws with it).
+    static void set_default_specialization(int threshold, bool background = true) noexcept;
+    u64 specialized_draws() const noexcept;
+    u64 specialized_builds() const noexcept;
+
     // Presentation from the GPU (Dolphin's Present shows the XFB texture): the
     // last encoded copies stay as YUYV textures. present_xfb() draws the field
     // whose rows are copy lines first_line + k * line_step (k < height) as RGBA
@@ -136,6 +148,8 @@ public:
     u64 texture_hashes() const noexcept { return tex_hashes_; }
 
 private:
+    static int default_spec_threshold_;
+    static bool default_spec_background_;
     u64 xfb_encodes_{0}, presented_{0}, texture_copy_encodes_{0}, tex_from_copies_{0};
     struct Impl;
     std::unique_ptr<Impl> impl_;

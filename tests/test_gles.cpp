@@ -21,6 +21,7 @@
 #include <functional>
 #include <iterator>
 #include <memory>
+#include <string>
 
 using namespace orca;
 using namespace orca::gpu;
@@ -60,6 +61,8 @@ struct Diff {
     u32 max_depth{0};
     int fx{-1}, fy{-1};
     u32 sw_c{0}, gl_c{0};
+    int zx{-1}, zy{-1};
+    u32 sw_z{0}, gl_z{0};
 };
 
 struct Twin {
@@ -152,7 +155,11 @@ struct Twin {
                     }
                 }
                 const u32 za = r.depth24(x, y), zb = e.depth24(x, y);
-                if (za != zb) { ++d.depth; d.max_depth = std::max(d.max_depth, za > zb ? za - zb : zb - za); }
+                if (za != zb) {
+                    if (d.depth == 0U) { d.zx = static_cast<int>(x); d.zy = static_cast<int>(y); d.sw_z = za; d.gl_z = zb; }
+                    ++d.depth;
+                    d.max_depth = std::max(d.max_depth, za > zb ? za - zb : zb - za);
+                }
             }
         return d;
     }
@@ -161,6 +168,7 @@ struct Twin {
 void report(const char* name, const Diff& d) {
     std::printf("    %-28s colour diffs %6u (max channel %3u)  depth diffs %6u (max %u)", name, d.color, d.max_channel, d.depth, d.max_depth);
     if (d.color != 0U) std::printf("  first (%d,%d) sw %06X gl %06X", d.fx, d.fy, d.sw_c, d.gl_c);
+    if (d.depth != 0U) std::printf("  first depth (%d,%d) sw %06X gl %06X", d.zx, d.zy, d.sw_z, d.gl_z);
     std::printf("\n");
 }
 
@@ -703,6 +711,28 @@ TEST_CASE(gles_textures_sampled_from_gpu_copies) {
     CHECK_EQ(d2.color, 0U);
 }
 
+// Specialized programs are really used when enabled (the second pass of this
+// suite runs every scene that way).
+TEST_CASE(gles_specialized_programs_draw) {
+    Twin t;
+    t.gl.be->set_specialization(0);
+    t.scene();
+    t.quad(0, 0, 32, 16, -0.5f, 0x3366CCFFU);
+    CHECK(t.run());
+    // built at the first draw (finished at once, or in the background with
+    // KHR_parallel_shader_compile: then drawn with it as soon as it is ready)
+    for (int k = 0; k < 50 && t.gl.be->specialized_draws() == 0U; ++k) {
+        t.quad(40, 0, 32, 16, -0.5f, 0x80FF20FFU);
+        CHECK(t.run());
+    }
+    CHECK(t.gl.be->specialized_builds() >= 1U);
+    CHECK(t.gl.be->specialized_draws() >= 1U);
+    const Diff d = t.diff();
+    report("specialized", d);
+    CHECK_EQ(d.color, 0U);
+    CHECK_EQ(d.depth, 0U);
+}
+
 // Presentation from the GPU: a display copy kept on the GPU, shown for a VI
 // field (whole frame or one interlaced field), gives exactly the pixels of
 // video::decode_xfb over the software XFB; a write to the copy's RAM makes the
@@ -1060,7 +1090,8 @@ TEST_CASE(gles_gpu_draw_program) {
 }
 #endif
 
-int main() {
+int main(int argc, char** argv) {
+    const bool specialized = argc > 1 && std::string(argv[1]) == "specialized";
     gles::HeadlessContext ctx;
     std::string e;
     if (!ctx.create(e)) {
@@ -1074,5 +1105,9 @@ int main() {
         return 77;
     }
     g_ctx = &ctx;
-    return ::orca::test::run_all("gles");
+    // every test with the ubershader, or (argument "specialized") with each
+    // pipeline configuration drawn by its specialized program from the first
+    // draw: both must give the same results
+    gles::Backend::set_default_specialization(specialized ? 0 : -1, false);
+    return ::orca::test::run_all(specialized ? "gles-specialized" : "gles");
 }

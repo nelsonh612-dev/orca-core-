@@ -159,7 +159,68 @@ struct TexRange {
     u32 lo{0}, size{0};
 };
 
+// The drawing program: the ubershader, or a copy of it specialized for one
+// pipeline configuration (see Impl::pick_program).
+struct DrawProg {
+    GLuint id{0};
+    GLint u_off{-1}, u_bp{-1}, u_reg{-1}, u_kon{-1}, u_vp{-1}, u_zs0{-1}, u_zs1{-1}, u_tex{-1}, u_lvl{-1}, u_tri{-1};
+    GLint u_stats_on{-1}, u_tri_base{-1};
+    void locate() {
+        u_off = glGetUniformLocation(id, "u_off");
+        u_bp = glGetUniformLocation(id, "u_bp");
+        u_reg = glGetUniformLocation(id, "u_reg");
+        u_kon = glGetUniformLocation(id, "u_kon");
+        u_vp = glGetUniformLocation(id, "u_vp_wd");
+        u_zs0 = glGetUniformLocation(id, "u_zs0");
+        u_zs1 = glGetUniformLocation(id, "u_zs1");
+        u_tex = glGetUniformLocation(id, "u_tex");
+        u_lvl = glGetUniformLocation(id, "u_lvl");
+        u_tri = glGetUniformLocation(id, "u_tri");
+        u_stats_on = glGetUniformLocation(id, "u_stats_on");
+        u_tri_base = glGetUniformLocation(id, "u_tri_base");
+    }
+};
+
+// BP bits that decide the structure of the pixel pipeline (Dolphin's shader
+// UID: stage count, TEV combiners and orders, swap tables and konst selects,
+// indirect stages, alpha test functions, z modes, blending, fog type, z
+// texture). A specialized program has them as constants; everything else
+// stays a uniform.
+struct SpecMask { u8 reg; u32 mask; };
+constexpr u32 kAll = 0xFFFFFFFFU;
+const std::array<SpecMask, 74> kSpecMasks = [] {
+    std::array<SpecMask, 74> m{};
+    std::size_t n = 0;
+    m[n++] = {0x00, kAll};
+    for (u32 r = 0x10; r <= 0x1F; ++r) m[n++] = {static_cast<u8>(r), kAll};
+    m[n++] = {0x27, kAll};
+    for (u32 r = 0x28; r <= 0x2F; ++r) m[n++] = {static_cast<u8>(r), kAll};
+    m[n++] = {0x40, kAll};
+    m[n++] = {0x41, kAll};
+    m[n++] = {0x42, 0x100U};
+    m[n++] = {0x43, kAll};
+    for (u32 r = 0xC0; r <= 0xDF; ++r) m[n++] = {static_cast<u8>(r), kAll};
+    m[n++] = {0xE8, 0x400U};
+    m[n++] = {0xF1, 0xF00000U};
+    m[n++] = {0xF3, 0xFF0000U};
+    m[n++] = {0xF5, kAll};
+    for (u32 r = 0xF6; r <= 0xFD; ++r) m[n++] = {static_cast<u8>(r), kAll};
+    return m;
+}();
+
 struct Backend::Impl {
+    DrawProg main_prog;            // the ubershader
+    struct Spec {
+        std::array<u32, 74> values{};
+        DrawProg prog;
+        u32 seen{0};
+        int state{0};              // 0 not built, 1 compiling (parallel), 2 ready, -1 failed
+    };
+    std::unordered_map<u64, std::vector<Spec>> specs;
+    int spec_threshold{-1};        // draws of a configuration before it is specialized; -1 = never
+    bool parallel_compile{false};
+    GLuint vs_shader{0};
+    std::string frag_prefix;
     GLuint prog{0}, vao{0}, vbo{0}, fbo{0}, efb[2]{0, 0}, dummy{0}, tri_buf{0}, tri_tex{0};
     // Display (XFB) copies encoded on the GPU (see encode_xfb): 0 = not set up yet
     // encoded copies stay in a ring of textures (Present shows them from there)
@@ -212,12 +273,10 @@ struct Backend::Impl {
     std::array<u64, 8> tex_epoch{}; // bus write epoch when the texels were last known equal
     std::array<bool, 8> tex_epoch_valid{};
     std::array<std::array<GLint, 2>, 8 * 16> lvl{};
-    GLint u_off{-1}, u_bp{-1}, u_reg{-1}, u_kon{-1}, u_vp{-1}, u_zs0{-1}, u_zs1{-1}, u_tex{-1}, u_lvl{-1}, u_tri{-1};
     std::vector<u8> scratch;
     // Pixel Engine statistics (see pixel_stats.hpp and the shader)
     bool stats_supported{false};
     GLuint stats_buf{0}, quad_ids{0};
-    GLint u_stats_on{-1}, u_tri_base{-1};
     PixelStats* stats{nullptr};
     u32 uploaded_epoch{~0U};
     bool gpu_dirty{false};
@@ -243,6 +302,10 @@ struct Backend::Impl {
         if (xfb_prog != 0) glDeleteProgram(xfb_prog);
         glDeleteFramebuffers(kXfbSlots, xfb_fbo.data());
         glDeleteTextures(kXfbSlots, xfb_tex.data());
+        for (auto& [k, list] : specs)
+            for (auto& sp : list)
+                if (sp.prog.id != 0) glDeleteProgram(sp.prog.id);
+        if (vs_shader != 0) glDeleteShader(vs_shader);
         if (tc_prog != 0) glDeleteProgram(tc_prog);
         if (dec_prog != 0) glDeleteProgram(dec_prog);
         if (dec_fbo != 0) glDeleteFramebuffers(1, &dec_fbo);
@@ -688,6 +751,85 @@ void main() {
         return glGetError() == GL_NO_ERROR;
     }
 
+    // The program for a draw with these BP registers: a specialized one once
+    // its configuration was drawn spec_threshold times and its build finished
+    // (in the background with KHR_parallel_shader_compile), else the
+    // ubershader. Both compute the same pixels: the specialized program is the
+    // ubershader's source with the structural BP bits as constants.
+    const DrawProg& pick_program(const BpMemory& bp) {
+        if (spec_threshold < 0) return main_prog;
+        std::array<u32, 74> v{};
+        u64 h = 0xCBF29CE484222325ULL;
+        for (std::size_t i = 0; i < kSpecMasks.size(); ++i) {
+            v[i] = bp.reg(kSpecMasks[i].reg) & kSpecMasks[i].mask;
+            h = (h ^ v[i]) * 0x100000001B3ULL;
+        }
+        auto& list = specs[h];
+        Spec* sp = nullptr;
+        for (auto& e : list)
+            if (e.values == v) { sp = &e; break; }
+        if (sp == nullptr) {
+            list.push_back(Spec{});
+            sp = &list.back();
+            sp->values = v;
+        }
+        if (sp->state == 2) return sp->prog;
+        if (sp->state == 1) {
+            GLint done = 0;
+            glGetProgramiv(sp->prog.id, 0x91B1 /* GL_COMPLETION_STATUS_KHR */, &done);
+            if (done != 0) finish_spec(*sp);
+            if (sp->state == 2) return sp->prog;
+            return main_prog;
+        }
+        if (sp->state == 0 && ++sp->seen > static_cast<u32>(spec_threshold)) {
+            start_spec(*sp);
+            if (!parallel_compile && sp->state == 1) finish_spec(*sp);
+            if (sp->state == 2) return sp->prog;
+        }
+        return main_prog;
+    }
+    void start_spec(Spec& sp) {
+        std::string src(kFragmentShader);
+        const std::string from = "uint R(uint r) { return u_bp[r >> 2u][r & 3u]; }";
+        const std::size_t at = src.find(from);
+        if (at == std::string::npos) { sp.state = -1; return; }
+        std::array<u32, 256> km{}, kv{};
+        for (std::size_t i = 0; i < kSpecMasks.size(); ++i) {
+            km[kSpecMasks[i].reg] = kSpecMasks[i].mask;
+            kv[kSpecMasks[i].reg] = sp.values[i];
+        }
+        std::string to = "const uint KM[256] = uint[256](";
+        for (std::size_t r = 0; r < 256; ++r) to += std::to_string(km[r]) + (r + 1 < 256 ? "u," : "u);\n");
+        to += "const uint KV[256] = uint[256](";
+        for (std::size_t r = 0; r < 256; ++r) to += std::to_string(kv[r]) + (r + 1 < 256 ? "u," : "u);\n");
+        to += "uint R(uint r) { return (u_bp[r >> 2u][r & 3u] & ~KM[r]) | KV[r]; }";
+        src.replace(at, from.size(), to);
+        const std::string full = frag_prefix + src;
+        std::string e;
+        const GLuint fs = compile(GL_FRAGMENT_SHADER, full.c_str(), e);
+        if (fs == 0) { sp.state = -1; std::fprintf(stderr, "specialized shader: %s\n", e.c_str()); return; }
+        sp.prog.id = glCreateProgram();
+        glAttachShader(sp.prog.id, vs_shader);
+        glAttachShader(sp.prog.id, fs);
+        glLinkProgram(sp.prog.id);
+        glDeleteShader(fs);
+        sp.state = 1;
+        ++spec_builds;
+    }
+    void finish_spec(Spec& sp) {
+        GLint ok = 0;
+        glGetProgramiv(sp.prog.id, GL_LINK_STATUS, &ok);
+        if (ok == 0) {
+            glDeleteProgram(sp.prog.id);
+            sp.prog.id = 0;
+            sp.state = -1;
+            return;
+        }
+        sp.prog.locate();
+        sp.state = 2;
+    }
+    u64 spec_draws{0}, spec_builds{0};
+
     // A texture map whose texels are all inside a texture copy still on the GPU
     // (its RAM unchanged since the copy): decoded there into the map's texture,
     // without reading the copy back. False: use RAM.
@@ -921,15 +1063,15 @@ bool Backend::init(std::string& error) {
     glGetIntegerv(GL_MAX_FRAGMENT_SHADER_STORAGE_BLOCKS, &frag_ssbo);
     glGetIntegerv(GL_MAX_FRAGMENT_IMAGE_UNIFORMS, &frag_images);
     g.stats_supported = frag_ssbo >= 1 && frag_images >= 1;
-    const std::string fsrc = std::string("#version 320 es\n#define ORCA_STATS ") + (g.stats_supported ? "1" : "0") +
-                             "\n" + kFragmentShader;
+    g.frag_prefix = std::string("#version 320 es\n#define ORCA_STATS ") + (g.stats_supported ? "1" : "0") + "\n";
+    const std::string fsrc = g.frag_prefix + kFragmentShader;
     const GLuint fs = compile(GL_FRAGMENT_SHADER, fsrc.c_str(), error);
     if (fs == 0) { glDeleteShader(vs); return false; }
     g.prog = glCreateProgram();
     glAttachShader(g.prog, vs);
     glAttachShader(g.prog, fs);
     glLinkProgram(g.prog);
-    glDeleteShader(vs);
+    g.vs_shader = vs; // kept for the specialized programs
     glDeleteShader(fs);
     GLint ok = 0;
     glGetProgramiv(g.prog, GL_LINK_STATUS, &ok);
@@ -939,18 +1081,19 @@ bool Backend::init(std::string& error) {
         error = std::string("link: ") + log;
         return false;
     }
-    g.u_off = glGetUniformLocation(g.prog, "u_off");
-    g.u_bp = glGetUniformLocation(g.prog, "u_bp");
-    g.u_reg = glGetUniformLocation(g.prog, "u_reg");
-    g.u_kon = glGetUniformLocation(g.prog, "u_kon");
-    g.u_vp = glGetUniformLocation(g.prog, "u_vp_wd");
-    g.u_zs0 = glGetUniformLocation(g.prog, "u_zs0");
-    g.u_zs1 = glGetUniformLocation(g.prog, "u_zs1");
-    g.u_tex = glGetUniformLocation(g.prog, "u_tex");
-    g.u_lvl = glGetUniformLocation(g.prog, "u_lvl");
-    g.u_tri = glGetUniformLocation(g.prog, "u_tri");
-    g.u_stats_on = glGetUniformLocation(g.prog, "u_stats_on");
-    g.u_tri_base = glGetUniformLocation(g.prog, "u_tri_base");
+    g.main_prog.id = g.prog;
+    g.main_prog.locate();
+    for (GLint i = 0; i < n; ++i)
+        if (std::strcmp(reinterpret_cast<const char*>(glGetStringi(GL_EXTENSIONS, static_cast<GLuint>(i))),
+                        "GL_KHR_parallel_shader_compile") == 0) {
+            using MaxThreads = void (*)(GLuint);
+            if (auto f = reinterpret_cast<MaxThreads>(eglGetProcAddress("glMaxShaderCompilerThreadsKHR"));
+                f != nullptr && default_spec_background_) {
+                f(0xFFFFFFFFU);
+                g.parallel_compile = true;
+            }
+        }
+    g.spec_threshold = default_spec_threshold_;
     if (g.stats_supported) {
         glGenBuffers(1, &g.stats_buf);
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, g.stats_buf);
@@ -1068,22 +1211,23 @@ bool Backend::flush(const BpMemory& bp, const XfMemory& xf, const sw::TevState& 
             ++tex_uploads_;
         }
     }
-    glUseProgram(g.prog);
+    const DrawProg& P = g.pick_program(bp);
+    glUseProgram(P.id);
     std::array<GLuint, 256> regs{};
     for (u32 r = 0; r < 256; ++r) regs[r] = bp.reg(static_cast<u8>(r));
-    glUniform4uiv(g.u_bp, 64, regs.data());
+    glUniform4uiv(P.u_bp, 64, regs.data());
     std::array<GLint, 16> rv{}, kv{};
     for (u32 i = 0; i < 4; ++i)
         for (u32 c = 0; c < 4; ++c) { rv[i * 4U + c] = tev.reg[i][c]; kv[i * 4U + c] = tev.konst[i][c]; }
-    glUniform4iv(g.u_reg, 4, rv.data());
-    glUniform4iv(g.u_kon, 4, kv.data());
-    glUniform1f(g.u_vp, xf.as_float(xf::VIEWPORT));
+    glUniform4iv(P.u_reg, 4, rv.data());
+    glUniform4iv(P.u_kon, 4, kv.data());
+    glUniform1f(P.u_vp, xf.as_float(xf::VIEWPORT));
     const bool zfreeze = bits(gen, 19, 1) != 0U;
-    glUniform4f(g.u_zs0, zslope.dfdx, zslope.dfdy, zslope.f0, zslope.xoff);
-    glUniform4f(g.u_zs1, zslope.yoff, static_cast<float>(zslope.x0), static_cast<float>(zslope.y0), zfreeze ? 1.0f : 0.0f);
+    glUniform4f(P.u_zs0, zslope.dfdx, zslope.dfdy, zslope.f0, zslope.xoff);
+    glUniform4f(P.u_zs1, zslope.yoff, static_cast<float>(zslope.x0), static_cast<float>(zslope.y0), zfreeze ? 1.0f : 0.0f);
     const GLint units[8] = {0, 1, 2, 3, 4, 5, 6, 7};
-    glUniform1iv(g.u_tex, 8, units);
-    glUniform2iv(g.u_lvl, 8 * 16, &g.lvl[0][0]);
+    glUniform1iv(P.u_tex, 8, units);
+    glUniform2iv(P.u_lvl, 8 * 16, &g.lvl[0][0]);
     glBindFramebuffer(GL_FRAMEBUFFER, g.fbo);
     glViewport(0, 0, kW, kH);
     glBindVertexArray(g.vao);
@@ -1110,7 +1254,7 @@ bool Backend::flush(const BpMemory& bp, const XfMemory& xf, const sw::TevState& 
         glActiveTexture(GL_TEXTURE8);
         glBindTexture(GL_TEXTURE_BUFFER, g.tri_tex);
         glTexBuffer(GL_TEXTURE_BUFFER, GL_RGBA32F, g.tri_buf);
-        glUniform1i(g.u_tri, 8);
+        glUniform1i(P.u_tri, 8);
         glBindBuffer(GL_ARRAY_BUFFER, g.vbo);
         glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(verts_.size() * sizeof(float)), verts_.data(), GL_STREAM_DRAW);
         // statistics: upload what the CPU changed (BP 0x55-0x57) and arm the shader
@@ -1127,16 +1271,17 @@ bool Backend::flush(const BpMemory& bp, const XfMemory& xf, const sw::TevState& 
             }
             glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, g.stats_buf);
             glBindImageTexture(0, g.quad_ids, 0, GL_TRUE, 0, GL_READ_WRITE, GL_R32UI);
-            glUniform2ui(g.u_stats_on, bbox_on ? 1U : 0U, quads_on ? 1U : 0U);
-            glUniform1ui(g.u_tri_base, g.tri_base);
+            glUniform2ui(P.u_stats_on, bbox_on ? 1U : 0U, quads_on ? 1U : 0U);
+            glUniform1ui(P.u_tri_base, g.tri_base);
             if (bbox_on || quads_on) g.gpu_dirty = true;
         }
         for (const Range& rx : xr)
             for (const Range& ry : yr) {
-                glUniform2f(g.u_off, static_cast<float>(rx.off), static_cast<float>(ry.off));
+                glUniform2f(P.u_off, static_cast<float>(rx.off), static_cast<float>(ry.off));
                 glScissor(rx.start, ry.start, rx.end - rx.start, ry.end - ry.start);
                 glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(verts_.size() / 2U));
                 ++draws_;
+                if (P.id != g.main_prog.id) ++g.spec_draws;
             }
     }
     glDisable(GL_SCISSOR_TEST);
@@ -1451,6 +1596,16 @@ bool Backend::encode_texture_copy(const sw::TexCopyPlan& plan, u32& handle, std:
     ++texture_copy_encodes_;
     return true;
 }
+
+int Backend::default_spec_threshold_ = 8;
+bool Backend::default_spec_background_ = true;
+void Backend::set_default_specialization(int threshold, bool background) noexcept {
+    default_spec_threshold_ = threshold;
+    default_spec_background_ = background;
+}
+void Backend::set_specialization(int threshold) noexcept { impl_->spec_threshold = threshold; }
+u64 Backend::specialized_draws() const noexcept { return impl_->spec_draws; }
+u64 Backend::specialized_builds() const noexcept { return impl_->spec_builds; }
 
 void Backend::copy_placed(u32 handle, u64 epoch) noexcept {
     for (auto& u : impl_->tc_slot)

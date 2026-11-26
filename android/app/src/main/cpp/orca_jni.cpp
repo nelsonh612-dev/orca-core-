@@ -291,6 +291,18 @@ void run_loop(Session* s) {
             std::snprintf(b, sizeof b, "%s %.0f%% frame %llu ", s->emu.game_id().c_str(), speed * 100.0,
                           static_cast<unsigned long long>(s->emu.frame().number));
             s->status = b + s->renderer;
+#ifdef ORCA_HAVE_GLES
+            if (s->backend) {
+                char g[160];
+                std::snprintf(g, sizeof g, " (%llu specialized shaders, %llu of %llu draws; %llu textures from GPU copies; %llu fields from the GPU)",
+                              static_cast<unsigned long long>(s->backend->specialized_builds()),
+                              static_cast<unsigned long long>(s->backend->specialized_draws()),
+                              static_cast<unsigned long long>(s->backend->draws()),
+                              static_cast<unsigned long long>(s->backend->textures_from_copies()),
+                              static_cast<unsigned long long>(s->emu.gpu_frames()));
+                s->status += g;
+            }
+#endif
             // nothing shown yet: say where the game waits (for a screenshot)
             if (s->emu.frame().number == 0U) s->status += "\n" + s->emu.diagnostics();
         }
