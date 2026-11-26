@@ -1431,9 +1431,14 @@ Jit::Jit(Cpu& cpu, mem::Bus& bus) : cpu_(cpu), bus_(bus) {
     bus_write_epoch_ = bus_.write_epoch_pointer();
     if (jit::host_can_execute()) code_ = std::make_unique<jit::CodeBuffer>();
     bus_.set_code_invalidation_handler([this](u32 address, u32 size) { invalidate(address, size); });
+    // deferred RAM contents: cached host pointers must not bypass the bus
+    lazy_listener_ = bus_.add_lazy_listener([this] { tlb_flush(); });
 }
 
-Jit::~Jit() { bus_.set_code_invalidation_handler(nullptr); }
+Jit::~Jit() {
+    bus_.set_code_invalidation_handler(nullptr);
+    bus_.remove_lazy_listener(lazy_listener_);
+}
 
 bool Jit::can_execute() const noexcept { return code_ != nullptr && code_->ok(); }
 

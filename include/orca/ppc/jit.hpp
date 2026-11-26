@@ -203,6 +203,7 @@ private:
     Block* running_{nullptr};
     bool running_invalidated_{false};
     bool native_fp_{true};
+    std::size_t lazy_listener_{0};
     JitExit exit_{};
     Stats stats_;
 };

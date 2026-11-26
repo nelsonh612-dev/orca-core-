@@ -122,6 +122,30 @@ public:
     }
     void remove_write_observer(std::size_t id);
 
+    // Deferred RAM contents (a GPU result still on the GPU, as Dolphin defers EFB
+    // copies to RAM): [address, address + size) counts as written now, with
+    // contents that `fill` produces when anything reads or writes the range
+    // through the bus (CPU, DMA, ram_pointer). `fill` gets the host pointer of
+    // the range and must not use the bus. A range that a newer one covers is
+    // dropped when the newer one is `dense` (writes every byte of its range; an
+    // XFB with gaps between rows is not); otherwise, and when they overlap in
+    // part, the older one is filled first. Returns false (and
+    // registers nothing) when the range is not inside one RAM region.
+    using LazyFill = std::function<void(u8* dst)>;
+    bool set_lazy(u32 address, u32 size, LazyFill fill, bool dense = true);
+    void materialize_all();
+    std::size_t lazy_ranges() const noexcept { return lazy_.size(); }
+    u64 lazy_fills() const noexcept { return lazy_fills_; }
+    // Called whenever a range is added: holders of host pointers into RAM (the
+    // JIT's translation cache) drop them, so that their next access comes here.
+    std::size_t add_lazy_listener(std::function<void()> listener) {
+        lazy_listeners_.emplace_back(++lazy_listener_id_, std::move(listener));
+        return lazy_listener_id_;
+    }
+    void remove_lazy_listener(std::size_t id) {
+        std::erase_if(lazy_listeners_, [id](const auto& l) { return l.first == id; });
+    }
+
     // Diagnostics: one watched physical range. Every write that touches it is
     // recorded (source, the guest PC from `pc_source` and the word afterwards);
     // the JIT leaves the page to the bus so that its stores are seen too.
@@ -157,6 +181,16 @@ public:
     MmioDevice* mmio_device_at(u32 address) noexcept;
 
 private:
+    struct Lazy {
+        u32 address{0}, size{0};
+        LazyFill fill;
+    };
+    std::vector<Lazy> lazy_;
+    std::vector<std::pair<std::size_t, std::function<void()>>> lazy_listeners_;
+    std::size_t lazy_listener_id_{0};
+    u64 lazy_fills_{0};
+    void lazy_touch(u32 address, u32 size);
+    void lazy_fill_at(std::size_t index);
     struct Region {
         std::string name;
         u32 base;

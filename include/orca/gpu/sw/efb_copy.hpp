@@ -48,7 +48,9 @@
 #include "orca/gpu/sw/renderer.hpp"
 #include "orca/memory/bus.hpp"
 
+#include <array>
 #include <string>
+#include <vector>
 
 namespace orca::gpu::sw {
 
@@ -73,6 +75,40 @@ struct CopyResult {
     u32 width{0}, height{0}; // pixels (XFB) or texels (texture)
     u32 bytes{0};          // bytes written to RAM
 };
+
+// The source rectangle and pixel format of a copy (BP 0x49/0x4A, PE control),
+// as efb_copy uses them. `ignored`: the rectangle is outside the EFB.
+struct CopyArea {
+    u32 left{0}, top{0}, right{0}, bottom{0};
+    u32 fmt{0};
+    bool ignored{false};
+};
+bool copy_area(const BpMemory& bp, CopyArea& area, std::string& error);
+
+// Everything an XFB copy computes before touching pixels, so that another
+// implementation (the GPU backend) produces the same bytes as efb_copy:
+// destination, the output line -> source row map, the copy filter, gamma.
+// The RAM rows are dest + y * stride, width * 2 bytes each (YUYV).
+struct XfbPlan {
+    u32 left{0}, top{0}, width{0}, src_h{0}, lines{0};
+    u32 dest{0}, stride{0};
+    std::array<u32, 3> weights{}; // previous, current, next row (sum >> 6)
+    bool wrap{false};             // the weights sum to 128 or more: 9-bit wrap
+    bool six{false};              // RGBA6 EFB: 6-bit channels expanded
+    u32 clamp_top{0}, clamp_bottom{0}; // rows the filter may read (inclusive)
+    std::array<u8, 256> gamma{};  // output value per filtered value
+    std::vector<u32> rows;        // source row (0..src_h-1) of each output line
+};
+bool xfb_plan(u32 trigger, const BpMemory& bp, const CopyArea& area, u32 phys_mask, XfbPlan& plan, std::string& error);
+
+// A clear (BP 0x52 bit 11) as whole-value writes: the 24-bit colour and/or depth
+// written to every pixel of the area. `whole` is false when only part of a
+// pixel changes (RGBA6 with only colour or only alpha enabled).
+struct ClearPlan {
+    bool color{false}, depth{false}, whole{true};
+    u32 color_value{0}, depth_value{0};
+};
+ClearPlan clear_plan(const BpMemory& bp, const CopyArea& area);
 
 // Executes the copy and/or clear for the BP 0x52 value `trigger`, with the
 // other registers taken from `bp`. Returns false with a message for

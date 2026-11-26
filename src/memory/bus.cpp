@@ -75,6 +75,7 @@ bool Bus::is_ram(u32 address, u32 size) const noexcept {
 
 BusStatus Bus::read(u32 address, unsigned size, u64& value, AccessSource) {
     if (size != 1U && size != 2U && size != 4U && size != 8U) return BusStatus::DeviceError;
+    if (!lazy_.empty()) lazy_touch(address, size);
     Region* r = region_for(address);
     if (r != nullptr && r->ram && static_cast<u64>(address) + size <= static_cast<u64>(r->base) + r->size) {
         const u8* p = r->ram.get() + (address - r->base); // fast path: one RAM region
@@ -105,6 +106,7 @@ BusStatus Bus::read(u32 address, unsigned size, u64& value, AccessSource) {
 
 BusStatus Bus::write(u32 address, unsigned size, u64 value, AccessSource src) {
     if (size != 1U && size != 2U && size != 4U && size != 8U) return BusStatus::DeviceError;
+    if (!lazy_.empty()) lazy_touch(address, size);
     Region* r = region_for(address);
     if (r != nullptr && r->ram && static_cast<u64>(address) + size <= static_cast<u64>(r->base) + r->size) {
         u8* p = r->ram.get() + (address - r->base); // fast path: one RAM region
@@ -142,6 +144,7 @@ BusStatus Bus::write64(u32 a, u64 v) { return write(a, 8, v); }
 
 BusStatus Bus::dma_read(u32 address, std::span<u8> out) {
     const auto size = static_cast<u32>(out.size());
+    if (!lazy_.empty()) lazy_touch(address, size);
     if (out.size() > 0xFFFFFFFFULL || !is_ram(address, size)) return BusStatus::Unmapped;
     for (u32 done = 0; done < size;) {
         const u32 a = address + done;
@@ -155,6 +158,7 @@ BusStatus Bus::dma_read(u32 address, std::span<u8> out) {
 
 BusStatus Bus::dma_write(u32 address, std::span<const u8> in) {
     const auto size = static_cast<u32>(in.size());
+    if (!lazy_.empty()) lazy_touch(address, size);
     if (in.size() > 0xFFFFFFFFULL || !is_ram(address, size)) return BusStatus::Unmapped;
     for (u32 done = 0; done < size;) {
         const u32 a = address + done;
@@ -168,10 +172,50 @@ BusStatus Bus::dma_write(u32 address, std::span<const u8> in) {
 }
 
 u8* Bus::ram_pointer(u32 address, u32 size) noexcept {
+    if (!lazy_.empty()) lazy_touch(address, size);
     Region* r = region_for(address);
     if (r == nullptr || !r->ram) return nullptr;
     if (static_cast<u64>(address) + size > static_cast<u64>(r->base) + r->size) return nullptr;
     return r->ram.get() + (address - r->base);
+}
+
+bool Bus::set_lazy(u32 address, u32 size, LazyFill fill, bool dense) {
+    if (size == 0U || !fill) return false;
+    Region* r = region_for(address);
+    if (r == nullptr || !r->ram || static_cast<u64>(address) + size > static_cast<u64>(r->base) + r->size) return false;
+    const u64 end = static_cast<u64>(address) + size;
+    for (std::size_t i = 0; i < lazy_.size();) {
+        const Lazy& l = lazy_[i];
+        const u64 lend = static_cast<u64>(l.address) + l.size;
+        if (lend <= address || l.address >= end) { ++i; continue; }
+        if (dense && l.address >= address && lend <= end) { lazy_.erase(lazy_.begin() + static_cast<std::ptrdiff_t>(i)); continue; }
+        lazy_fill_at(i); // partial overlap: its bytes outside the new range must appear
+    }
+    lazy_.push_back(Lazy{address, size, std::move(fill)});
+    for (const auto& [id, f] : lazy_listeners_) f();
+    after_write(address, size, AccessSource::Dma); // the write happened now (write stamps, observers)
+    return true;
+}
+
+void Bus::lazy_fill_at(std::size_t index) {
+    Lazy l = std::move(lazy_[index]);
+    lazy_.erase(lazy_.begin() + static_cast<std::ptrdiff_t>(index));
+    Region* r = region_for(l.address);
+    ++lazy_fills_;
+    l.fill(r->ram.get() + (l.address - r->base));
+}
+
+void Bus::lazy_touch(u32 address, u32 size) {
+    const u64 end = static_cast<u64>(address) + (size == 0U ? 1U : size);
+    for (std::size_t i = 0; i < lazy_.size();) {
+        const Lazy& l = lazy_[i];
+        if (static_cast<u64>(l.address) + l.size <= address || l.address >= end) { ++i; continue; }
+        lazy_fill_at(i);
+    }
+}
+
+void Bus::materialize_all() {
+    while (!lazy_.empty()) lazy_fill_at(0);
 }
 
 void Bus::notify_external_write(u32 address, u32 size, AccessSource src) {

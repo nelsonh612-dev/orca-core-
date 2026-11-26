@@ -1,3 +1,4 @@
+#include <cstring>
 #include "orca/memory/console_maps.hpp"
 #include "test_framework.hpp"
 
@@ -38,6 +39,86 @@ TEST_CASE(mapping_rules) {
     CHECK(!bus.map_ram("wraps", 0xFFFFF000U, 0x2000));
     CHECK(bus.map_ram("top", 0xFFFFF000U, 0x1000));
     CHECK_EQ(bus.regions().size(), 2U);
+}
+
+// Deferred RAM contents (a GPU copy still on the GPU): the range counts as
+// written at once and gets its bytes when anything reaches it through the bus.
+TEST_CASE(deferred_ranges_with_gaps_keep_older_ones) {
+    Bus bus;
+    bus.map_ram("ram", 0, 0x10000);
+    {   // a newer range with gaps (not dense) does not replace an older one it covers
+        unsigned fills = 0;
+        const unsigned f0 = fills;
+        CHECK(bus.set_lazy(0x6010, 0x100 - 0x20, [&fills](u8* dst) { ++fills; std::memset(dst, 0x77, 0x10); }));
+        CHECK(bus.set_lazy(0x6000, 0x100, [&fills](u8* dst) { ++fills; std::memset(dst, 0x88, 0x10); }, false));
+        CHECK_EQ(fills, f0 + 1U);
+        u8 g = 0;
+        CHECK(bus.read8(0x6015, g) == BusStatus::Ok); // the older range's bytes, outside the newer one's rows
+        CHECK_EQ(g, 0x77U);
+        CHECK(bus.read8(0x6005, g) == BusStatus::Ok);
+        CHECK_EQ(g, 0x88U);
+    }
+}
+
+TEST_CASE(deferred_ranges_fill_on_first_access) {
+    Bus bus;
+    bus.map_ram("ram", 0, 0x10000);
+    bus.map_ram("ram2", 0x20000, 0x1000);
+    unsigned fills = 0, flushes = 0;
+    const std::size_t id = bus.add_lazy_listener([&] { ++flushes; });
+    auto fill_with = [&](u8 v) { return [&fills, v](u8* dst) { ++fills; std::memset(dst, v, 0x100); }; };
+    const u64 e0 = bus.write_epoch();
+    CHECK(bus.set_lazy(0x1000, 0x100, fill_with(0xAB)));
+    CHECK_EQ(flushes, 1U);
+    CHECK(!bus.unchanged_since(0x1000, 0x100, e0)); // counts as written now
+    CHECK_EQ(fills, 0U);
+    u32 w = 0;
+    CHECK(bus.read32(0x0FFC, w) == BusStatus::Ok);  // outside: nothing happens
+    CHECK_EQ(fills, 0U);
+    CHECK(bus.read32(0x1080, w) == BusStatus::Ok);  // inside: filled first
+    CHECK_EQ(w, 0xABABABABU);
+    CHECK_EQ(fills, 1U);
+    CHECK(bus.read32(0x1084, w) == BusStatus::Ok);
+    CHECK_EQ(fills, 1U);                             // once
+    // a write into a pending range fills it first, then writes
+    CHECK(bus.set_lazy(0x2000, 0x100, fill_with(0x11)));
+    CHECK(bus.write8(0x2010, 0x99) == BusStatus::Ok);
+    u8 b = 0;
+    CHECK(bus.read8(0x2010, b) == BusStatus::Ok);
+    CHECK_EQ(b, 0x99U);
+    CHECK(bus.read8(0x2011, b) == BusStatus::Ok);
+    CHECK_EQ(b, 0x11U);
+    // DMA and host pointers fill too
+    CHECK(bus.set_lazy(0x3000, 0x100, fill_with(0x22)));
+    std::array<u8, 4> d{};
+    CHECK(bus.dma_read(0x30F0, d) == BusStatus::Ok);
+    CHECK_EQ(d[0], 0x22U);
+    CHECK(bus.set_lazy(0x4000, 0x100, fill_with(0x33)));
+    CHECK_EQ(bus.ram_pointer(0x4000, 4)[3], 0x33U);
+    // a newer range covering an older one replaces it; a partial overlap fills the older first
+    const unsigned before = fills;
+    CHECK(bus.set_lazy(0x5000, 0x100, fill_with(0x44)));
+    CHECK(bus.set_lazy(0x5000, 0x100, fill_with(0x55)));
+    CHECK_EQ(fills, before);
+    CHECK(bus.set_lazy(0x5080, 0x100, fill_with(0x66)));
+    CHECK_EQ(fills, before + 1U);                    // 0x55 written, then 0x66 pending
+    CHECK(bus.read8(0x5000, b) == BusStatus::Ok);
+    CHECK_EQ(b, 0x55U);
+    CHECK(bus.read8(0x5080, b) == BusStatus::Ok);
+    CHECK_EQ(b, 0x66U);
+    // not one RAM region: refused
+    CHECK(!bus.set_lazy(0xFF80, 0x100, fill_with(0x77)));
+    CHECK(!bus.set_lazy(0x10000, 0x10, fill_with(0x77)));
+    // everything filled on request
+    CHECK(bus.set_lazy(0x20000, 0x100, fill_with(0x88)));
+    CHECK_EQ(bus.lazy_ranges(), 1U);
+    bus.materialize_all();
+    CHECK_EQ(bus.lazy_ranges(), 0U);
+    CHECK(bus.read8(0x200FF, b) == BusStatus::Ok);
+    CHECK_EQ(b, 0x88U);
+    bus.remove_lazy_listener(id);
+    CHECK(bus.set_lazy(0x6000, 0x10, fill_with(0x99)));
+    CHECK_EQ(flushes, 8U);                           // not called after removal
 }
 
 TEST_CASE(big_endian_all_sizes) {

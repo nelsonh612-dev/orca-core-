@@ -205,24 +205,10 @@ bool texture_copy(u32 trigger, const BpMemory& bp, const Efb& efb, mem::Bus& bus
 bool xfb_copy(u32 trigger, const BpMemory& bp, const Efb& efb, mem::Bus& bus, u32 phys_mask, const Rect& r, u32 fmt,
               CopyResult& res, std::string& error) {
     char b[160];
-    const u32 ys_reg = bp.reg(bp::COPY_YSCALE);
-    const bool invert = (trigger & 0x400U) != 0U;
-    if (invert && ys_reg == 0U) { error = "XFB copy with scale invert and a y scale of 0"; return false; }
-    if (!invert && ys_reg == 0U) { error = "XFB copy with a y scale of 0"; return false; }
-    const float ys = invert ? 256.0f / static_cast<float>(ys_reg) : static_cast<float>(ys_reg) / 256.0f;
-    if ((r.left & 1U) != 0U || ((r.right - r.left) & 1U) != 0U) {
-        std::snprintf(b, sizeof b, "XFB copy from an odd column or with an odd width (%u..%u) is not handled", r.left, r.right);
-        error = b;
-        return false;
-    }
-    const u32 width = r.right - r.left, src_h = r.bottom - r.top;
-    // BPStructs.cpp: lines written = 1 + (BP 4A height field) * scale; SWEfbInterface.cpp encodes
-    // src_h * scale rows with CopyRegion.h (nearest row: round(row * src_h / dst_h))
-    const u32 lines = static_cast<u32>(1.0f + static_cast<float>(bits(bp.reg(bp::EFB_WH), 10, 10)) * ys);
-    const u32 dst_h = static_cast<u32>(static_cast<float>(src_h) * ys);
-    if (dst_h == 0U) { error = "XFB copy scaled to 0 lines"; return false; }
-    const double ratio = static_cast<double>(src_h) / static_cast<double>(dst_h);
-    const u32 dest = (bp.reg(bp::EFB_ADDR) << 5) & phys_mask, stride = bp.reg(bp::EFB_STRIDE) << 5;
+    XfbPlan plan;
+    const CopyArea area{r.left, r.top, r.right, r.bottom, fmt, false};
+    if (!xfb_plan(trigger, bp, area, phys_mask, plan, error)) return false;
+    const u32 width = plan.width, src_h = plan.src_h, lines = plan.lines, dest = plan.dest, stride = plan.stride;
     const PixelReader rd(efb, fmt, false, r, trigger, bp);
     // encode every source row once
     std::vector<std::vector<u8>> rows(src_h, std::vector<u8>(static_cast<std::size_t>(width) * 2U));
@@ -250,7 +236,7 @@ bool xfb_copy(u32 trigger, const BpMemory& bp, const Efb& efb, mem::Bus& bus, u3
         }
     }
     for (u32 y = 0; y < lines; ++y) {
-        const u32 src_y = std::min(src_h - 1U, static_cast<u32>(std::round(static_cast<double>(y) * ratio)));
+        const u32 src_y = plan.rows[y];
         const u32 addr = (dest + y * stride) & phys_mask;
         if (bus.dma_write(addr, rows[src_y]) != mem::BusStatus::Ok) {
             std::snprintf(b, sizeof b, "XFB copy writes %u bytes at %08X outside RAM", width * 2U, addr);
@@ -299,25 +285,103 @@ void clear(const BpMemory& bp, Efb& efb, const Rect& r, u32 fmt) {
 
 } // namespace
 
-bool efb_copy(u32 trigger, const BpMemory& bp, Efb& efb, mem::Bus& bus, u32 phys_mask, CopyResult& res,
-              std::string& error) {
-    res = CopyResult{};
+bool copy_area(const BpMemory& bp, CopyArea& a, std::string& error) {
+    a = CopyArea{};
     const u32 tl = bp.reg(bp::EFB_TL), wh = bp.reg(bp::EFB_WH);
-    Rect r{bits(tl, 0, 10), bits(tl, 10, 10), 0, 0};
-    r.right = r.left + bits(wh, 0, 10) + 1U;
-    r.bottom = r.top + bits(wh, 10, 10) + 1U;
-    if (r.right > kEfbWidth || r.bottom > kEfbHeight) {
-        if (r.left >= kEfbWidth || r.top >= kEfbHeight) { res.ignored = true; return true; }
-        r.right = std::min(r.right, kEfbWidth);
-        r.bottom = std::min(r.bottom, kEfbHeight);
+    a.left = bits(tl, 0, 10);
+    a.top = bits(tl, 10, 10);
+    a.right = a.left + bits(wh, 0, 10) + 1U;
+    a.bottom = a.top + bits(wh, 10, 10) + 1U;
+    if (a.right > kEfbWidth || a.bottom > kEfbHeight) {
+        if (a.left >= kEfbWidth || a.top >= kEfbHeight) { a.ignored = true; return true; }
+        a.right = std::min(a.right, kEfbWidth);
+        a.bottom = std::min(a.bottom, kEfbHeight);
     }
-    const u32 fmt = bits(bp.reg(bp::ZCOMPARE), 0, 3);
-    if (fmt > 3U) {
+    a.fmt = bits(bp.reg(bp::ZCOMPARE), 0, 3);
+    if (a.fmt > 3U) {
         char b[80];
-        std::snprintf(b, sizeof b, "EFB copy/clear with pixel format %u is not implemented yet", fmt);
+        std::snprintf(b, sizeof b, "EFB copy/clear with pixel format %u is not implemented yet", a.fmt);
         error = b;
         return false;
     }
+    return true;
+}
+
+bool xfb_plan(u32 trigger, const BpMemory& bp, const CopyArea& a, u32 phys_mask, XfbPlan& p, std::string& error) {
+    char b[160];
+    p = XfbPlan{};
+    const u32 ys_reg = bp.reg(bp::COPY_YSCALE);
+    const bool invert = (trigger & 0x400U) != 0U;
+    if (invert && ys_reg == 0U) { error = "XFB copy with scale invert and a y scale of 0"; return false; }
+    if (!invert && ys_reg == 0U) { error = "XFB copy with a y scale of 0"; return false; }
+    const float ys = invert ? 256.0f / static_cast<float>(ys_reg) : static_cast<float>(ys_reg) / 256.0f;
+    if ((a.left & 1U) != 0U || ((a.right - a.left) & 1U) != 0U) {
+        std::snprintf(b, sizeof b, "XFB copy from an odd column or with an odd width (%u..%u) is not handled", a.left, a.right);
+        error = b;
+        return false;
+    }
+    p.left = a.left;
+    p.top = a.top;
+    p.width = a.right - a.left;
+    p.src_h = a.bottom - a.top;
+    // BPStructs.cpp: lines written = 1 + (BP 4A height field) * scale; SWEfbInterface.cpp encodes
+    // src_h * scale rows with CopyRegion.h (nearest row: round(row * src_h / dst_h))
+    p.lines = static_cast<u32>(1.0f + static_cast<float>(bits(bp.reg(bp::EFB_WH), 10, 10)) * ys);
+    const u32 dst_h = static_cast<u32>(static_cast<float>(p.src_h) * ys);
+    if (dst_h == 0U) { error = "XFB copy scaled to 0 lines"; return false; }
+    const double ratio = static_cast<double>(p.src_h) / static_cast<double>(dst_h);
+    p.dest = (bp.reg(bp::EFB_ADDR) << 5) & phys_mask;
+    p.stride = bp.reg(bp::EFB_STRIDE) << 5;
+    p.rows.resize(p.lines);
+    for (u32 y = 0; y < p.lines; ++y)
+        p.rows[y] = std::min(p.src_h - 1U, static_cast<u32>(std::round(static_cast<double>(y) * ratio)));
+    p.weights = filter_rows(bp);
+    p.wrap = p.weights[0] + p.weights[1] + p.weights[2] >= 128U;
+    p.six = a.fmt == 1U;
+    p.clamp_top = (trigger & 1U) != 0U ? a.top : 0U;
+    p.clamp_bottom = ((trigger & 2U) != 0U ? a.bottom : kEfbHeight) - 1U;
+    const bool gamma = bits(trigger, 7, 2) != 0U;
+    const float rcp = 1.0f / gamma_of(trigger);
+    for (u32 v = 0; v < 256U; ++v)
+        p.gamma[v] = static_cast<u8>(gamma ? static_cast<u32>(std::round(std::pow(static_cast<float>(v) / 255.0f, rcp) * 255.0f)) : v);
+    return true;
+}
+
+ClearPlan clear_plan(const BpMemory& bp, const CopyArea& a) {
+    ClearPlan c;
+    const u32 bm = bp.reg(bp::BLENDMODE);
+    const bool cen = (bm & 8U) != 0U, aen = (bm & 0x10U) != 0U;
+    c.depth = (bp.reg(bp::ZMODE) & 0x10U) != 0U;
+    const u32 ar = bp.reg(bp::CLEAR_AR), gb = bp.reg(bp::CLEAR_GB);
+    u32 cr = bits(ar, 0, 8), cg = bits(gb, 8, 8), cb = bits(gb, 0, 8);
+    const u32 ca = bits(ar, 8, 8);
+    u32 z = bp.reg(bp::CLEAR_Z) & 0xFFFFFFU;
+    if (a.fmt == 2U) {
+        cr = ((cr >> 3) << 3) | (cr >> 5);
+        cg = ((cg >> 2) << 2) | (cg >> 6);
+        cb = ((cb >> 3) << 3) | (cb >> 5);
+        z = (z & 0xFFFF00U) | (z >> 16);
+    }
+    if (a.fmt == 1U) {
+        c.color = cen || aen;
+        c.whole = cen == aen;
+        c.color_value = ((cr >> 2) << 18) | ((cg >> 2) << 12) | ((cb >> 2) << 6) | (ca >> 2);
+    } else {
+        c.color = cen;
+        c.color_value = (cr << 16) | (cg << 8) | cb;
+    }
+    c.depth_value = z;
+    return c;
+}
+
+bool efb_copy(u32 trigger, const BpMemory& bp, Efb& efb, mem::Bus& bus, u32 phys_mask, CopyResult& res,
+              std::string& error) {
+    res = CopyResult{};
+    CopyArea a;
+    if (!copy_area(bp, a, error)) return false;
+    if (a.ignored) { res.ignored = true; return true; }
+    const Rect r{a.left, a.top, a.right, a.bottom};
+    const u32 fmt = a.fmt;
     if ((bp.reg(bp::EFB_STRIDE) << 5) != 0U) {
         const bool ok = (trigger & 0x4000U) != 0U ? xfb_copy(trigger, bp, efb, bus, phys_mask, r, fmt, res, error)
                                                    : texture_copy(trigger, bp, efb, bus, phys_mask, r, fmt, res, error);
