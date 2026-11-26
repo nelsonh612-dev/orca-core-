@@ -173,7 +173,15 @@ struct Backend::Impl {
     static constexpr int kTexSlots = 8, kTexMaxW = 2560, kTexMaxH = 132;
     GLuint tc_prog{0};
     std::array<GLuint, kTexSlots> tc_fbo{}, tc_tex{};
-    struct TexSlotUse { u32 handle{0}; };
+    struct TexSlotUse {
+        u32 handle{0}, dest{0}, stride{0}, row{0}, lines{0};
+        u64 epoch{0};
+        bool placed{false}; // epoch known: the rows were registered in RAM then
+    };
+    // textures sampled straight from a texture copy on the GPU (decode_prog)
+    GLuint dec_prog{0}, dec_fbo{0};
+    GLint u_dec_src{-1}, u_dec_geo{-1};
+    int dec_state{0};
     std::array<TexSlotUse, kTexSlots> tc_slot{};
     int tc_next_slot{0};
     GLint u_tc_efb{-1}, u_tc_aux{-1}, u_tc_rect{-1}, u_tc_w{-1}, u_tc_mode{-1}, u_tc_flags{-1};
@@ -236,6 +244,8 @@ struct Backend::Impl {
         glDeleteFramebuffers(kXfbSlots, xfb_fbo.data());
         glDeleteTextures(kXfbSlots, xfb_tex.data());
         if (tc_prog != 0) glDeleteProgram(tc_prog);
+        if (dec_prog != 0) glDeleteProgram(dec_prog);
+        if (dec_fbo != 0) glDeleteFramebuffers(1, &dec_fbo);
         glDeleteFramebuffers(kTexSlots, tc_fbo.data());
         glDeleteTextures(kTexSlots, tc_tex.data());
         if (show_prog != 0) glDeleteProgram(show_prog);
@@ -621,6 +631,129 @@ void main() {
         return complete && glGetError() == GL_NO_ERROR;
     }
 
+    // GX texture decoding (texture_decoder.cpp, formats I4..RGBA8) on the GPU,
+    // from the RAM bytes of a texture copy held in a copy slot texture (4 bytes
+    // per texel, row_bytes per row): one RGBA8UI output texel per fragment.
+    bool setup_decode(std::string& e) {
+        static const char* vs = "#version 320 es\nvoid main() {\n"
+                                "  vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));\n"
+                                "  gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);\n}\n";
+        static const char* fs = R"GLSL(#version 320 es
+precision highp float;
+precision highp int;
+uniform highp sampler2D u_src;
+uniform ivec4 u_geo; // format, width, byte offset in the copy, copy row bytes
+out uvec4 o;
+uint b(int off) {
+    int row = off / u_geo.w, col = off - row * u_geo.w;
+    vec4 t = texelFetch(u_src, ivec2(col >> 2, row), 0);
+    return uint(round(t[col & 3] * 255.0));
+}
+uint x3(uint v) { return (v << 5u) | (v << 2u) | (v >> 1u); }
+uint x4(uint v) { return (v << 4u) | v; }
+uint x5(uint v) { return (v << 3u) | (v >> 2u); }
+uint x6(uint v) { return (v << 2u) | (v >> 4u); }
+void main() {
+    int x = int(gl_FragCoord.x), y = int(gl_FragCoord.y), f = u_geo.x;
+    int bw = f <= 2 ? 8 : 4, bh = f == 0 ? 8 : 4, bb = f == 6 ? 64 : 32;
+    int base = u_geo.z + ((y / bh) * ((u_geo.y + bw - 1) / bw) + x / bw) * bb;
+    int ix = x % bw, iy = y % bh;
+    if (f == 0) {
+        uint v = b(base + iy * 4 + ix / 2);
+        uint i = x4((ix & 1) != 0 ? (v & 15u) : (v >> 4u));
+        o = uvec4(i);
+    } else if (f == 1) {
+        o = uvec4(b(base + iy * 8 + ix));
+    } else if (f == 2) {
+        uint v = b(base + iy * 8 + ix), l = x4(v & 15u);
+        o = uvec4(l, l, l, x4(v >> 4u));
+    } else if (f == 6) {
+        int i = (iy * 4 + ix) * 2;
+        o = uvec4(b(base + i + 1), b(base + 32 + i), b(base + 33 + i), b(base + i));
+    } else {
+        int e = base + (iy * 4 + ix) * 2;
+        uint hi = b(e), lo = b(e + 1), v = (hi << 8u) | lo;
+        if (f == 3) o = uvec4(lo, lo, lo, hi);
+        else if (f == 4) o = uvec4(x5((v >> 11u) & 31u), x6((v >> 5u) & 63u), x5(v & 31u), 255u);
+        else if ((v & 0x8000u) != 0u) o = uvec4(x5((v >> 10u) & 31u), x5((v >> 5u) & 31u), x5(v & 31u), 255u);
+        else o = uvec4(x4((v >> 8u) & 15u), x4((v >> 4u) & 15u), x4(v & 15u), x3((v >> 12u) & 7u));
+    }
+}
+)GLSL";
+        dec_prog = link(vs, fs, e);
+        if (dec_prog == 0) return false;
+        u_dec_src = glGetUniformLocation(dec_prog, "u_src");
+        u_dec_geo = glGetUniformLocation(dec_prog, "u_geo");
+        glGenFramebuffers(1, &dec_fbo);
+        return glGetError() == GL_NO_ERROR;
+    }
+
+    // A texture map whose texels are all inside a texture copy still on the GPU
+    // (its RAM unchanged since the copy): decoded there into the map's texture,
+    // without reading the copy back. False: use RAM.
+    bool texture_from_copy(const BpMemory& bp, u32 map, const TexRange& range, const mem::Bus* bus, u64& key) {
+        if (!range.ram || range.size == 0U || bus == nullptr || tc_state != 1) return false;
+        const u32 m0 = tex_reg(bp, map, 0), i0 = tex_reg(bp, map, 2);
+        const u32 fmt = bits(i0, 20, 4);
+        if (fmt > 6U || bits(m0, 5, 2) != 0U) return false; // one level (no mipmaps), I4..RGBA8
+        const u32 w = bits(i0, 0, 10) + 1U, h = bits(i0, 10, 10) + 1U;
+        for (std::size_t k = 0; k < tc_slot.size(); ++k) {
+            const TexSlotUse& u = tc_slot[k];
+            if (u.handle == 0U || !u.placed || u.stride != u.row) continue; // dense rows only
+            const u64 end = static_cast<u64>(u.dest) + static_cast<u64>(u.row) * u.lines;
+            if (range.lo < u.dest || static_cast<u64>(range.lo) + range.size > end) continue;
+            if (!bus->unchanged_since(range.lo, range.size, u.epoch)) continue;
+            if (dec_state == 0) {
+                std::string e;
+                dec_state = setup_decode(e) ? 1 : -1;
+                if (dec_state != 1) std::fprintf(stderr, "GPU texture decoder: %s\n", e.c_str());
+                while (glGetError() != GL_NO_ERROR) {}
+            }
+            if (dec_state != 1) return false;
+            GLint unit = 0;
+            glGetIntegerv(GL_ACTIVE_TEXTURE, &unit);
+            GLint bound = 0;
+            glGetIntegerv(GL_TEXTURE_BINDING_2D, &bound);
+            const auto target = static_cast<GLuint>(bound);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8UI, static_cast<GLsizei>(w), static_cast<GLsizei>(h), 0, GL_RGBA_INTEGER,
+                         GL_UNSIGNED_BYTE, nullptr);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
+            const GLboolean dither = glIsEnabled(GL_DITHER), scissor = glIsEnabled(GL_SCISSOR_TEST);
+            const GLboolean blend = glIsEnabled(GL_BLEND);
+            glDisable(GL_DITHER);
+            glDisable(GL_SCISSOR_TEST);
+            glDisable(GL_BLEND);
+            glBindFramebuffer(GL_FRAMEBUFFER, dec_fbo);
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, target, 0);
+            glViewport(0, 0, static_cast<GLsizei>(w), static_cast<GLsizei>(h));
+            glUseProgram(dec_prog);
+            glBindVertexArray(xfb_vao);
+            glActiveTexture(GL_TEXTURE9);
+            glBindTexture(GL_TEXTURE_2D, tc_tex[k]);
+            glUniform1i(u_dec_src, 9);
+            glUniform4i(u_dec_geo, static_cast<GLint>(fmt), static_cast<GLint>(w), static_cast<GLint>(range.lo - u.dest),
+                        static_cast<GLint>(u.row));
+            glDrawArrays(GL_TRIANGLES, 0, 3);
+            glBindTexture(GL_TEXTURE_2D, 0);
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 0, 0);
+            glActiveTexture(static_cast<GLenum>(unit));
+            glBindTexture(GL_TEXTURE_2D, target);
+            if (dither == GL_TRUE) glEnable(GL_DITHER);
+            if (scissor == GL_TRUE) glEnable(GL_SCISSOR_TEST);
+            if (blend == GL_TRUE) glEnable(GL_BLEND);
+            glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+            glViewport(0, 0, kW, kH);
+            glUseProgram(prog);
+            glBindVertexArray(vao);
+            if (glGetError() != GL_NO_ERROR) return false;
+            key = 0x9E3779B97F4A7C15ULL ^ (static_cast<u64>(u.handle) << 32) ^ (static_cast<u64>(fmt) << 24) ^ range.lo;
+            return true;
+        }
+        return false;
+    }
+
     // Starts the asynchronous read-back of a w x h RGBA8 area of the bound
     // read framebuffer; returns its handle (0 on a GL error, `error` set).
     u32 start_readback(int w, int h, u32 row_bytes, u32 lines, u32 stride, std::string& error) {
@@ -729,15 +862,18 @@ void main() {
                     data = src.tmem.subspan(a, bytes);
                 } else {
                     const u32 addr = ((bits(i3, 0, 24) << 5) + offset) & src.phys_mask;
-                    const u8* p = src.bus->ram_pointer(addr, bytes);
-                    if (p == nullptr) {
+                    // the first pass only needs the range: it must not read RAM (a
+                    // deferred EFB copy there may be decoded on the GPU instead)
+                    const bool read = hash_data || decode;
+                    const u8* p = read ? src.bus->ram_pointer(addr, bytes) : nullptr;
+                    if (read ? p == nullptr : !src.bus->is_ram(addr, bytes)) {
                         if (m == 0U) { std::snprintf(b, sizeof b, "texture at %08X (%u bytes) is outside RAM", addr, bytes); error = b; return false; }
                         // a level the game may never sample: keep it black (the software renderer
                         // would stop only when sampling it)
                         key = fnv32(key, 0xDEADu + m);
                         if (decode) img.assign(static_cast<std::size_t>(w) * h * 4U, 0);
                     } else {
-                        data = std::span<const u8>(p, bytes);
+                        if (read) data = std::span<const u8>(p, bytes);
                         if (range.size == 0U) range.lo = addr;
                         range.size = std::max(range.size, addr + bytes - range.lo); // levels are consecutive
                         if (addr < range.lo) range.ram = false; // wrapped around the mask: no epoch shortcut
@@ -908,14 +1044,20 @@ bool Backend::flush(const BpMemory& bp, const XfMemory& xf, const sw::TevState& 
         // the uploaded texture is still right, without hashing the texels.
         const bool same_memory = range.ram && g.tex_epoch_valid[m] && pkey == g.tex_pkey[m] && tex.bus != nullptr &&
                                  tex.bus->unchanged_since(range.lo, range.size, g.tex_epoch[m]);
-        if (!same_memory) {
+        bool from_copy = false;
+        if (!same_memory && g.texture_from_copy(bp, m, range, tex.bus, key)) {
+            from_copy = true;
+            g.tex_key[m] = key;
+            ++tex_from_copies_;
+        }
+        if (!same_memory && !from_copy) {
             ++tex_hashes_;
             if (!g.decode_map(bp, tex, m, atlas, aw, ah, lv, key, true, false, range, error)) { tris_.clear(); return false; }
         }
         g.tex_pkey[m] = pkey;
         g.tex_epoch_valid[m] = range.ram && tex.bus != nullptr;
         if (g.tex_epoch_valid[m]) g.tex_epoch[m] = tex.bus->write_epoch();
-        if (!same_memory && key != g.tex_key[m]) {
+        if (!same_memory && !from_copy && key != g.tex_key[m]) {
             if (!g.decode_map(bp, tex, m, atlas, aw, ah, lv, key, true, true, range, error)) { tris_.clear(); return false; }
             glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8UI, static_cast<GLsizei>(aw), static_cast<GLsizei>(ah), 0, GL_RGBA_INTEGER,
                          GL_UNSIGNED_BYTE, atlas.data());
@@ -1305,9 +1447,14 @@ bool Backend::encode_texture_copy(const sw::TexCopyPlan& plan, u32& handle, std:
         g.tc_slot[static_cast<std::size_t>(slot)] = {};
         return false;
     }
-    g.tc_slot[static_cast<std::size_t>(slot)] = Impl::TexSlotUse{handle};
+    g.tc_slot[static_cast<std::size_t>(slot)] = Impl::TexSlotUse{handle, plan.dest, plan.stride, row, plan.blocks_y, 0, false};
     ++texture_copy_encodes_;
     return true;
+}
+
+void Backend::copy_placed(u32 handle, u64 epoch) noexcept {
+    for (auto& u : impl_->tc_slot)
+        if (u.handle == handle && handle != 0U) { u.epoch = epoch; u.placed = true; }
 }
 
 bool Backend::xfb_on_gpu(u32 handle) const noexcept {

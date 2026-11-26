@@ -654,6 +654,55 @@ TEST_CASE(gles_texture_copies_on_the_gpu) {
     CHECK_EQ(bad, 0U);
 }
 
+// Render to texture without reading back (Dolphin's texture cache keeps EFB
+// copies on the GPU): a texture copy, then a textured draw that samples its
+// address, decodes the texture on the GPU from the copy; the EFB must be the
+// software result, and the copies must stay unread in RAM.
+TEST_CASE(gles_textures_sampled_from_gpu_copies) {
+    Twin t(true);
+    t.scene();
+    t.prim(0x80, {{0, 0, -0.5f, 0xFF2010C0U}, {64, 0, -0.5f, 0x10F04020U}, {64, 32, -0.5f, 0x2040FF80U}, {0, 32, -0.5f, 0xF0F0F0FFU}});
+    t.quad(10, 8, 20, 12, -0.4f, 0x00FF8040U);
+    // GX texture format, the copy format that writes it, bytes per row of blocks for 64 texels
+    struct F { u32 tex, copy, row; };
+    const F fs[] = {{0, 0, 256}, {1, 8, 256}, {2, 2, 256}, {3, 3, 512}, {4, 4, 512}, {5, 5, 512}, {6, 6, 1024}};
+    u32 k = 0;
+    for (const F& f : fs) {
+        const u32 addr = 0x40000U + k * 0x8000U;
+        const u32 tf = f.copy < 8U ? f.copy * 2U : (f.copy - 8U) * 2U + 1U;
+        t.bpw(bp::COPY_FILTER0, (21U << 12) | (22U << 18));
+        t.bpw(bp::COPY_FILTER1, 21U);
+        t.bpw(bp::EFB_TL, 0); t.bpw(bp::EFB_WH, 63U | (31U << 10));
+        t.bpw(bp::EFB_ADDR, addr >> 5); t.bpw(bp::EFB_STRIDE, f.row >> 5);
+        t.bpw(bp::TRIGGER_EFB_COPY, tf << 3);
+        t.tex_scene(f.tex, 64, 32, addr);
+        const float y = 40.0f + static_cast<float>(k) * 40.0f;
+        t.tprim(0x80, {{300, y, -0.5f, 0xFFFFFFFFU, 0, 0}, {364, y, -0.5f, 0xFFFFFFFFU, 1, 0},
+                       {364, y + 32, -0.5f, 0xFFFFFFFFU, 1, 1}, {300, y + 32, -0.5f, 0xFFFFFFFFU, 0, 1}});
+        t.scene(); // back to vertex colours for the next copy source (unchanged in the EFB)
+        ++k;
+    }
+    CHECK(t.run());
+    CHECK_EQ(t.gl.gpu.gpu_texture_copies(), static_cast<u64>(k));
+    CHECK_EQ(t.gl.be->textures_from_copies(), static_cast<u64>(k));
+    CHECK(t.gl.bus.lazy_ranges() == k); // nothing was read back
+    const Diff d = t.diff();
+    report("textures from GPU copies", d);
+    CHECK_EQ(d.color, 0U);
+    CHECK_EQ(d.depth, 0U);
+    // a CPU write into a copy: the next draw reads the texture from RAM again
+    const std::vector<u8> w{0xFF, 0x00, 0xFF, 0x00};
+    t.ram(0x40000U + 6U * 0x8000U, w);
+    t.tex_scene(6, 64, 32, 0x40000U + 6U * 0x8000U);
+    t.tprim(0x80, {{400, 40, -0.5f, 0xFFFFFFFFU, 0, 0}, {464, 40, -0.5f, 0xFFFFFFFFU, 1, 0},
+                   {464, 72, -0.5f, 0xFFFFFFFFU, 1, 1}, {400, 72, -0.5f, 0xFFFFFFFFU, 0, 1}});
+    CHECK(t.run());
+    CHECK_EQ(t.gl.be->textures_from_copies(), static_cast<u64>(k));
+    const Diff d2 = t.diff();
+    report("after a CPU write", d2);
+    CHECK_EQ(d2.color, 0U);
+}
+
 // Presentation from the GPU: a display copy kept on the GPU, shown for a VI
 // field (whole frame or one interlaced field), gives exactly the pixels of
 // video::decode_xfb over the software XFB; a write to the copy's RAM makes the

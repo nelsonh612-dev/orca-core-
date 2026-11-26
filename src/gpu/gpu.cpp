@@ -124,6 +124,7 @@ bool Gpu::gpu_copy(u32 trigger, std::string& error, bool& done) {
             if (!ok) return fallback(why);
         }
         if (!defer_rows(handle, dest, stride, row, lines, error)) return false;
+        if (gpu_copies_.placed) gpu_copies_.placed(handle, bus_.write_epoch());
         res.copied = true;
         res.xfb = xfb;
         res.address = dest;

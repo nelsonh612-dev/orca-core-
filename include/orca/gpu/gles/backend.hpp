@@ -108,6 +108,13 @@ public:
     // XFB copy: read_xfb() / drop_xfb() take its handle too.
     bool encode_texture_copy(const sw::TexCopyPlan& plan, u32& handle, std::string& error);
     u64 texture_copy_encodes() const noexcept { return texture_copy_encodes_; }
+    // The rows of copy `handle` were registered in RAM when the bus write epoch
+    // was `epoch`. A texture map whose texels lie inside such a texture copy,
+    // with that RAM unchanged since, is decoded on the GPU from the copy
+    // (Dolphin's texture cache uses EFB copies the same way) instead of reading
+    // the copy back.
+    void copy_placed(u32 handle, u64 epoch) noexcept;
+    u64 textures_from_copies() const noexcept { return tex_from_copies_; }
 
     // Presentation from the GPU (Dolphin's Present shows the XFB texture): the
     // last encoded copies stay as YUYV textures. present_xfb() draws the field
@@ -129,7 +136,7 @@ public:
     u64 texture_hashes() const noexcept { return tex_hashes_; }
 
 private:
-    u64 xfb_encodes_{0}, presented_{0}, texture_copy_encodes_{0};
+    u64 xfb_encodes_{0}, presented_{0}, texture_copy_encodes_{0}, tex_from_copies_{0};
     struct Impl;
     std::unique_ptr<Impl> impl_;
     std::vector<std::array<sw::ScreenVertex, 3>> tris_;
@@ -149,7 +156,8 @@ inline Gpu::GpuCopies gpu_copies(Backend& backend) {
         [b](u32 h, u8* dst) { b->read_xfb(h, dst); },
         [b](u32 h) { b->drop_xfb(h); },
         [b](const sw::CopyArea& a, const sw::ClearPlan& c, std::string& e) { return b->clear_efb(a, c, e); },
-        [b](const sw::TexCopyPlan& p, u32& h, std::string& e) { return b->encode_texture_copy(p, h, e); }};
+        [b](const sw::TexCopyPlan& p, u32& h, std::string& e) { return b->encode_texture_copy(p, h, e); },
+        [b](u32 h, u64 epoch) { b->copy_placed(h, epoch); }};
 }
 
 } // namespace orca::gpu::gles

@@ -95,6 +95,8 @@ public:
         std::function<void(u32)> drop_xfb;
         std::function<bool(const sw::CopyArea&, const sw::ClearPlan&, std::string&)> clear;
         std::function<bool(const sw::TexCopyPlan&, u32&, std::string&)> encode_texture; // optional
+        // optional: the copy's rows are in RAM (deferred) as of this bus write epoch
+        std::function<void(u32, u64)> placed;
     };
     void set_gpu_copies(GpuCopies copies);
     // Copies done by GpuCopies, and the ones with a GpuCopies that took the CPU path.
